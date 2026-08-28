@@ -42,6 +42,22 @@ Install into a local directory with:
 cmake --install build --config Release --prefix package
 ```
 
+### Use as a CMake subproject
+
+A downstream project can pin CK-DOS Base as a Git submodule and include it
+without inheriting its packaging rules or tests:
+
+```cmake
+set(DOSBASE_BUILD_TESTS OFF)
+set(DOSBASE_INSTALL OFF)
+add_subdirectory(external/ck-dos-base)
+target_link_libraries(my_target PRIVATE dosbase::devtools)
+```
+
+`DOSBASE_MSDOS_SOURCE_DIR` identifies the preserved MS-DOS 4 source directory.
+Downstream builds can override the CK-DOS Base source location while developing
+locally, but committed and CI builds should always use a pinned revision.
+
 GitHub Actions builds and tests the tools on macOS, Linux, and Windows, then
 publishes the installed tools as downloadable workflow artifacts.
 
