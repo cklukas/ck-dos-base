@@ -1,9 +1,9 @@
 # CK-DOS Base
 
-CK-DOS Base is an independent, open foundation for reproducible MS-DOS 4
-build research. It combines a preserved MS-DOS 4 source snapshot with native,
-clean-room implementations of the historical build tools needed to inspect
-and reproduce its artifacts.
+CK-DOS Base preserves the MS-DOS 4 source code and provides modern replacements
+for its original assembler, linker, and other build tools. The replacements are
+native, clean-room implementations that can inspect and reproduce historical
+build artifacts.
 
 The project has no dependency on any private or downstream product. Downstream
 products may consume CK-DOS Base, but this repository does not consume or refer
