@@ -19,7 +19,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Configure
         run: >-
@@ -37,7 +37,7 @@ jobs:
         run: cmake --install build --config Release
 
       - name: Upload native tools
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: ck-dos-base-tools-${{ runner.os }}-${{ runner.arch }}
           path: package/
