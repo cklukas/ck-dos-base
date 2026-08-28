@@ -60,9 +60,10 @@ remaining C compiler and end-to-end orchestration is tracked in
 
 ## Independence and trademarks
 
-CK-DOS Base is community work and is not affiliated with, endorsed by, or
-sponsored by Microsoft. Microsoft, MS-DOS, and related names may be trademarks
-of Microsoft Corporation. The name “CK-DOS Base” identifies this independent
-project; it does not identify a Microsoft product.
+CK-DOS Base is independently developed and maintained by C. Klukas. It is not
+affiliated with, endorsed by, or sponsored by Microsoft. Microsoft, MS-DOS, and
+related names may be trademarks of Microsoft Corporation. The name “CK-DOS
+Base” identifies this independent project; it does not identify a Microsoft
+product.
 
 See [LICENSE](LICENSE) and [NOTICE](NOTICE).
