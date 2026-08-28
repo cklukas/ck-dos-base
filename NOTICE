@@ -1,0 +1,14 @@
+CK-DOS Base
+Copyright (c) 2026 C. Klukas
+
+The CK-DOS Base native tools are licensed under the MIT License. See LICENSE.
+
+third_party/ms-dos-4 is a repaired snapshot of the Microsoft MS-DOS 4.0 source
+release and carries its own MIT license at third_party/ms-dos-4/LICENSE. The
+snapshot contains copyright notices belonging to Microsoft Corporation, IBM
+Corporation, and other identified contributors. See docs/PROVENANCE.md for the
+exact source revision and repair provenance.
+
+This project is independent and is not affiliated with, endorsed by, or
+sponsored by Microsoft. Microsoft and MS-DOS may be trademarks of Microsoft
+Corporation.

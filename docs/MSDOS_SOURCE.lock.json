@@ -1,0 +1,10 @@
+{
+  "name": "Microsoft MS-DOS 4.0 source repair release",
+  "official_repository": "https://github.com/microsoft/MS-DOS",
+  "snapshot_repository": "https://github.com/chasonr/MS-DOS.git",
+  "tag": "release-1",
+  "commit": "95deabd0d309ac8157f0c738a22910508de64050",
+  "tree": "a74039742f9f419a138d3eb613a285ef7ef43ccb",
+  "license": "MIT",
+  "reason": "Repairs damaged bytes, line endings, and build scripts in the published archive."
+}
