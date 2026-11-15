@@ -1,0 +1,1646 @@
+{
+  "BIOS/IO.SYS": {
+    "sha256": "755c79c16d3db5280b5286f1032a4f77bb8556b79f0c22f9c9f85556c7b69e39",
+    "size": 33321
+  },
+  "BIOS/MSAUX.OBJ": {
+    "sha256": "5d75838beed4b3687fb209b28d1a1a6724f0b19b3b4ed0b049b77489c184b9f3",
+    "size": 457
+  },
+  "BIOS/MSBIO1.OBJ": {
+    "sha256": "fafec932024b76fa6abaa9994e0d22ba49faae210bab94abbceab07a791d378e",
+    "size": 3917
+  },
+  "BIOS/MSBIO2.OBJ": {
+    "sha256": "2cda8a50a042289e74c5c9964a01ec77cc6f83c17053ccd59161a329dfcfe75f",
+    "size": 4001
+  },
+  "BIOS/MSCLOCK.OBJ": {
+    "sha256": "692b439f10ac649a56aaaba448c7fa0198a03c85130c92b9a0f4f9a64aeb05e1",
+    "size": 573
+  },
+  "BIOS/MSCON.OBJ": {
+    "sha256": "131a2d9dccd93577ca0ed509f54f60ab2ae8105a8bf7bff5fcb20b4695a1abf8",
+    "size": 540
+  },
+  "BIOS/MSDISK.OBJ": {
+    "sha256": "a8146eea3bb72eda8e7dbfa72e562e4160fa15842aee4a85525b658154416560",
+    "size": 8834
+  },
+  "BIOS/MSHARD.OBJ": {
+    "sha256": "4075e088b8ac78119551bb4c2bb737fe5f90619d35fd1568fd39a6c7cb849041",
+    "size": 693
+  },
+  "BIOS/MSINIT.OBJ": {
+    "sha256": "2cae0dca76306afefe6f565df475f0234f24b60c34372cd1d3ef0e39805be9b2",
+    "size": 7891
+  },
+  "BIOS/MSLOAD.COM": {
+    "sha256": "ea04d0ac5373b0d69b808e972ebecb69cb3d2c24cffcb9a85580370a2e945d23",
+    "size": 1247
+  },
+  "BIOS/MSLOAD.EXE": {
+    "sha256": "3eae31f31e99f62100287ce613e3e66de914c8af6f90cba2576796e273364ee7",
+    "size": 1759
+  },
+  "BIOS/MSLOAD.OBJ": {
+    "sha256": "f3e849098817b35cf122f04c086347d5bbb54d40eefd29a34bb1d72265122002",
+    "size": 2209
+  },
+  "BIOS/MSLPT.OBJ": {
+    "sha256": "2090ac0e6b8d5978b5c1eabe34feeb33b4f8e49c47012ae81bc57739bf13089f",
+    "size": 527
+  },
+  "BIOS/SYSCONF.OBJ": {
+    "sha256": "8a77ce93ba7eae52c62818f92970a221f194b107f0c7f3c62118e5b6d0f44375",
+    "size": 10553
+  },
+  "BIOS/SYSIMES.OBJ": {
+    "sha256": "1189b38959c2d607f87bc771881f78dc821a81669a878b70ae63aa804efdf1db",
+    "size": 739
+  },
+  "BIOS/SYSINIT1.OBJ": {
+    "sha256": "4f2a81a9c7b9fd137612399ceb84c43ca65ad60e93fd824dd91299b038c7e691",
+    "size": 12061
+  },
+  "BIOS/SYSINIT2.OBJ": {
+    "sha256": "e1af2e261f1006d877ca2264b72a508f55c400b5902a07dfbed1a9547ee2268c",
+    "size": 4522
+  },
+  "BOOT/MSBOOT.BIN": {
+    "sha256": "a6d6bd5708f74c074deb239d2b8d3c42266b282dc5612103272c3f8c00aa4332",
+    "size": 32256
+  },
+  "BOOT/MSBOOT.EXE": {
+    "sha256": "d70132f3846fed39d954d3c36ee629c0cd8874c2a3d4493f2faf255bb6a51697",
+    "size": 32768
+  },
+  "BOOT/MSBOOT.OBJ": {
+    "sha256": "bad6103f540f89eb6c107c16d2b1696a57f16079cf186e25810dd284c5c1ebe5",
+    "size": 937
+  },
+  "CMD/APPEND/APPEND.EXE": {
+    "sha256": "8afcfa744c7ff73d8874820d40cd66bc6f4b22fdd07dbf40e9698f761b78512a",
+    "size": 11154
+  },
+  "CMD/APPEND/APPEND.OBJ": {
+    "sha256": "4b25ef0f33efb7659c8029cc03906da8ec061ba498cde6fdff35568a58c33e7c",
+    "size": 15359
+  },
+  "CMD/APPEND/SYSMAC.LIB": {
+    "sha256": "fbbab1d2f0ae30944d8e33a8c7deca0738ecc1ca853a05621d667b4bd18582a5",
+    "size": 4801
+  },
+  "CMD/ATTRIB/ATTRIB.OBJ": {
+    "sha256": "4040c63229c668033607300b374b3303345f2cdb954fdc5161086536d6f93619",
+    "size": 26702
+  },
+  "CMD/ATTRIB/ATTRIBA.OBJ": {
+    "sha256": "e2ed2ae3f2f2aff8ccc2c6c689fa46ead8b6eb108511378546db15b4cf471bdb",
+    "size": 1128
+  },
+  "CMD/ATTRIB/_PARSE.OBJ": {
+    "sha256": "89ba76b6a47758f09e40758156fe91c31749b67a588eca82ba1857671af840e9",
+    "size": 4316
+  },
+  "CMD/BACKUP/BACKUP.COM": {
+    "sha256": "57b40e2af3bdc232590b9622dc9f0cb358836a51c12d1b89cdce965721dbb43e",
+    "size": 64635
+  },
+  "CMD/BACKUP/BACKUP.OBJ": {
+    "sha256": "7b51707fe0bb0bfd86090c93126f79d66fa560232b22db99a686f26288eaeae7",
+    "size": 43418
+  },
+  "CMD/BACKUP/_MSGRET.OBJ": {
+    "sha256": "7431cd8d5bc54d0bdf236518bf46df41960fbf2d10aef04c58fa58701a492003",
+    "size": 6220
+  },
+  "CMD/BACKUP/_PARSE.OBJ": {
+    "sha256": "7b66715211c5a591de4789c7001707cf95083e25140fa8d1886f02651b644f0a",
+    "size": 4085
+  },
+  "CMD/CHKDSK/CHKDISK.OBJ": {
+    "sha256": "4de66289f27089ada459c5fee39edd480da2941ab79e998eae8ba7eef7188eaa",
+    "size": 1278
+  },
+  "CMD/CHKDSK/CHKDSK1.OBJ": {
+    "sha256": "2a65f386db7bf03289c2c81fd6a1c1e5ae67afe941e01368b3f0a0537f71b950",
+    "size": 5157
+  },
+  "CMD/CHKDSK/CHKDSK2.OBJ": {
+    "sha256": "93d0b123a365877d991fa8461592a41535fdaf63ec8c847649cfbb94a6459b14",
+    "size": 2307
+  },
+  "CMD/CHKDSK/CHKFAT.OBJ": {
+    "sha256": "a1625097525b6206d905d3e92c930971475f97aa15584803958b4b38b1e627de",
+    "size": 3125
+  },
+  "CMD/CHKDSK/CHKINIT.OBJ": {
+    "sha256": "8000dd9d9bdad98b8eaeba366a43a50d9fa06f4282435cbc801ebb497bb69767",
+    "size": 6313
+  },
+  "CMD/CHKDSK/CHKPRMT.OBJ": {
+    "sha256": "8ac63535b15a8b8faa55dff92e2ce39d58c4ca34cc8761777f54cee8aac8f6fc",
+    "size": 386
+  },
+  "CMD/CHKDSK/CHKPROC.OBJ": {
+    "sha256": "6b998f89f6c203fc91a5702a9fac18218101479a0fa4ec14d3a252ee06a4dcd0",
+    "size": 6504
+  },
+  "CMD/CHKDSK/CHKPROC2.OBJ": {
+    "sha256": "84e971981eaeef6b5a03f3a6aa2958d8f6bda767eb35bdb7795c383cd737599a",
+    "size": 1750
+  },
+  "CMD/COMMAND/COMMAND.COM": {
+    "sha256": "19ebe2e5a8e18ca5d447a3d1fc42c42e4942ff5f3ef50e39ab01374bb01d8ea9",
+    "size": 37556
+  },
+  "CMD/COMMAND/COMMAND1.OBJ": {
+    "sha256": "0d21e9677699a1d311a8e630619921d53ad6191ac6f1513ca1d6b2a4f0d17fdd",
+    "size": 1357
+  },
+  "CMD/COMMAND/COMMAND2.OBJ": {
+    "sha256": "0223cb01b1198cc0ccc331b8cf3c929927e8e074ea63ee804298a8aac17cb8a0",
+    "size": 2406
+  },
+  "CMD/COMMAND/COPY.OBJ": {
+    "sha256": "8c1299509fd6cffe89879987477b8d79687f9da6cbbf514b982a932639827a2c",
+    "size": 5033
+  },
+  "CMD/COMMAND/COPYPR1.OBJ": {
+    "sha256": "ddb8d5b66b8f118eeb3cc86b3512a6d000f121d01ceb5066984fc93cf2ff5e71",
+    "size": 1554
+  },
+  "CMD/COMMAND/COPYPR2.OBJ": {
+    "sha256": "7347a4838baa024fc1b4664ca26952ba27dfd8dd571aa4df91847e716c862023",
+    "size": 1751
+  },
+  "CMD/COMMAND/CPARSE.OBJ": {
+    "sha256": "839fcc58857e9f9c6351e22b38f3859b50cfced7f647d1819d900b0ecf533fa6",
+    "size": 1399
+  },
+  "CMD/COMMAND/INIT.OBJ": {
+    "sha256": "f278a2a2b6ee376350219d7919543b82c608193598d7c50ea7068a8e180c6fe7",
+    "size": 6016
+  },
+  "CMD/COMMAND/IPARSE.OBJ": {
+    "sha256": "870d97f7ce016c1585e2b3fdde598125c1966583a6436cbb9c7e775eb5651baf",
+    "size": 305
+  },
+  "CMD/COMMAND/PARSE2.OBJ": {
+    "sha256": "8d5be30438ec08bc56155a51b035850b130649d141e37fb8f5930c3f7430e8bc",
+    "size": 1055
+  },
+  "CMD/COMMAND/PATH1.OBJ": {
+    "sha256": "430eeb5bcad8cf836a747ae6628b4a773442d163523dd1117ccdfe4c36218e4e",
+    "size": 1445
+  },
+  "CMD/COMMAND/PATH2.OBJ": {
+    "sha256": "594de89d951596fcd3751fb359b7ae4aa4b6ac2854e8a39e9e32f03706ac75be",
+    "size": 1219
+  },
+  "CMD/COMMAND/RDATA.OBJ": {
+    "sha256": "ba2696cd2037e251e1f9ffab75a62831982c5638794f9be5b229e7db11ec5da8",
+    "size": 6936
+  },
+  "CMD/COMMAND/RUCODE.OBJ": {
+    "sha256": "26eebee2e7802b6e7e903d9c12ae56e368b5b43f41d9c1319bc55089bef9406e",
+    "size": 4204
+  },
+  "CMD/COMMAND/TBATCH.OBJ": {
+    "sha256": "8569b233a07d2362b132ab329392d3c322b642989102aedda675b6afc3d2566d",
+    "size": 3008
+  },
+  "CMD/COMMAND/TBATCH2.OBJ": {
+    "sha256": "7c256368e9e709055d4bd0d947182f45929f91144010edac1b3afe5109ddad0c",
+    "size": 2469
+  },
+  "CMD/COMMAND/TCMD1A.OBJ": {
+    "sha256": "402a23b246d1ffd7317433a04969ba62b808cf21b019b37533c3284fbf227b08",
+    "size": 2855
+  },
+  "CMD/COMMAND/TCMD1B.OBJ": {
+    "sha256": "8affe51f224fba26d20d492f2d42d36edcc7ebde3464497daddd97e3e48a54d1",
+    "size": 2684
+  },
+  "CMD/COMMAND/TCMD2A.OBJ": {
+    "sha256": "c0cee0e3aefb6aa7545b9fb34707dde28af0dcf202a69e8197f1d775ddf13a28",
+    "size": 2063
+  },
+  "CMD/COMMAND/TCMD2B.OBJ": {
+    "sha256": "6ab3aa635dde17d948d5ace1964a97a52b2fd93ac6598742826ecae1c6337417",
+    "size": 1980
+  },
+  "CMD/COMMAND/TCODE.OBJ": {
+    "sha256": "db68135a244500f4ed252be6e7d6b9a929d0c8739715a7f2fa19571a71525f4a",
+    "size": 2830
+  },
+  "CMD/COMMAND/TDATA.OBJ": {
+    "sha256": "81aabe05872a39ebdabecf250409867c7dd8f0690eb56a01ed23102ad6388c7b",
+    "size": 8222
+  },
+  "CMD/COMMAND/TENV.OBJ": {
+    "sha256": "0b132c36b35136935ffd98e1eb5e43557c570d6508d7a84a03b91d913d766d19",
+    "size": 2041
+  },
+  "CMD/COMMAND/TENV2.OBJ": {
+    "sha256": "f6bc3f75c372d6801ea50dd04c3ea1efb6ad6527673af51e415378a30646366f",
+    "size": 2331
+  },
+  "CMD/COMMAND/TFOR.OBJ": {
+    "sha256": "3388c5871353d36c1f2110e9e90a71bcfeaf31e9b4aebe76628650239e8bc594",
+    "size": 2008
+  },
+  "CMD/COMMAND/TMISC1.OBJ": {
+    "sha256": "ea54395a2dc85d55aa70516aec975311a9d28917df8a2dd07cef7410607308b0",
+    "size": 2463
+  },
+  "CMD/COMMAND/TMISC2.OBJ": {
+    "sha256": "18b37996055655fb7c3cb05810394bc003622b52b1a170b41460b6ce0586d6d1",
+    "size": 1570
+  },
+  "CMD/COMMAND/TPARSE.OBJ": {
+    "sha256": "b93a337a16cdff822dd66ce61a4be68b4a2d1b823c4d941d0a152eff0c541ea3",
+    "size": 4906
+  },
+  "CMD/COMMAND/TPIPE.OBJ": {
+    "sha256": "2896d6dec8913f18525569e2c4db8f3fe647cdb2c6bad562881cfba7b58d8702",
+    "size": 2815
+  },
+  "CMD/COMMAND/TPRINTF.OBJ": {
+    "sha256": "84046d2264114ed31a342b1489cab9da7bd62388cc550d430bc14ef071c762c2",
+    "size": 4768
+  },
+  "CMD/COMMAND/TSPC.OBJ": {
+    "sha256": "5777146c03c679ee3376f72002e076dcaa226d9e74fe3ef76929a1543d4a5cfe",
+    "size": 3228
+  },
+  "CMD/COMMAND/TUCODE.OBJ": {
+    "sha256": "5000b9dacc3b4043245f20285f0730e41a1fa803528540e3d9033b1d8e190d87",
+    "size": 1961
+  },
+  "CMD/COMMAND/UINIT.OBJ": {
+    "sha256": "7de51b8b17aaff19456b54e29e046459caf7c7b904484bfd6a9a4e39e710f6a7",
+    "size": 1976
+  },
+  "CMD/COMP/COMP1.OBJ": {
+    "sha256": "44648df27fc6f498649820331c6edc088fc725bfc841f3c79581bb18912f4148",
+    "size": 126
+  },
+  "CMD/COMP/COMPP.OBJ": {
+    "sha256": "f8a7fc18bf68d23aad8c3d18d98566dc984d01d769a3cfc94eb76ba829445962",
+    "size": 2529
+  },
+  "CMD/COMP/COMPPAR.OBJ": {
+    "sha256": "d6d47154371de65dcb1e9dbfc395f0e8d1fe2d2a008fc18b21b3a8085b4cf8e9",
+    "size": 511
+  },
+  "CMD/DEBUG/DEBASM.OBJ": {
+    "sha256": "0ce5e920487cccb20fc9601061890ee3aa7e6b56ac1d4636d7ca55322c123342",
+    "size": 5405
+  },
+  "CMD/DEBUG/DEBCOM1.OBJ": {
+    "sha256": "56afca039f14ab0f610faad40e1408b6c32b5d43851320ef2d6797b27fb53efc",
+    "size": 2125
+  },
+  "CMD/DEBUG/DEBCOM2.OBJ": {
+    "sha256": "fe759bb9277a77e61f1d844686a1034b9ee68c5fedf96c9348b7bec69356f70e",
+    "size": 4985
+  },
+  "CMD/DEBUG/DEBCOM3.OBJ": {
+    "sha256": "5b0e70dea5c4faecc19588d23e98f8eea50e8e9d80ed5ac2fbe155b6f2fcab99",
+    "size": 2638
+  },
+  "CMD/DEBUG/DEBCONST.OBJ": {
+    "sha256": "91fa777c6b37a98e709ab6a7bf6de05b76a198b24485570c64c6aaca304fecc7",
+    "size": 10018
+  },
+  "CMD/DEBUG/DEBDATA.OBJ": {
+    "sha256": "4e391491adfbd326d5f68f8e4c55eb7e7c6639b58cf8ba1cc7611d3a824c2848",
+    "size": 1358
+  },
+  "CMD/DEBUG/DEBEMS.OBJ": {
+    "sha256": "31fcced1bab2c4cbe38fafedf1135d2b4d9b2170c408272ae734d3a3e3c154db",
+    "size": 2034
+  },
+  "CMD/DEBUG/DEBERR.OBJ": {
+    "sha256": "dbc71bc3a06240655ab16ef2c96b9f2721585240370112227171ab6a1efe76e9",
+    "size": 368
+  },
+  "CMD/DEBUG/DEBUASM.OBJ": {
+    "sha256": "ca8cabe3d1a261243617e293bc27cef1cd1ca565e7b28908e3b041fe81a3f34e",
+    "size": 3823
+  },
+  "CMD/DEBUG/DEBUG.OBJ": {
+    "sha256": "9010235c32d1b42d013760f923d20d95b8ca780575fb2d9437d27c8097efa6b0",
+    "size": 2887
+  },
+  "CMD/DISKCOMP/DISKCOMP.OBJ": {
+    "sha256": "02a54c89f3878c43ccac713865b78e91122aff399b91d5abf6407eaafe53e808",
+    "size": 8368
+  },
+  "CMD/DISKCOPY/DISKCOPY.OBJ": {
+    "sha256": "573ac0eef147b82cece231b0a2e97425fb1682914bac22924d88cd4b3eac920d",
+    "size": 9264
+  },
+  "CMD/EDLIN/EDLCMD1.OBJ": {
+    "sha256": "e5ea356dbd6e32d2b5442cf500524a516224a1cff472c7797dd731b4ea4371d5",
+    "size": 2799
+  },
+  "CMD/EDLIN/EDLCMD2.OBJ": {
+    "sha256": "0cfca4bd8d9bc9907e5167d3d64f8d46cc985653c88b0e9f18cf1556180ccdb7",
+    "size": 2733
+  },
+  "CMD/EDLIN/EDLIN.OBJ": {
+    "sha256": "4b3c5fe769a39bf20f74ed3dba78f19ece545c26f80571a15ef9068bcc2a98eb",
+    "size": 6067
+  },
+  "CMD/EXE2BIN/DISPLAY.OBJ": {
+    "sha256": "8de9ae4b2384b562d2e0d8bb36c83b5062ba27d00055eae11d2aeece463aefec",
+    "size": 208
+  },
+  "CMD/EXE2BIN/E2BINIT.OBJ": {
+    "sha256": "62b16bfa02705e8ab87bb7d9b8d98e6b3404c2f7e9c22a96f39e1367fe46fab2",
+    "size": 11904
+  },
+  "CMD/EXE2BIN/EXE2BIN.EXE": {
+    "sha256": "4b3d197ddbfb2f98250553bcce677358ea925a1feb2850addf5c8ac288a8088c",
+    "size": 7963
+  },
+  "CMD/FASTOPEN/FASTINIT.OBJ": {
+    "sha256": "fa35a30d9c6a9367650a9f19e22095ffef1b3270c22223d7736928fcb88037c8",
+    "size": 8405
+  },
+  "CMD/FASTOPEN/FASTOPEN.OBJ": {
+    "sha256": "320d475d176bf3d14fb1c1f3b35b0ce53e59a7252fd89f61ca733bae22e9a259",
+    "size": 4502
+  },
+  "CMD/FASTOPEN/FASTP.OBJ": {
+    "sha256": "3042bf225cf3ec20322cbc0462be2f698ab2506892e6dc04960103b014cd052a",
+    "size": 3255
+  },
+  "CMD/FASTOPEN/FASTSEEK.OBJ": {
+    "sha256": "8c09c776c75977593480c0e191e0ccc0ceac5dcb4c23ac37d0b0d1f624d98953",
+    "size": 7034
+  },
+  "CMD/FC/ERROR.OBJ": {
+    "sha256": "68b3fc281ed0fc598e1b3be32fef6a4b5ae4e011edbd6527f93b42bc7886b2fe",
+    "size": 378
+  },
+  "CMD/FC/FC.OBJ": {
+    "sha256": "a57935f153a36f8099f63771b465b3942c54f729e9a33c848b9074c650868919",
+    "size": 9546
+  },
+  "CMD/FC/FGETL.OBJ": {
+    "sha256": "cb33a953ac5a5e504882206705b13c48799d4a6ef0edcd0c8fbf0b970948b334",
+    "size": 988
+  },
+  "CMD/FC/GETL.OBJ": {
+    "sha256": "844a94b76b9d1c7fef733394f391973e61e90f14be3b948718897be8ec68ab49",
+    "size": 636
+  },
+  "CMD/FC/ITOUPPER.OBJ": {
+    "sha256": "9ab16431ac8bc54e122ca094a0f10346063f1e16794f5307cb5ed423b3adecfd",
+    "size": 260
+  },
+  "CMD/FC/MAXMIN.OBJ": {
+    "sha256": "df0bc5eaad285293f3ba2a3198256377a5f39e34a43f8ee77955066c6d777604",
+    "size": 167
+  },
+  "CMD/FC/MESSAGES.OBJ": {
+    "sha256": "9c3c1dcebf42eaccd3774e89d4d8d0197592183df01bddfa212fbd712e3bc9b7",
+    "size": 472
+  },
+  "CMD/FC/MOVE.OBJ": {
+    "sha256": "a2b6d733263bdc69d64ea5e088ebb6f3fc97f8676b52259ed95bd8aa117a8bd0",
+    "size": 226
+  },
+  "CMD/FC/NTOI.OBJ": {
+    "sha256": "ea1fec637b65fa50c10f45c607913bf22811199f0ffe276bf67c45dfe417aea0",
+    "size": 695
+  },
+  "CMD/FC/STRING.OBJ": {
+    "sha256": "fd3ca21c815e5db532a89d73e072e20929bf14d1ac804f2b5220c568a47a7d72",
+    "size": 336
+  },
+  "CMD/FC/UPDATE.OBJ": {
+    "sha256": "a484d62bdf5d3229bd06fe4b3208257d48eb12334c6de9a209c34ef3a8572f70",
+    "size": 2006
+  },
+  "CMD/FC/XTAB.OBJ": {
+    "sha256": "f63585f77c45cb9ab2416f08bde9404f4cf6183a07044045cb7af9e6867d2eff",
+    "size": 645
+  },
+  "CMD/FDISK/FDBOOT.EXE": {
+    "sha256": "7dd5e9e33dcd5d2172dc689ffc95ba7134d11f462747bcfbf8a0d846428b26b7",
+    "size": 2560
+  },
+  "CMD/FDISK/FDBOOT.OBJ": {
+    "sha256": "145ebadd6763442e7d49fcedef7bb9a857b890b69e7e86aed4975295bc0a3433",
+    "size": 379
+  },
+  "CMD/FDISK/FDISK.OBJ": {
+    "sha256": "d02be442f77500830d4553cbe803af984c9a04a38c3518069590d24d18ee4a21",
+    "size": 18433
+  },
+  "CMD/FDISK/REBOOT.OBJ": {
+    "sha256": "757d3bbcf0ccc6945eccde2a9faa91c7756adeafadd1f98357b71cc20b0f76a7",
+    "size": 169
+  },
+  "CMD/FILESYS/FILESYS.EXE": {
+    "sha256": "69abd89074694ba36061c5c786cce2f1cf81fc39aee306aa52471b9dad7f763e",
+    "size": 16976
+  },
+  "CMD/FILESYS/FILESYS.OBJ": {
+    "sha256": "0869c9e805f5b24cf0e6b99cca1ad095e799947c23b9664965bdf52cbeb03f0d",
+    "size": 9286
+  },
+  "CMD/FILESYS/_MSGRET.OBJ": {
+    "sha256": "567fac3249a8a3a9ab615533157ed651d799b1b974dd8dd88a1627f30f513542",
+    "size": 3818
+  },
+  "CMD/FILESYS/_PARSE.OBJ": {
+    "sha256": "66fc1d4a37e36a7cf7686d7eddcce78e42505a24c0aca2b71833ad0caf90a28e",
+    "size": 5618
+  },
+  "CMD/FORMAT/FORMAT.OBJ": {
+    "sha256": "575adf95da1367d6326eafa68624fbc432d3fcffa0824a7b775c2b9e00cf0eba",
+    "size": 15765
+  },
+  "CMD/FORMAT/FORPROC.OBJ": {
+    "sha256": "6c41c56f90c40273ac2327308f926a9e2da9e967ee2355bbf88509e2680dcdb9",
+    "size": 1790
+  },
+  "CMD/GRAFTABL/GRTAB.OBJ": {
+    "sha256": "2efb82a9c47527aab17e873c7f372c291faf8860bc3cbd8b15e104abaa07590c",
+    "size": 1852
+  },
+  "CMD/GRAFTABL/GRTABP.OBJ": {
+    "sha256": "fa8301390c80419f7f67fbbad2d5f4decc86dd48cd03e821aa522bc952bf7744",
+    "size": 2242
+  },
+  "CMD/GRAPHICS/GRAPHICS.OBJ": {
+    "sha256": "65ef69b7949117e440a1101c48ce718acb1f548783bf2b5404906b9aab2f84c4",
+    "size": 337
+  },
+  "CMD/GRAPHICS/GRBWPRT.OBJ": {
+    "sha256": "259aa1d002e216474f56ac8403dc54de9bdcd949a7f02b59c33e185c5e731d85",
+    "size": 2055
+  },
+  "CMD/GRAPHICS/GRCOLPRT.OBJ": {
+    "sha256": "54e06425c7b5e860a5e57e53fb022b44bf11a44e9fff2600de568457adc610e6",
+    "size": 2943
+  },
+  "CMD/GRAPHICS/GRCPSD.OBJ": {
+    "sha256": "de56464edb7db55c02a93b73268f236faead116b61a3d0e00a93c376c0f7223b",
+    "size": 439
+  },
+  "CMD/GRAPHICS/GRCTRL.OBJ": {
+    "sha256": "d72b6afc87c1c596239d14b13bcd15f2f5c12eead68cb13adbccefd6fc841ce8",
+    "size": 4126
+  },
+  "CMD/GRAPHICS/GRINT2FH.OBJ": {
+    "sha256": "51b2a081f34e979d9b57a7a735bb58f186e3af304eac33e92bdda557c681ea3a",
+    "size": 884
+  },
+  "CMD/GRAPHICS/GRPATTRN.OBJ": {
+    "sha256": "4a4a6cf35a000a0ea9596682da6c017e734702c66c602a0712f33f8016947272",
+    "size": 5482
+  },
+  "CMD/IFSFUNC/IFSDEV.OBJ": {
+    "sha256": "f920873f33fca92b2e74f2338e03552655f56ffa15ef95dd72f5c9ae323a85ed",
+    "size": 2872
+  },
+  "CMD/IFSFUNC/IFSDIR.OBJ": {
+    "sha256": "3fde000d36344fddc7dffeb92664eab59eecae664755f9dfa50a008ca0ce6c87",
+    "size": 597
+  },
+  "CMD/IFSFUNC/IFSFILE.OBJ": {
+    "sha256": "bdfa427a09872a5b383ee00fddbf1d92629d2740bc99d4571128a779afb8db98",
+    "size": 3651
+  },
+  "CMD/IFSFUNC/IFSHAND.OBJ": {
+    "sha256": "57630b652e9e16bc5ebf92beb49b174b9016c957704a4ccfaad00cae7d9b4001",
+    "size": 1442
+  },
+  "CMD/IFSFUNC/IFSSESS.OBJ": {
+    "sha256": "f33f030994a234db22856aaa252470abd4c6b9dcbfb56abed81f3de721bb0b20",
+    "size": 5476
+  },
+  "CMD/IFSFUNC/IFSUTIL.OBJ": {
+    "sha256": "9f17fe1f2f5b66531cd16122f5f145776a078846db528ddad220f917f1868aea",
+    "size": 5072
+  },
+  "CMD/JOIN/JOIN.OBJ": {
+    "sha256": "ebbe4ed93eaab59dcc04a805273aec107d1fd4d733d7e6be06235d7f25c532b7",
+    "size": 7999
+  },
+  "CMD/KEYB/KEYB.OBJ": {
+    "sha256": "908c4a79c2df3eef2ab37e20dfa0359102f9a5a01c5573d3c7bbf06f332ff7c3",
+    "size": 394
+  },
+  "CMD/KEYB/PARSER.OBJ": {
+    "sha256": "ae5227fb299ba764dbcb457f309fd0712f9c7d6fb3c5f3f3794a9260a110ce42",
+    "size": 4318
+  },
+  "CMD/LABEL/LABEL.COM": {
+    "sha256": "a8fce248d06392d9e0adc7ed557aa63cffdade89878825c689b2b84e8ccf8d44",
+    "size": 4458
+  },
+  "CMD/LABEL/LABEL.OBJ": {
+    "sha256": "2bebcdc7e841382c5015833fdadcec67783a954180ef8380ea99641b501b1f0b",
+    "size": 3497
+  },
+  "CMD/LABEL/LABELM.OBJ": {
+    "sha256": "79f9c4905a99cf7ebc433d474d56d255285dcf68b9fb0f70aed73ac490334bc1",
+    "size": 3679
+  },
+  "CMD/MEM/MEM.OBJ": {
+    "sha256": "465eadfd806ed105595b4f9822392fe687d98f1c6f4f5ba6b778a60d223eb7e3",
+    "size": 22225
+  },
+  "CMD/MEM/_MSGRET.OBJ": {
+    "sha256": "a992b39f8db0e68ab45beedb1a6872fb8257ccce8b48a61640a5b9d0d1028143",
+    "size": 5443
+  },
+  "CMD/MEM/_PARSE.OBJ": {
+    "sha256": "66fc1d4a37e36a7cf7686d7eddcce78e42505a24c0aca2b71833ad0caf90a28e",
+    "size": 5618
+  },
+  "CMD/PRINT/PRINT_R.OBJ": {
+    "sha256": "9afbec47426c883e2f71101073df4b5793be21676bf92ecf621a46be5ad21f16",
+    "size": 7846
+  },
+  "CMD/PRINT/PRINT_RM.OBJ": {
+    "sha256": "79f89c18194fe2ff771af9fda779d1f30f3726a4aeb8a6977b2a97c3aa965deb",
+    "size": 130
+  },
+  "CMD/PRINT/PRINT_T.OBJ": {
+    "sha256": "11dd15702c8e063c97dee61ffdd9171d38fafad938c7899c9e9eb01b0d9c6879",
+    "size": 4885
+  },
+  "CMD/PRINT/PRINT_TM.OBJ": {
+    "sha256": "5ee3bf7231792b3ea5ee8807c2d299fd06aaf7696196162cd418d7dc2ee5fcce",
+    "size": 8146
+  },
+  "CMD/REPLACE/REPLACE.OBJ": {
+    "sha256": "755950c0244f3b5ac4395bae276ff1aef2619e8df997aa706733dcc8954afc6f",
+    "size": 27426
+  },
+  "CMD/REPLACE/_REPLACE.OBJ": {
+    "sha256": "2a73fa6a1aecf41dc860a77dd9b1b1a7b9c7decc82bb8778c4cc74cd51b92e37",
+    "size": 397
+  },
+  "CMD/RESTORE/RESTORE.OBJ": {
+    "sha256": "249c8108c038fe60276d353517aabd0a1a7e64c164a4dbfaa755dad93e0fd439",
+    "size": 1239
+  },
+  "CMD/RESTORE/RESTPARS.OBJ": {
+    "sha256": "1a5070de681e677f0cf7d7c50287c3c848c57e36810733be59996ca32452879a",
+    "size": 17523
+  },
+  "CMD/RESTORE/RTDO.OBJ": {
+    "sha256": "687117f949a81fe958e399c5603b5c9fa77450af856914c268eca4bdf6552209",
+    "size": 5034
+  },
+  "CMD/RESTORE/RTDO1.OBJ": {
+    "sha256": "beac2126db3eda6d807dd230d5bea6c018c10dfa7cefd8365592137fa1962dd5",
+    "size": 4831
+  },
+  "CMD/RESTORE/RTFILE.OBJ": {
+    "sha256": "8f0dc2644c3744630588444a1e703075b275fe3b219254be1ddee65c480d2783",
+    "size": 6924
+  },
+  "CMD/RESTORE/RTFILE1.OBJ": {
+    "sha256": "c3e2e5603f0c4d96c666c78d971ffbf62d9dd09f68946cc2b3e285609c4ce140",
+    "size": 3741
+  },
+  "CMD/RESTORE/RTNEW.OBJ": {
+    "sha256": "664456623785d2e84ac1a8b5c93c2cf49bbc5599cd60f81c5f9d6e77824d8842",
+    "size": 2867
+  },
+  "CMD/RESTORE/RTNEW1.OBJ": {
+    "sha256": "98f2d8dd2e00774a5b90e5d87acd0eccf66f4956372747eeb0c3ab212bee7107",
+    "size": 5830
+  },
+  "CMD/RESTORE/RTOLD.OBJ": {
+    "sha256": "780f71d3471f003b0dbd961057d6470ecdfabd75a75b043012f7049d499b954c",
+    "size": 3116
+  },
+  "CMD/RESTORE/RTOLD1.OBJ": {
+    "sha256": "df007ff940a50bb5de954b280c002ab6d82d0f8c76e934c1b1b6bd90f20c84e9",
+    "size": 7366
+  },
+  "CMD/RESTORE/RTT1.OBJ": {
+    "sha256": "0032fd640f1ce8beee349432576e4f928cbc87a1c6ac17d174add609c2d2dee6",
+    "size": 627
+  },
+  "CMD/RESTORE/RTT3.OBJ": {
+    "sha256": "7ae2f66305da747680a0666a83c8a272c8461186947957ffc901a4b43f1093ca",
+    "size": 4808
+  },
+  "CMD/SHARE/GSHARE.OBJ": {
+    "sha256": "86b2fd2b54fa4e65a2b94550198dc35c7c17c43c88842bf16ba7f83c74d47dda",
+    "size": 2217
+  },
+  "CMD/SUBST/SUBST.OBJ": {
+    "sha256": "3390cb081d81eb8ad2828ac0cafa26a0919f00b8e449ba999552d01163ad0822",
+    "size": 8994
+  },
+  "CMD/SYS/SYS1.OBJ": {
+    "sha256": "36623ce67330062b601778579c83f1995949cd2ed8762c09364477af1d7a426e",
+    "size": 6889
+  },
+  "CMD/TREE/TREE.OBJ": {
+    "sha256": "01d994a3902a8a17daf463a08f32f9b8660fe719d252f24a35e8cdbee6ea4548",
+    "size": 3851
+  },
+  "CMD/TREE/TREESYSP.OBJ": {
+    "sha256": "1f787128fb49b49102ab11fdd6f67f27307c2a853c508c8e499d1f36343d50ae",
+    "size": 2438
+  },
+  "DEV/ANSI/ANSI.OBJ": {
+    "sha256": "1325491c24bf03ae303ce74728748b836a2c2fdea1ba2eeaf62ec77ea0031851",
+    "size": 4764
+  },
+  "DEV/ANSI/ANSI.SYS": {
+    "sha256": "c6d23b1ecaa670f6de83c1e003bec50967962e0fcca2e96737bba38057e27581",
+    "size": 9105
+  },
+  "DEV/ANSI/ANSIINIT.OBJ": {
+    "sha256": "542a788139be7dac775ab118cba0eaeb436b22453dda9ab6b9eec90f1953e80b",
+    "size": 3430
+  },
+  "DEV/ANSI/IOCTL.OBJ": {
+    "sha256": "3d8c681283eccfabda2243038ed4c62fca1d1ff2e79026916c37b82086b44d52",
+    "size": 2795
+  },
+  "DEV/ANSI/PARSER.OBJ": {
+    "sha256": "71a9cb7b01ff28d0ec018991ae132648f673f7e29cc007743f8fb6317bf39968",
+    "size": 5990
+  },
+  "DEV/KEYBOARD/KDFBE.OBJ": {
+    "sha256": "0dd2b3cb26ffa3e94d7247934f4b6dd790dbf1c5019613347400d52005c07911",
+    "size": 1808
+  },
+  "DEV/KEYBOARD/KDFCF.OBJ": {
+    "sha256": "a812f1ca201ff29b316ccd72849d81b0b18bed839b9322e9e17f4e3fc5738b8f",
+    "size": 1624
+  },
+  "DEV/KEYBOARD/KDFDK.OBJ": {
+    "sha256": "8cfd8c3d178b96b1fd1676255a3f510925eb8144554fcef65e46a48465c08933",
+    "size": 1604
+  },
+  "DEV/KEYBOARD/KDFEOF.OBJ": {
+    "sha256": "bdcc1e9ad07a6b0f353f78a7a96c86c47e140b942933128d646fbc304b7a9765",
+    "size": 150
+  },
+  "DEV/KEYBOARD/KDFFR120.OBJ": {
+    "sha256": "ed2b48349e9946b6fa4f774ad35866f3a17b9617b47f1cd138940700981971f5",
+    "size": 2207
+  },
+  "DEV/KEYBOARD/KDFFR189.OBJ": {
+    "sha256": "f8c7bee0330a619cfee6e8da4ad95923cbef67a79bece5ef9fd68c023dcf86bc",
+    "size": 1364
+  },
+  "DEV/KEYBOARD/KDFGE.OBJ": {
+    "sha256": "b9c5f75c917db961e580e4ec0790afaf1c756f27dc36048656ae1a885e943c6c",
+    "size": 1286
+  },
+  "DEV/KEYBOARD/KDFIT141.OBJ": {
+    "sha256": "f02aaa37b114dc792888d6145e4604d41619544a00621d514609869aa6c6483c",
+    "size": 816
+  },
+  "DEV/KEYBOARD/KDFIT142.OBJ": {
+    "sha256": "3a12a131cb73bac30a1955701a8d7d63da2def55a74223172b7cee6d69721e88",
+    "size": 860
+  },
+  "DEV/KEYBOARD/KDFLA.OBJ": {
+    "sha256": "95537311efb452e9a709dd80bc40840254a702c30d10f13065d30eec95689292",
+    "size": 1220
+  },
+  "DEV/KEYBOARD/KDFNL.OBJ": {
+    "sha256": "0daa4d5683491c7c3333243de1b961d232447f15b7d8fac64783615ae2ddf123",
+    "size": 1327
+  },
+  "DEV/KEYBOARD/KDFNO.OBJ": {
+    "sha256": "d5184c501972cbeb833e619d6ee06bda7b2ab1331f7ea490aa9b460357d74663",
+    "size": 1591
+  },
+  "DEV/KEYBOARD/KDFNOW.OBJ": {
+    "sha256": "84032d97084e2395de355364fd26485a8526e788029f58038fa68b1392e62fad",
+    "size": 2062
+  },
+  "DEV/KEYBOARD/KDFPO.OBJ": {
+    "sha256": "bebedf7de5cea49c05fc63c30a87308bc80a1db87bb836e327cdfb55899757bd",
+    "size": 1520
+  },
+  "DEV/KEYBOARD/KDFSF.OBJ": {
+    "sha256": "22e5e8c3ac88624bd5ef15a480a47060c55df2270ba1993584d8a976d18f219b",
+    "size": 1567
+  },
+  "DEV/KEYBOARD/KDFSG.OBJ": {
+    "sha256": "38f4a8bd193796947842d4e6ff8c635235ddf88f0a2b2b3b453f260004d0a1d1",
+    "size": 1567
+  },
+  "DEV/KEYBOARD/KDFSP.OBJ": {
+    "sha256": "b95a00629a73bfe274a978574fa31c4ae78fa84889eb006f3de1dac1b26db241",
+    "size": 1167
+  },
+  "DEV/KEYBOARD/KDFSV.OBJ": {
+    "sha256": "5db257a5ec0f52defb628d25c96a4a72ab9ffac28787d0c48a29520522089ab6",
+    "size": 1604
+  },
+  "DEV/KEYBOARD/KDFUK166.OBJ": {
+    "sha256": "a249709c857fa4e6128cdcea5653d976ff3ef34ec1940438280c6e927928b492",
+    "size": 641
+  },
+  "DEV/KEYBOARD/KDFUK168.OBJ": {
+    "sha256": "1e640dce6cfd96f31c2b1f63fc664fea61abf5bf48f7fec4b952a0d8ef8d919d",
+    "size": 800
+  },
+  "DEV/KEYBOARD/KEYBOARD.SYS": {
+    "sha256": "0a3e9ce32f0426c43e163b5dd9832bf5f78626426ab6143c3a3c96c673a91a89",
+    "size": 23328
+  },
+  "DEV/PRINTER/5202/5202.EXE": {
+    "sha256": "cccfb42e6a17661f0eb6d618df98e16d4d0afe0417b654e810d48fe1cb71f024",
+    "size": 882
+  },
+  "DEV/PRINTER/5202/5202.OBJ": {
+    "sha256": "ee9ac59d7cfe90fc7b4cb729939f54510423c865de59b711f960609ddb8837a1",
+    "size": 632
+  },
+  "DEV/PRINTER/CPSFONT3.OBJ": {
+    "sha256": "ee3f4249af9c05b5c4b99e90d2cd9dfc9887d8e84896dfd0b6ca38a089bd3c6a",
+    "size": 8686
+  },
+  "DEV/PRINTER/CPSPI07.OBJ": {
+    "sha256": "d4ec7259e1f9e4dda78f7d80fc5b6280d26b04d5beed652bc77dfe5379424e74",
+    "size": 5892
+  },
+  "DEV/PRINTER/CPSPM10.OBJ": {
+    "sha256": "e450dc97ec4b3a1460c930423484766b9491afe77bc800bfc412eb954bee50f4",
+    "size": 10917
+  },
+  "DEV/PRINTER/PARSER.OBJ": {
+    "sha256": "87b7fccf57b1652886d889b14269157479b3836eefc0b4d7322813cc1696599f",
+    "size": 5728
+  },
+  "DEV/PRINTER/PRINTER.SYS": {
+    "sha256": "bce4bb477ca83834300dffeb78e240dc6951e4482c052308574a4708eb15afbe",
+    "size": 18914
+  },
+  "DEV/PRINTER/PRTINT2F.OBJ": {
+    "sha256": "7c5a3d843283236e5948440dd3ae18e1337af74dd58688257860101d7516d0a2",
+    "size": 1033
+  },
+  "DEV/XMAEM/INDEDMA.OBJ": {
+    "sha256": "5b911e3c09f36b2447945cc873bd8b2bb4164c6127dd113b0c5148c1d0e054a8",
+    "size": 1483
+  },
+  "DEV/XMAEM/INDEEMU.OBJ": {
+    "sha256": "9b7938597f63f395ef0a6f41aa2f60377282bf3398981e7d0fdde1d1f8fab14f",
+    "size": 3498
+  },
+  "DEV/XMAEM/INDEEXC.OBJ": {
+    "sha256": "94a6b1d21e2689774cecbdbc0744b5538233b09081b731904000996f8a5a28b9",
+    "size": 1177
+  },
+  "DEV/XMAEM/INDEGDT.OBJ": {
+    "sha256": "d45389c615dca29ca1e9dd2a3b90e23a585722b686621aa46795c21c21d54390",
+    "size": 1330
+  },
+  "DEV/XMAEM/INDEI15.OBJ": {
+    "sha256": "13c787b5747b3409ed4304cd263fa1edc620d58feb94943de3f226348308f291",
+    "size": 989
+  },
+  "DEV/XMAEM/INDEIDT.OBJ": {
+    "sha256": "1e2a086f760df9fdcf35bc271703d83f0913d034b8349cedcdad0d92f8035a0d",
+    "size": 5797
+  },
+  "DEV/XMAEM/INDEINI.OBJ": {
+    "sha256": "5d517d89a0ef872d1f98ed5926355ce9f01ab521353d6bc7768a0a63e1a383f3",
+    "size": 2278
+  },
+  "DEV/XMAEM/INDEMAUS.OBJ": {
+    "sha256": "c118ea4f9f40405eb3c3f3c3cfb2eceab3d2a13a2569e3bed0cd0deac56bd14b",
+    "size": 761
+  },
+  "DEV/XMAEM/INDEMSG.OBJ": {
+    "sha256": "face0e6155ff59aa40c11f4d1bb1f110c03dcadbaa7764eb3e8a1f8aea6e5bc8",
+    "size": 614
+  },
+  "DEV/XMAEM/INDEPAT.OBJ": {
+    "sha256": "f32f7f1b645822c937d759bd40ee2babdccf45f4176a56e091b07b36b19bb27e",
+    "size": 82
+  },
+  "DEV/XMAEM/INDEXMA.OBJ": {
+    "sha256": "a3ed9ffbaab3e71c56588306b66ff786d4f3a927d1211f90de0ae5b2045b136f",
+    "size": 1199
+  },
+  "DEV/XMAEM/INDEXMAE.SYS": {
+    "sha256": "7531f53c4a8fe3793f9abbf17d908aa7b9b24162626bc1facc70e5dcc3b5a454",
+    "size": 1189
+  },
+  "DEV/XMAEM/XMAEM.SYS": {
+    "sha256": "cc8b8739e3f087c3b8d1e0bd207a0d1cc3aa03e683bce1c145cee731b1102a09",
+    "size": 19264
+  },
+  "DOS/ABORT.OBJ": {
+    "sha256": "308c1b881be81225b176b7bbbb9439cc8cb249f4684bf0f18ca130aea577c32d",
+    "size": 459
+  },
+  "DOS/ALLOC.OBJ": {
+    "sha256": "b9341ffd3e566331eb0002009fff94de9027bb8321c86ca353678a0f4f687212",
+    "size": 1195
+  },
+  "DOS/BUF.OBJ": {
+    "sha256": "8aed04304d4852e5ab053ec2a98b49245b65743d93557f2a975d1377c95316da",
+    "size": 2783
+  },
+  "DOS/CLOSE.OBJ": {
+    "sha256": "e5cb0b8079815d0928eacb863041fd53b65de78bb72f33aba74d5585f88f317d",
+    "size": 1462
+  },
+  "DOS/CPMIO.OBJ": {
+    "sha256": "6b2b4d68679ca9af4fea8364b23d25500c9c42c9cc388ce70b94041f5e170ea7",
+    "size": 2254
+  },
+  "DOS/CPMIO2.OBJ": {
+    "sha256": "fda120b0cb2389999c9538440ec2206441c40630549338736ef7003bbe5dc228",
+    "size": 1105
+  },
+  "DOS/CREATE.OBJ": {
+    "sha256": "ce04388109e9ad92690a1be7fe19a52cdf0cb0823d9cebcbefb934ab74c805be",
+    "size": 1140
+  },
+  "DOS/CRIT.OBJ": {
+    "sha256": "71a5a37906a6cc920461f67b40ada57a28534a35796714755aad3a5afe024c9f",
+    "size": 336
+  },
+  "DOS/DELETE.OBJ": {
+    "sha256": "6a610b2007232e9bfc23c0e85d0723fb5f0fbb53cbdc64c5d82c0635cfa5eeb6",
+    "size": 2165
+  },
+  "DOS/DEV.OBJ": {
+    "sha256": "d452dfdb88d6efff5b920314f7b32e3efd34de44996b8bff94faa2b487cb5ebf",
+    "size": 2886
+  },
+  "DOS/DINFO.OBJ": {
+    "sha256": "37dd7b007c70454cd541510d70c1935f8dbea51be8475a02102adb9eccecc14f",
+    "size": 478
+  },
+  "DOS/DIR.OBJ": {
+    "sha256": "7e86eea0e1b4f2ef7cc897de84c1c56f8618f1bf4029d698cb17f4464bfc102c",
+    "size": 1369
+  },
+  "DOS/DIR2.OBJ": {
+    "sha256": "34ccbde19ca82a0d80b08447dce2b85be83684371f843ff71c5082935b9674d7",
+    "size": 3313
+  },
+  "DOS/DIRCALL.OBJ": {
+    "sha256": "6cfd8028e0286c1dfde69ec2a84c188905a79093dead38c7f9ce0ae58605372d",
+    "size": 1752
+  },
+  "DOS/DISK.OBJ": {
+    "sha256": "083c0eeab061c5503ab84b9b7c7e84a8b12eb03adfa689e92dcbf96c6e640dd5",
+    "size": 3625
+  },
+  "DOS/DISK2.OBJ": {
+    "sha256": "96307b716380b4a6fab8010b36441be04518d0fd619d8fe2009c3297abcf84bc",
+    "size": 2832
+  },
+  "DOS/DISK3.OBJ": {
+    "sha256": "9c0a3a521d9cbbd8121f6b9833b96c5976ddd99e82eee0de17164a675f9ebaa8",
+    "size": 3045
+  },
+  "DOS/DUP.OBJ": {
+    "sha256": "b77448c5d731499ad7386a0890241f9ea2f8dc0abc471673c33b2da4a061fc0d",
+    "size": 303
+  },
+  "DOS/EXTATTR.OBJ": {
+    "sha256": "b09cb7d419c83b06730e7f7f9173ac289345cf81bb9a837b3126c907df436100",
+    "size": 411
+  },
+  "DOS/FAT.OBJ": {
+    "sha256": "1d770bf0d3f9b74577208f837a8b2ea4ce02ebd0c89aa14383670514cbe36fae",
+    "size": 2414
+  },
+  "DOS/FCB.OBJ": {
+    "sha256": "2e07e5157f30fd92aa79ed132cef2cebeb3ba5f7381a707f5a383f526c828984",
+    "size": 1093
+  },
+  "DOS/FCBIO.OBJ": {
+    "sha256": "0f9af3d6c9b84fcf95c04f2035c76e9676abc122210d1bb82760c81f2342d607",
+    "size": 2674
+  },
+  "DOS/FCBIO2.OBJ": {
+    "sha256": "04d00118ce472de62ff169b365e77d9458ac5433f713639611be84bc88cc6f1f",
+    "size": 2267
+  },
+  "DOS/FILE.OBJ": {
+    "sha256": "daf903cb3ad2ab62f8e51694dbf08ff8be407c2fd5fcb30727639896b8384868",
+    "size": 2912
+  },
+  "DOS/FINFO.OBJ": {
+    "sha256": "15f21892014308ba1908e0c44e02a1f7348ac9b57ea4d57761024d3f95f952eb",
+    "size": 902
+  },
+  "DOS/GETSET.OBJ": {
+    "sha256": "77262475fa2fe82f9fecd7a7a6b49f8df287625f803414c3a3ade55ecafcce19",
+    "size": 2184
+  },
+  "DOS/HANDLE.OBJ": {
+    "sha256": "02cc2323cc42c73638dabb0ef87a801db3aafa3ef9d34e478f6b9dea1e7ce84c",
+    "size": 2275
+  },
+  "DOS/IFS.OBJ": {
+    "sha256": "c1045695a439be72910b3819a78ee69026cee04cb29dfdca105ead2555da5220",
+    "size": 1164
+  },
+  "DOS/IOCTL.OBJ": {
+    "sha256": "b7d9188127cb90fb8fd6800a01ea2afb29b4f0aace2225dcbcf30a760619f108",
+    "size": 2104
+  },
+  "DOS/ISEARCH.OBJ": {
+    "sha256": "80daae6fabe2f665876415bae5a36760de289814e1d4308835e99ba56b621fd2",
+    "size": 1305
+  },
+  "DOS/LOCK.OBJ": {
+    "sha256": "bc2638a8f76bd34a151b031af7c531e0a67b4fd3b16dca9b7af8fa6e883ecd92",
+    "size": 724
+  },
+  "DOS/MACRO.OBJ": {
+    "sha256": "b2c452866e21366e3cdc329f2b051a44821688d6cfae8bc657266bb2166fb47f",
+    "size": 1072
+  },
+  "DOS/MACRO2.OBJ": {
+    "sha256": "806139d1bb1343500236c52d376a12f09577e922121ba46cc8495bc91a513f73",
+    "size": 2694
+  },
+  "DOS/MISC.OBJ": {
+    "sha256": "6aef297171e7e2ec7de0a554b5730d0aabe97528fc4d048cc2df57c7da84636c",
+    "size": 1721
+  },
+  "DOS/MISC2.OBJ": {
+    "sha256": "8a6627fc5e04284caa3408f5ef92569643bb2abe93ec348af8499ce8211bf6b8",
+    "size": 1285
+  },
+  "DOS/MKNODE.OBJ": {
+    "sha256": "84a41903efdea8bbc21e77e2a4a9ce77a1952365389ef488815d07e61d226df4",
+    "size": 2646
+  },
+  "DOS/MSCODE.OBJ": {
+    "sha256": "0e8f21557a566fed539178d9e787308ee149abd24134d22e3268b5ff6c7e6996",
+    "size": 2209
+  },
+  "DOS/MSCTRLC.OBJ": {
+    "sha256": "688d6381898091b6941430549d19a8099eb305c03bc68589b3901c64d4081e04",
+    "size": 3097
+  },
+  "DOS/MSDISP.OBJ": {
+    "sha256": "5b83e68848f0d6481dab4b52a6ac959902a5ecf67bc0a05e8c692ac1b70f0891",
+    "size": 1919
+  },
+  "DOS/MSDOS.SYS": {
+    "sha256": "573626782a3c45f0d9e5f00af1bd0f52a7de44bea96d2a2d3d660e9ae06158d5",
+    "size": 37376
+  },
+  "DOS/OPEN.OBJ": {
+    "sha256": "8b06eafb095c549eb5afafeb990399f87e980d53205bdffdd5fa0c8dce900be9",
+    "size": 1417
+  },
+  "DOS/PARSE.OBJ": {
+    "sha256": "d52967dd927eb8e9bf1d66621e6f778f53464608b9407d209ebd4299079ea414",
+    "size": 282
+  },
+  "DOS/PATH.OBJ": {
+    "sha256": "ee4f83b251632ff3a971c4950c768674292e6c56026b8e1b87b7e2640711d3be",
+    "size": 1282
+  },
+  "DOS/PROC.OBJ": {
+    "sha256": "0c4fad900205bed2ac24fcffafda23f7c7736cbf218edff13c2e9cfb23a1cf70",
+    "size": 3136
+  },
+  "DOS/RENAME.OBJ": {
+    "sha256": "08feb9c6ce07f46aebe0d5adaead469893da0097f99ace0cbd8f3f86d34d1731",
+    "size": 1870
+  },
+  "DOS/ROM.OBJ": {
+    "sha256": "69be201e10f37902a5c7260aaf95636233ea6e17244310433226e3ffde38bd5f",
+    "size": 2642
+  },
+  "DOS/SEARCH.OBJ": {
+    "sha256": "d6fbeb6a825680c369e4beb48f1f944949802edeed1490fc5ebbe8fddeff0e35",
+    "size": 1440
+  },
+  "DOS/SHARE.OBJ": {
+    "sha256": "8d26abd21f5b836772642b54826aab2891943308a601fe46dd8fd595a34a3862",
+    "size": 492
+  },
+  "DOS/SRVCALL.OBJ": {
+    "sha256": "85e812981c430bdb7b0b290296af610101d9ca4438eaa857136ba188689c4da9",
+    "size": 1402
+  },
+  "DOS/TIME.OBJ": {
+    "sha256": "0dfddef1ea3c335cfc2e87b4085df9ac8b839f326d6461ef6256f97494c8893b",
+    "size": 1289
+  },
+  "DOS/UTIL.OBJ": {
+    "sha256": "218c308f2e123efab876e27ba3f7f7c55f6a3690b56c80eaff78e5aa98b76581",
+    "size": 533
+  },
+  "INC/CDS.OBJ": {
+    "sha256": "802e518631f9b5f96fe5a3034ff265c5e707b4af2d1dfcda9063c157d5cb0700",
+    "size": 1551
+  },
+  "INC/COMSUBS.LIB": {
+    "sha256": "624b30654aa4cc52047f51584b81df15795bc5156bdefb3ebd022d6012345e7e",
+    "size": 5141
+  },
+  "INC/CONST2.OBJ": {
+    "sha256": "2500c5b8323db5247c1e0c27632dbfaf4ac2a26a3150d144e5c3780c19db6bd5",
+    "size": 1561
+  },
+  "INC/DPB.OBJ": {
+    "sha256": "e74879edbbaab205af0722810666999e033cb5c1c10fa9d66f901c58f38b0ede",
+    "size": 496
+  },
+  "INC/ERRTST.OBJ": {
+    "sha256": "1b2878bc476b6345a8b9c2a34d30cd2141fd79610c999ba1613fb701dc018511",
+    "size": 3547
+  },
+  "INC/KSTRING.OBJ": {
+    "sha256": "1ac54781d455a61a48fc64e63385d8119ed53f0735dea0e84bcbbe5af1ca0518",
+    "size": 1122
+  },
+  "INC/MSDATA.OBJ": {
+    "sha256": "606da0d134591f6627e22edb3859f12bdac01f829d6b1e05c46c358987a1b90e",
+    "size": 4105
+  },
+  "INC/MSDOSME.OBJ": {
+    "sha256": "162a86ed76756daf90c29f0a4df38b20f806e3fd14682be40c42d64df4f6c828",
+    "size": 1816
+  },
+  "INC/MSTABLE.OBJ": {
+    "sha256": "5c7f23d0f1ec516237c0e927302f6bd5506856399dcc1f121a24d28c40f2f572",
+    "size": 7195
+  },
+  "INC/NIBDOS.OBJ": {
+    "sha256": "93285c9c077b78d2857e3cda5c2952f06d5160b351c9a3afe1e1a08533bf7a6f",
+    "size": 1390
+  },
+  "INC/PRINTF.OBJ": {
+    "sha256": "cd1f81a5dc5de52d421104d4d4e9e528e6cd7137067ac41794f042fce4a92a53",
+    "size": 1159
+  },
+  "INC/STRING.OBJ": {
+    "sha256": "8dffd15913637ecd650a9c9e755b2bf1dd12efa64822e51912d4a6e6db1638ef",
+    "size": 636
+  },
+  "INC/SYSVAR.OBJ": {
+    "sha256": "0ba57e2105745ecfa012b44e490e2e28dd006b242236bb23202f0e160a07c9df",
+    "size": 670
+  },
+  "LIB/LIB.EXE": {
+    "sha256": "7800edec19b10a051050aed5948e16ee96f0cb454ea18db0f32a1ab2757ed9ba",
+    "size": 46071
+  },
+  "LIB/MEM.LIB": {
+    "sha256": "75138975ede865d965d0d5a0d804ae33f2fafd9db6b380161d9310abd7cc3ed8",
+    "size": 11307
+  },
+  "MAPPER/ALLOCSEG.OBJ": {
+    "sha256": "a7a7734fdd777f50e9aaac77df2bbf97621bd2b7baec195c8d799d0d08c0aa8f",
+    "size": 157
+  },
+  "MAPPER/BEEP.OBJ": {
+    "sha256": "63d66492d12dbe08c1104229f75cc166281abc1b607fcd367dc5a9994a4b7db3",
+    "size": 168
+  },
+  "MAPPER/CASEMAP.OBJ": {
+    "sha256": "8bf6b983ed7eabce38663a1657791600b50b46eb867c2ee5e8e64d7a29702078",
+    "size": 135
+  },
+  "MAPPER/CHARIN.OBJ": {
+    "sha256": "91bf72250cfa7e5ebf7909e5d6fd9df0d427708dc514810e5674f26d359e5e3f",
+    "size": 236
+  },
+  "MAPPER/CHDIR.OBJ": {
+    "sha256": "97f732525a4c8d6d28142672e6c6606576fdc829897928855f3fd1dba4528e93",
+    "size": 121
+  },
+  "MAPPER/CLOSE.OBJ": {
+    "sha256": "90ba762082f83284f89f919856ec02e443dba8f5034c79f9a78af8331747e580",
+    "size": 122
+  },
+  "MAPPER/CWAIT.OBJ": {
+    "sha256": "2b09f4a3d0896bacb20e545f67ccef30047e5670a4ea0ce03dc8370f97561381",
+    "size": 220
+  },
+  "MAPPER/DBCS.OBJ": {
+    "sha256": "7888d0877d1afab4bdcf1d0ee84e338114553f6e2b8d48f5067b3df345ec95a7",
+    "size": 131
+  },
+  "MAPPER/DELETE.OBJ": {
+    "sha256": "4c3538086a6c651c0c785905f127290a4b8c941964c18f94459ece9c1bd7c70e",
+    "size": 117
+  },
+  "MAPPER/DEVCONFG.OBJ": {
+    "sha256": "36d9ed74415989726f045fe7326b7a8f5ae0c5f9e294c32c0cbe9b5ea790efe1",
+    "size": 232
+  },
+  "MAPPER/ERROR.OBJ": {
+    "sha256": "1cc27b0ea25c6022628f427fce2102676fbf72aa647c8bf029e79f9f76261e52",
+    "size": 327
+  },
+  "MAPPER/EXECPGM.OBJ": {
+    "sha256": "f2647e1a8c93c057d878ffbef3b90848587019bf5a4e014d3525d2ea770dfa9a",
+    "size": 345
+  },
+  "MAPPER/EXIT.OBJ": {
+    "sha256": "4e6fc5c41adf214d13dba705bfe6252787e7ce80a5368297b13fd580cc1db232",
+    "size": 119
+  },
+  "MAPPER/FLUSHBUF.OBJ": {
+    "sha256": "1c25c62a9ba99a452a4d855e3849f592cdc1499c3371a0fbb5040ad178ebf08b",
+    "size": 177
+  },
+  "MAPPER/FREESEG.OBJ": {
+    "sha256": "137fe06dbdb426d54e6381c5a3c956876e6a7b11a606ad5d9acee992d94daf98",
+    "size": 125
+  },
+  "MAPPER/F_CLOSE.OBJ": {
+    "sha256": "d84c4af2036ca7ff6b74cdbd147f06f92eff001bc1a73509b58cf9e7316b3f32",
+    "size": 212
+  },
+  "MAPPER/F_FIRST.OBJ": {
+    "sha256": "9beb0e67c5c844dcc55eb0c99f37ca4f82594b0b5824128f41b8ebd2c47f5a1b",
+    "size": 1412
+  },
+  "MAPPER/F_NEXT.OBJ": {
+    "sha256": "13d99693b9ad5cf51d66956228da3af8bd28abbcb284c056283eca26e08ec3b5",
+    "size": 722
+  },
+  "MAPPER/GETCNTRY.OBJ": {
+    "sha256": "21cf0e90378f13ecec71a34c8ffef133c2b516ec59ffc1cb0fce65ccf7b49982",
+    "size": 238
+  },
+  "MAPPER/GETMSG.OBJ": {
+    "sha256": "ffd707c53c5f2c2445b23b403508197d3d2a783b3a6e6c8f3a7a53e5439a2b54",
+    "size": 2498
+  },
+  "MAPPER/GETVER.OBJ": {
+    "sha256": "ba2d7100ed59be2abcfb72b9ffc458f8a278bbffd5e4d6d3bf5a92034bcbcccd",
+    "size": 124
+  },
+  "MAPPER/GET_TOD.OBJ": {
+    "sha256": "9f76df986d5228a6685192cc575af0942f95d22a02fc54069a388b263cc79fd9",
+    "size": 153
+  },
+  "MAPPER/GMACHMOD.OBJ": {
+    "sha256": "2864d8e5c7c4d80d24baa94eb6dcd3b05c69c73ef58d0de5818cbd6d217070d7",
+    "size": 118
+  },
+  "MAPPER/IOCTL.OBJ": {
+    "sha256": "7a2926ded9eeef9891b09e3e1316f647f276c1a0bc558d9894a914c11b92fa46",
+    "size": 153
+  },
+  "MAPPER/KBDGSTAT.OBJ": {
+    "sha256": "712bf517b9f96df57e05966babb4a744867b217e7748e92c928dad8051ddf81b",
+    "size": 278
+  },
+  "MAPPER/KBDSSTAT.OBJ": {
+    "sha256": "f12a3ece9b8aa977822d342f9667262e7f0f7e6b949945335e4991629c2112aa",
+    "size": 367
+  },
+  "MAPPER/LSEEK.OBJ": {
+    "sha256": "12efd7340e2572da5185a8703b9bef038650c218eb712a4992174d35596158bb",
+    "size": 138
+  },
+  "MAPPER/MAPPER.LIB": {
+    "sha256": "52aba345a7dde2a7e7f1b25607fe18e387e754abffd165e18b41d7803674ba06",
+    "size": 18777
+  },
+  "MAPPER/MKDIR.OBJ": {
+    "sha256": "906b51112f66581e887771388b3914ad2a7a7181f30c7baed80261e5cb04253c",
+    "size": 115
+  },
+  "MAPPER/OPEN.OBJ": {
+    "sha256": "97f65ef85fe374ff0abd9167feabeea9c3358b6886bfc55c839c72a3f8bd208b",
+    "size": 480
+  },
+  "MAPPER/PUTMSG.OBJ": {
+    "sha256": "46a06de75653ce81252fa62eb78a965040fa7e35ce3b7de94df415d17695f971",
+    "size": 127
+  },
+  "MAPPER/QCURDIR.OBJ": {
+    "sha256": "dcf6d6933b3d9c14d5d600497f3e4efd4d589550ade0f5ba2dd3ab30647d0ad6",
+    "size": 217
+  },
+  "MAPPER/QCURDSK.OBJ": {
+    "sha256": "4fe87d62470b43274aaa8698fb8652d6d76540e6a35cfb0d1d31e010f9a186d1",
+    "size": 472
+  },
+  "MAPPER/QFILEINF.OBJ": {
+    "sha256": "69fdc4bafc0cfe3c47e9250e9a6ea77ee7dad7619b456102110b0d663f22bcbd",
+    "size": 306
+  },
+  "MAPPER/QFILEMOD.OBJ": {
+    "sha256": "adafcf7d43e88eae5f1d9d0187aaa7cb4d0094585bbd6673d9a275bc397d3cfc",
+    "size": 133
+  },
+  "MAPPER/QFSINFO.OBJ": {
+    "sha256": "8575ffaf816e07ec93429d008a99ae520cf4d69072fd0c4d248ff57b97bf66b1",
+    "size": 334
+  },
+  "MAPPER/QHANDTYP.OBJ": {
+    "sha256": "b8ec45f326841c053e573dd0df107c2dffb0b9e8e6d7f7fc3a1a8bb9768e0d6b",
+    "size": 141
+  },
+  "MAPPER/QVERIFY.OBJ": {
+    "sha256": "f0b1000b3fc224d04af03f745b80a10ea19d68f36ece55bf61e2db0a72e247f7",
+    "size": 120
+  },
+  "MAPPER/READ.OBJ": {
+    "sha256": "4edb8b840c0d8257257be18ab67c85f32bdacab47c8c338454fb15a61633e930",
+    "size": 124
+  },
+  "MAPPER/REALLSEG.OBJ": {
+    "sha256": "81dfa431a4b58e4d3f964f669a514580db703fc98495ac36b28dece35cef055c",
+    "size": 145
+  },
+  "MAPPER/RMDIR.OBJ": {
+    "sha256": "f61d964fa0490b7a4624894de303146b0bf28f1cf4ca8b0103110ed4224cec69",
+    "size": 115
+  },
+  "MAPPER/SCNTRY.OBJ": {
+    "sha256": "598aa443d02d2296bcda4b09f00680149b7bf61fe4ff1b5323b45753686a8d07",
+    "size": 134
+  },
+  "MAPPER/SCROLLUP.OBJ": {
+    "sha256": "8688e4a2d0bc99daca50cba9c27ab44f6a636c7cf68103bef676c0ea4e58eccc",
+    "size": 192
+  },
+  "MAPPER/SCURPOS.OBJ": {
+    "sha256": "c5b407ff46c49aa3c2f13e6af902dd6860b96e05110b818126f92009b8e89378",
+    "size": 160
+  },
+  "MAPPER/SEL_DISK.OBJ": {
+    "sha256": "937cdd1ab8206bfe1b0c612b5611cf18ec41cce66d0d6659f08af297bd854557",
+    "size": 122
+  },
+  "MAPPER/SETFSINF.OBJ": {
+    "sha256": "cc82658fc5ecd1a928f7a80047fea2469207e717a886d13621bee386b4a9cbd1",
+    "size": 210
+  },
+  "MAPPER/SETINT24.OBJ": {
+    "sha256": "e663c0333bd2c1b2762dcec3eba1802c177dac0729d6adf6d3c75139a24c10bc",
+    "size": 222
+  },
+  "MAPPER/SET_TOD.OBJ": {
+    "sha256": "847195d7f22aba49a22cfd33b67aa9f60dded7a19cd0c6ea56f55e1055352ef4",
+    "size": 162
+  },
+  "MAPPER/SFILEINF.OBJ": {
+    "sha256": "111d40dae38a9597da42cef84c93b4eed1c6bdfff841eafcfb3ca78dad3479c5",
+    "size": 193
+  },
+  "MAPPER/SFILEMOD.OBJ": {
+    "sha256": "bbe63736c6735b4a966c4b989a0a574d51d6fcaf5f59dd729cc175d2c602517c",
+    "size": 130
+  },
+  "MAPPER/SIGHAND.OBJ": {
+    "sha256": "68c77df418382d0470ac2d8f5ded839800392c642f68aa88a3f4b4f6e20a9d1d",
+    "size": 418
+  },
+  "MAPPER/SVERIFY.OBJ": {
+    "sha256": "b3ba6376f13262dfa3f223be802b519dbd4318ae3a70004a4c59f454fec2d4a8",
+    "size": 128
+  },
+  "MAPPER/WCHSTRA.OBJ": {
+    "sha256": "72a291d8c8bca0833800df27d1a36de45aecfcf8da98661eef7d5362b2e20893",
+    "size": 251
+  },
+  "MAPPER/WRITE.OBJ": {
+    "sha256": "16281acdb73a82f117d734a391dcc25c3d80b6bdbe7eb5f14d1c2a8e5b91616a",
+    "size": 126
+  },
+  "MEMM/EMM/EMM40.OBJ": {
+    "sha256": "95bbd16ab10ed79c083c6c1d87bdf03d5ae40097d767666a70f87c2bb328e1b3",
+    "size": 6410
+  },
+  "MEMM/EMM/EMMFUNCT.OBJ": {
+    "sha256": "02b04d1c96d08f5c0f33d4f92f109bdde0d51696ff352130376977882512b190",
+    "size": 4340
+  },
+  "SELECT/ASM2C.OBJ": {
+    "sha256": "60bd452b76916331f87e765c4af866f575e00f9876fe9e34ca727178eb1409be",
+    "size": 671
+  },
+  "SELECT/BRIDGE.OBJ": {
+    "sha256": "c614d2010cc19b5b5c1bb2d584b566247030ad37839faa6a6efcba73e179a80d",
+    "size": 100
+  },
+  "SELECT/CASERVIC.OBJ": {
+    "sha256": "99382c070a234ddc5321718ed85e1c1a69347b95e7f177c5a9df425e5d307ea0",
+    "size": 9533
+  },
+  "SELECT/CASSFAR.LIB": {
+    "sha256": "ba5e68a95bfa4d451fa7220544d84b6c23f8a4b311501246bc6b16d36ca3534b",
+    "size": 1039
+  },
+  "SELECT/CKDISP.OBJ": {
+    "sha256": "6b381ba76c5579b47dce0183916a9c372507c2193883c50ae9ae14bac32088aa",
+    "size": 560
+  },
+  "SELECT/GEN_COMS.OBJ": {
+    "sha256": "41f0f8d15620dae85c1fa573df7ab684b3d25e4fbb32759a633b232efecbd22b",
+    "size": 19044
+  },
+  "SELECT/GET_STAT.OBJ": {
+    "sha256": "8d99c8cf7b85b05a37c728c7b54fffd14a81190557032902f0151713e1321056",
+    "size": 27453
+  },
+  "SELECT/GLOBAL.OBJ": {
+    "sha256": "b4b4582baf66504c3f2546417b5de7561a531328db22a36c0dd1a54c489d4f24",
+    "size": 903
+  },
+  "SELECT/INITMEM.OBJ": {
+    "sha256": "943652144c9542802b578ccae0bb98cd66919b30ceb49e2ca81afdfe7bc8de2d",
+    "size": 1098
+  },
+  "SELECT/INPUT.OBJ": {
+    "sha256": "789050dcae77ee35569adf34c94545c81d2ba4459db4ddd6ffef26cee4dccf34",
+    "size": 4215
+  },
+  "SELECT/INT13.OBJ": {
+    "sha256": "b0c3baa79299c82d8c6d8c9c4aaa0b9d9e2e2d3352ff16ee3993d3b4a0dbbfad",
+    "size": 2513
+  },
+  "SELECT/INTVEC.OBJ": {
+    "sha256": "53ea1c9b1be437db47ea474e56e04ed89606df10d5d056992dee2ad8274726c9",
+    "size": 10583
+  },
+  "SELECT/MOD_COPY.OBJ": {
+    "sha256": "923183a1b11494b24e5dcdbb9e87c5f5089316f6efdfe813bfddbedf3db90d4f",
+    "size": 6011
+  },
+  "SELECT/MPARSE.OBJ": {
+    "sha256": "8924314fb69a010aa61c4a73bff964fbcd6ef004ff07dea53ad989bc42b46789",
+    "size": 2919
+  },
+  "SELECT/PRN_DEF.OBJ": {
+    "sha256": "cb23ca5e9a933c7614e3646677d3ebe6705d6dae13c64560cd545cc37ff25ec1",
+    "size": 4113
+  },
+  "SELECT/ROUTINE2.OBJ": {
+    "sha256": "ac4f52f5495d0e5409c544a1140e6c8f7911cdaaf8d512326ca2fc237f07421c",
+    "size": 10442
+  },
+  "SELECT/ROUTINES.OBJ": {
+    "sha256": "b930c7083045e355b64c40ca6de5030e814e16b36c0720b572c88153bdabee63",
+    "size": 11314
+  },
+  "SELECT/SCN_PARM.OBJ": {
+    "sha256": "313e62cb8fd6eda4b48861ac2742073e24fbe1e930b8fbe4d4c5d8cf47ac3f1a",
+    "size": 8194
+  },
+  "SELECT/SELECT0.OBJ": {
+    "sha256": "eb815b48a2ff8d0234cfa63909e61ac026792a9b6d80f89516634277f83ffd04",
+    "size": 14063
+  },
+  "SELECT/SELECT1.OBJ": {
+    "sha256": "35cd80b5b2279333a8937c07dfbb6cdb99a13f57180732d3dbf65744e0f56bfc",
+    "size": 13288
+  },
+  "SELECT/SELECT2.OBJ": {
+    "sha256": "2bb5ec0e713d5268f1c338bccbea08ddc2f34e16e5233d21bd5020cccc19150a",
+    "size": 13907
+  },
+  "SELECT/SELECT2A.OBJ": {
+    "sha256": "cbbb6d065d99b12e197bbb9624b2bfc36f1e7944ab651025ea8f399859001937",
+    "size": 12892
+  },
+  "SELECT/SELECT3.OBJ": {
+    "sha256": "edaf2512a31ca021b545c3e385064bd15b5025aec7377cec894c908a51eb3ca9",
+    "size": 11120
+  },
+  "SELECT/SELECT4.OBJ": {
+    "sha256": "8b13a46a85caf784d782fdb1848152ae77dc705a20cbdb7c3a1aa16546b05fff",
+    "size": 12474
+  },
+  "SELECT/SELECT5.OBJ": {
+    "sha256": "34fa4d7a2584aaf6dabf85b38be35dcb03fb451b9ebcfa8818c939c5c52f4a7b",
+    "size": 15543
+  },
+  "SELECT/SELECT5A.OBJ": {
+    "sha256": "ee83edd77808b7804f257f81183e09281934967a52170f767c785156ddd14bbb",
+    "size": 11923
+  },
+  "SELECT/SELECT6.OBJ": {
+    "sha256": "a443086709e507c06d45d567bb0b71321d4d6d598787c1bc27298aa55499ae3c",
+    "size": 15222
+  },
+  "SELECT/SELECT7.OBJ": {
+    "sha256": "5eb0151907c6a2797c1b0f54d1b0d8e65f4ebf3e42325d5c8428d7e09284b8a9",
+    "size": 13335
+  },
+  "SELECT/SELECT8.OBJ": {
+    "sha256": "a39dde8f30730e0d18d64e1081801050eaf75c3868d2f006431d9948f61a11a6",
+    "size": 14156
+  },
+  "SELECT/SELECT9.OBJ": {
+    "sha256": "f4f8b32afe176cb5a9b957d4648f3931924fa5e60dbfef5e17f278dcc3d63169",
+    "size": 14979
+  },
+  "SELECT/S_DISPLY.OBJ": {
+    "sha256": "f1f72d5f178acffc9cbc92613463fbc2ba55be75761ded8f8ebd6652e569cfaf",
+    "size": 321
+  },
+  "SELECT/VAR.OBJ": {
+    "sha256": "4a978627650842d9043863cf184a8bb22811c12bb2c4c1168fe9cfe13393e7c6",
+    "size": 16390
+  },
+  "TOOLS/ASC2HLP.EXE": {
+    "sha256": "5d8afb2d23a13e93b321af122dff443ee25ca5fedeb5feeb1a373b9b6e511812",
+    "size": 62040
+  },
+  "TOOLS/ATTRIB.EXE": {
+    "sha256": "7fc2696a3380b98670cdde913e3d81eaddaab6db8661b8371b5601af269e7651",
+    "size": 10624
+  },
+  "TOOLS/BLD/LIB/BINMODE.OBJ": {
+    "sha256": "db55fc3663d0510b297d6fd503aaed26a965bd3c154d2c16bf3ae26f902c0f08",
+    "size": 153
+  },
+  "TOOLS/BLD/LIB/CLIBCE.LIB": {
+    "sha256": "75138975ede865d965d0d5a0d804ae33f2fafd9db6b380161d9310abd7cc3ed8",
+    "size": 11307
+  },
+  "TOOLS/BLD/LIB/CLIBCR.LIB": {
+    "sha256": "adedef4ea1deef051c56d9cf4863fcdc2a3722eddc3602d0d73df03b96d4ed0d",
+    "size": 141301
+  },
+  "TOOLS/BLD/LIB/CLIBFP.LIB": {
+    "sha256": "412c4bf1866549e0ac0dc8bbe7e33b95751c58e50a1f987f4aa66ffa2ce32178",
+    "size": 38307
+  },
+  "TOOLS/BLD/LIB/CVARSTCK.OBJ": {
+    "sha256": "4a91fd60365061e64f243abcd77cf96eea085c6228b077014223eaac12d56f7e",
+    "size": 487
+  },
+  "TOOLS/BLD/LIB/EM.LIB": {
+    "sha256": "77620fa639ac91fad940c3539a66f47adbbb124958b38e540d386de79f582403",
+    "size": 16921
+  },
+  "TOOLS/BLD/LIB/GRAPHICS.LIB": {
+    "sha256": "4a4fc3a026bf99d503c77bc8208cf3a06bc57188df4540d705ff57f789189fd0",
+    "size": 59357
+  },
+  "TOOLS/BLD/LIB/LIBH.LIB": {
+    "sha256": "6729e396014d37921b0b331cd0f9a3a821abb725fd2ee0e795d71b0e4b627e9c",
+    "size": 14209
+  },
+  "TOOLS/BLD/LIB/LLIBCE.LIB": {
+    "sha256": "75138975ede865d965d0d5a0d804ae33f2fafd9db6b380161d9310abd7cc3ed8",
+    "size": 11307
+  },
+  "TOOLS/BLD/LIB/LLIBCR.LIB": {
+    "sha256": "7961eafce689dbf17acc3fd6fe34be6bc000f60d0f02fb1af2602b09112f3d2e",
+    "size": 142837
+  },
+  "TOOLS/BLD/LIB/LLIBFP.LIB": {
+    "sha256": "35769669c1330a4c854ca1c265b78cc25a1d5c2489b0515a89c877d37b68d008",
+    "size": 39331
+  },
+  "TOOLS/BLD/LIB/LVARSTCK.OBJ": {
+    "sha256": "670a8a7ee92a7cc81d2a7282cb3b756ec207d994aee6cc214f795f794844a191",
+    "size": 487
+  },
+  "TOOLS/BLD/LIB/MLIBCE.LIB": {
+    "sha256": "75138975ede865d965d0d5a0d804ae33f2fafd9db6b380161d9310abd7cc3ed8",
+    "size": 11307
+  },
+  "TOOLS/BLD/LIB/MLIBCR.LIB": {
+    "sha256": "a8c6bf65551559a795f3bdcef3f70178086bf944296413716e48cba95814b9cb",
+    "size": 133071
+  },
+  "TOOLS/BLD/LIB/MLIBFP.LIB": {
+    "sha256": "a6aed77cab170658aa7010b297008621e8f4a047553f3e43caaa00fa8b423314",
+    "size": 38305
+  },
+  "TOOLS/BLD/LIB/MVARSTCK.OBJ": {
+    "sha256": "f4c9daffeafd50af0e26e1f8cae176174e075fc617a2f574463fbc9e79867b9d",
+    "size": 507
+  },
+  "TOOLS/BLD/LIB/SETARGV.OBJ": {
+    "sha256": "acfa7e5e416ae6f91e0ced35272297d08f40e7ae29d8fc805cf7b03c3ae0848e",
+    "size": 160
+  },
+  "TOOLS/BLD/LIB/SLIBC.LIB": {
+    "sha256": "75138975ede865d965d0d5a0d804ae33f2fafd9db6b380161d9310abd7cc3ed8",
+    "size": 11307
+  },
+  "TOOLS/BLD/LIB/SLIBCE.LIB": {
+    "sha256": "75138975ede865d965d0d5a0d804ae33f2fafd9db6b380161d9310abd7cc3ed8",
+    "size": 11307
+  },
+  "TOOLS/BLD/LIB/SLIBCR.LIB": {
+    "sha256": "ce2dc6d740ae477135e2d9f11802c2357914994835e82a165423b43ccd30728f",
+    "size": 132047
+  },
+  "TOOLS/BLD/LIB/SLIBFP.LIB": {
+    "sha256": "7a712089189bc34d66e579fc76be411bcd24a39863e6e8fb7203b71a1fcfdc9e",
+    "size": 37281
+  },
+  "TOOLS/BLD/LIB/SVARSTCK.OBJ": {
+    "sha256": "8b882552be5f0d4dea0608a8da96021245589fb10bea5a473300a0b5e345d36a",
+    "size": 507
+  },
+  "TOOLS/BUILDIDX.EXE": {
+    "sha256": "10e6fb22df1521a2b200e708cb4a8e8d1748cc68d1c4ed1e65531596f1b11f0d",
+    "size": 15895
+  },
+  "TOOLS/BUILDMSG.EXE": {
+    "sha256": "0cdcb1e36d9017f7f0e66fd4c539eb34ddeb74073e74f50733943a54cf7c707c",
+    "size": 23181
+  },
+  "TOOLS/C1.EXE": {
+    "sha256": "8d33c6d87aa74b042b7d7cb01a23241c4cc3b1b8b446b8f1548bd167e3c7bf62",
+    "size": 114521
+  },
+  "TOOLS/C1L.EXE": {
+    "sha256": "bdd8189be005009331ff61dd3cb7a0ce9b246ea522dd8ab2c83a8339e5c30f09",
+    "size": 149303
+  },
+  "TOOLS/C2.EXE": {
+    "sha256": "a513c98bc2ce11bd00901b560252b5727ab9b6bacd9319b9eaba08f9e314b99b",
+    "size": 202919
+  },
+  "TOOLS/C3.EXE": {
+    "sha256": "c1269628534d5deb48171ba9e42f761dcb1c28a0087c73780db0ee2e4352e6fa",
+    "size": 125221
+  },
+  "TOOLS/CL.EXE": {
+    "sha256": "cad40cef732beea3455225fbd62286c664166db7c3f87e2402e22b2e3f107771",
+    "size": 31329
+  },
+  "TOOLS/COMPRESS.COM": {
+    "sha256": "d0deb39a5d1946fe54a6b0b4cc91fbfc9547703ae1408dc9ce04f876d5dbe8f7",
+    "size": 1368
+  },
+  "TOOLS/CONVERT.EXE": {
+    "sha256": "26176c60027009f40d51f9ed1271779a3d2953b88daf559badaf7fb20d5ec03a",
+    "size": 16340
+  },
+  "TOOLS/DBOF.EXE": {
+    "sha256": "7f853d1db3947cee6612d5a46e262bff20cfaa8583fdb72bf9c158f56336de4b",
+    "size": 10262
+  },
+  "TOOLS/EXE2BIN.EXE": {
+    "sha256": "a66a3875d7f310d95312651f38d0b43246d3bacfa720f28c49445fcc10bbfa8f",
+    "size": 3050
+  },
+  "TOOLS/EXEC.EXE": {
+    "sha256": "f1ba635fda038d541645318de86094e04e69e3bdc4c79896b02b9758666b57de",
+    "size": 9299
+  },
+  "TOOLS/EXEFIX.EXE": {
+    "sha256": "6ade9f789d8f7c6d6834028eaaa0588010581c96062eadb70e859e7dbe65f97b",
+    "size": 11776
+  },
+  "TOOLS/EXEMOD.EXE": {
+    "sha256": "efe11a2f61d257c2737ca0ab2b731fd9e2ddcf0f06bb79e77aa6cefdb4c0c399",
+    "size": 12336
+  },
+  "TOOLS/EXEPACK.EXE": {
+    "sha256": "568554322d29e46f79c0c760ac2391cb0689dc7acb9aed79a428194ec6fb83e7",
+    "size": 14803
+  },
+  "TOOLS/LIB.EXE": {
+    "sha256": "21094b0f11ea0567e4eb71182b2749ada558bc3c9e9e8f6ef7c149a0e67b7c6f",
+    "size": 49661
+  },
+  "TOOLS/LINK.EXE": {
+    "sha256": "124a3c800edc16b60f696d35a9dfec798b68b78fe2ca90c5988ea76bdeab1a8a",
+    "size": 65539
+  },
+  "TOOLS/MASM.EXE": {
+    "sha256": "1c6286c69b616160b8475ad17453ee872702a2c98075c2159ec792a1c745275f",
+    "size": 110703
+  },
+  "TOOLS/MENUBLD.EXE": {
+    "sha256": "2a81faf702fb1fc50e49fe80d0f3c5b00509232364823e0c39a47b1a34f3c0a3",
+    "size": 14831
+  },
+  "TOOLS/NMAKE.EXE": {
+    "sha256": "229f7e7f0aea1a2204e376b3ec18cae2d014cd2e59df05451a9e8837cecfde7d",
+    "size": 70795
+  },
+  "TOOLS/NOSRVBLD.EXE": {
+    "sha256": "eacb1dde40274dd8c6ba4fd5b7c08e44e720fa2b32b147d4012343e68215f80e",
+    "size": 15607
+  }
+}

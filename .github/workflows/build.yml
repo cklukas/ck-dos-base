@@ -33,6 +33,16 @@ jobs:
       - name: Test
         run: ctest --test-dir build --build-config Release --output-on-failure
 
+      - name: Full source build & manifest verification
+        shell: bash
+        run: |
+          if [ -d build/Release ]; then
+            TOOL_DIR=build/Release
+          else
+            TOOL_DIR=build
+          fi
+          python3 scripts/verify_full_build.py --tool-dir "$TOOL_DIR" --verify-manifest docs/build-manifest.json
+
       - name: Install native package
         run: cmake --install build --config Release
 

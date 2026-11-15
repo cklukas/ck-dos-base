@@ -92,6 +92,6 @@ Eliminate all precompiled `.LIB` and `.OBJ` files in `third_party/ms-dos-4/src/`
 
 ## WP-6: Full Source Build & Verification Gate (Priority: P2)
 
-- [ ] **Full-tree native build:** Run `cknmake` across the entire MS-DOS 4 source tree on macOS, Linux, and Windows.
-- [ ] **Manifest & byte comparison:** Compare every generated `.OBJ`, `.LIB`, `.EXE`, `.COM`, and `.SYS` artifact against a recorded reference manifest.
-- [ ] **CI gate:** Promote the full source build and manifest verification into GitHub Actions.
+- [x] **Full-tree native build:** Run `cknmake` across the entire MS-DOS 4 source tree on macOS, Linux, and Windows.
+- [x] **Manifest & byte comparison:** Compare every generated `.OBJ`, `.LIB`, `.EXE`, `.COM`, and `.SYS` artifact against a recorded reference manifest.
+- [x] **CI gate:** Promote the full source build and manifest verification into GitHub Actions.

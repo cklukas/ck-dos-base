@@ -104,17 +104,52 @@ int run_del(const ParsedCommand& cmd) {
 }
 
 int run_copy(const ParsedCommand& cmd) {
-    if (cmd.args.size() != 2) {
+    std::vector<std::string> positional;
+    for (const std::string& arg : cmd.args) {
+        if (arg.size() >= 2 && arg[0] == '/') continue;  // /B, /A, /V, /Y
+        positional.push_back(arg);
+    }
+    if (positional.size() != 2) {
         throw std::runtime_error("copy requires source and destination");
     }
-    const fs::path src = resolve_dos_input(cmd.args[0]);
-    fs::path dst = resolve_dos_output(cmd.args[1]);
-    std::error_code ec;
-    if (fs::is_directory(dst, ec)) {
-        dst /= dos_upper(src.filename().string());
+    std::vector<std::string> sources;
+    std::size_t start = 0;
+    while (start <= positional[0].size()) {
+        const std::size_t plus = positional[0].find('+', start);
+        const std::string part = (plus == std::string::npos)
+                                     ? positional[0].substr(start)
+                                     : positional[0].substr(start, plus - start);
+        if (!part.empty()) sources.push_back(part);
+        if (plus == std::string::npos) break;
+        start = plus + 1;
     }
-    if (!fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec)) {
-        throw std::runtime_error("copy failed: " + ec.message());
+    if (sources.empty()) {
+        throw std::runtime_error("copy requires source and destination");
+    }
+    if (sources.size() == 1) {
+        const fs::path src = resolve_dos_input(sources[0]);
+        fs::path dst = resolve_dos_output(positional[1]);
+        std::error_code ec;
+        if (fs::is_directory(dst, ec)) {
+            dst /= dos_upper(src.filename().string());
+        }
+        if (!fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec)) {
+            throw std::runtime_error("copy failed: " + ec.message());
+        }
+        return 0;
+    }
+    const fs::path dst = resolve_dos_output(positional[1]);
+    std::ofstream out(dst, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        throw std::runtime_error("copy failed opening destination: " + dst.string());
+    }
+    for (const std::string& s : sources) {
+        const fs::path src = resolve_dos_input(s);
+        std::ifstream in(src, std::ios::binary);
+        if (!in) {
+            throw std::runtime_error("copy failed opening source: " + src.string());
+        }
+        out << in.rdbuf();
     }
     return 0;
 }
