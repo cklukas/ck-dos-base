@@ -37,3 +37,5 @@ objects in the preserved source tree, with byte-identical output for that set.
 
 Until those steps are complete, GitHub Actions publishes the native tool suite,
 not a claimed rebuilt MS-DOS distribution.
+
+For the prioritized, task-level breakdown, see [docs/WORK_PACKAGES.md](WORK_PACKAGES.md).

@@ -28,17 +28,25 @@ function(dosbase_strict target)
 endfunction()
 
 add_library(dosbase_devtools
+    src/devtools/asc2hlp.cpp
     src/devtools/binary.cpp
+    src/devtools/cl_compiler.cpp
+    src/devtools/cl_preproc.cpp
+    src/devtools/compress.cpp
+    src/devtools/convert.cpp
     src/devtools/dbof.cpp
     src/devtools/dos_file.cpp
     src/devtools/dump_tool.cpp
     src/devtools/exe2bin.cpp
+    src/devtools/exefix.cpp
     src/devtools/lib_writer.cpp
     src/devtools/link_image.cpp
     src/devtools/link_response.cpp
     src/devtools/masm.cpp
+    src/devtools/menubld.cpp
     src/devtools/msgtools.cpp
     src/devtools/mz_image.cpp
+    src/devtools/nmake_exec.cpp
     src/devtools/nmake_macros.cpp
     src/devtools/nmake_plan.cpp
     src/devtools/omf_library.cpp
@@ -56,12 +64,18 @@ set(DOSBASE_TOOLS
     ckomfdump
     cklibdump
     ckexe2bin
+    ckconvert
+    ckexefix
+    ckmenubld
+    ckasc2hlp
+    ckcompress
     cklib
     ckdbof
     ckbuildidx
     cknosrvbld
     ckbuildmsg
     ckmasm
+    ckcl
     cklink
     cknmake)
 
@@ -76,19 +90,32 @@ endif()
 if(DOSBASE_BUILD_TESTS)
     add_executable(dosbase_tests
         tests/test_main.cpp
+        tests/test_asc2hlp.cpp
+        tests/test_cl.cpp
+        tests/test_compress.cpp
+        tests/test_convert.cpp
         tests/test_dbof.cpp
         tests/test_exe2bin.cpp
+        tests/test_exefix.cpp
         tests/test_lib_dictionary.cpp
         tests/test_library.cpp
         tests/test_link_response.cpp
         tests/test_masm.cpp
+        tests/test_menubld.cpp
         tests/test_msgtools.cpp
         tests/test_mz.cpp
+        tests/test_nmake_exec.cpp
         tests/test_nmake_macros.cpp
         tests/test_nmake_plan.cpp
         tests/test_omf.cpp
         tests/test_omf_module.cpp)
     target_link_libraries(dosbase_tests PRIVATE dosbase::devtools)
+    target_compile_definitions(dosbase_tests PRIVATE
+        DOSBASE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    if(DOSBASE_BUILD_TOOLS)
+        target_compile_definitions(dosbase_tests PRIVATE
+            DOSBASE_TOOL_DIR="$<TARGET_FILE_DIR:cknmake>")
+    endif()
     dosbase_strict(dosbase_tests)
     add_test(NAME dosbase_tools COMMAND dosbase_tests)
     set_tests_properties(dosbase_tools PROPERTIES TIMEOUT 120)

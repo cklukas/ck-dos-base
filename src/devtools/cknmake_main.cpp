@@ -1,18 +1,16 @@
 // Copyright (c) 2026 C. Klukas
 // SPDX-License-Identifier: MIT
 //
-// NMAKE 1.00.05's replacement, the /N driver. Reads TOOLS.INI
-// from the directory the INIT environment variable names -- exactly where
-// the captured build's environment points it -- merges the makefile's own
-// macros and rules over it, plans the requested targets, and prints the
-// command lines one per row, the listing the comparison harness's
-// parse_plan() consumes. Only the plan mode exists: the reference chain
-// never executes through NMAKE itself in the transcript, it executes the
-// planned commands one at a time.
+// NMAKE 1.00.05's replacement. Reads TOOLS.INI from the directory the INIT
+// environment variable names, merges the makefile's own macros and rules over
+// it, plans the requested targets, and either prints the planned commands (/N)
+// or executes them natively via the ck* toolchain.
 #include "dosbase/devtools/binary.hpp"
 #include "dosbase/devtools/dos_file.hpp"
+#include "dosbase/devtools/nmake_exec.hpp"
 #include "dosbase/devtools/nmake_plan.hpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -29,19 +27,32 @@ std::vector<std::string> read_joined(const std::filesystem::path& path) {
         reinterpret_cast<const char*>(raw.data()), raw.size()));
 }
 
+std::filesystem::path detect_tool_dir(const char* argv0) {
+    if (argv0 == nullptr) return {};
+    std::error_code ec;
+    const std::filesystem::path p(argv0);
+    if (p.has_parent_path()) {
+        return std::filesystem::weakly_canonical(p.parent_path(), ec);
+    }
+    return {};
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     using namespace dosbase::devtools;
     bool plan_only = false;
+    bool ignore_errors = false;
+    bool quiet = false;
     std::vector<std::string> targets;
     std::string makefile_name = "makefile";
     for (int i = 1; i < argc; ++i) {
         std::string argument = argv[i];
         if (argument.size() >= 2 && (argument[0] == '/' || argument[0] == '-')) {
-            const char flag = static_cast<char>(std::toupper(argument[1]));
+            const char flag = static_cast<char>(std::toupper(static_cast<unsigned char>(argument[1])));
             if (flag == 'N') plan_only = true;
-            else if (flag == 'I') continue;  // ignore-errors: no effect on a plan
+            else if (flag == 'I') ignore_errors = true;
+            else if (flag == 'S') quiet = true;
             else if (flag == 'F' && i + 1 < argc) makefile_name = argv[++i];
             else {
                 std::cerr << "cknmake: unsupported option " << argument << "\n";
@@ -51,10 +62,7 @@ int main(int argc, char** argv) {
         }
         targets.push_back(argument);
     }
-    if (!plan_only) {
-        std::cerr << "cknmake: only the /N plan mode is implemented\n";
-        return 2;
-    }
+
     try {
         Makefile makefile;
         // Environment macros first; TOOLS.INI and the makefile override.
@@ -111,12 +119,29 @@ int main(int argc, char** argv) {
                        stamp.time_since_epoch())
                 .count();
         };
+
+        const NmakeExecOptions exec_options{
+            detect_tool_dir(argc > 0 ? argv[0] : nullptr), ignore_errors, quiet};
+
         for (std::string target : targets) {
             // Targets given as macros expand first: the bios module plans
             // `$(dest).sys`.
             target = expand_macros(target, makefile.macros);
             for (const PlannedCommand& command : plan_target(target, makefile, mtime)) {
-                std::cout << "\t" << command.command << "\n";
+                if (plan_only) {
+                    std::cout << "\t" << command.command << "\n";
+                    continue;
+                }
+                const ParsedCommand parsed = parse_nmake_command(command.command);
+                if (!quiet && !parsed.quiet) {
+                    std::cout << "\t" << command.command << "\n" << std::flush;
+                }
+                const int rc = execute_nmake_command(parsed, exec_options);
+                if (rc != 0 && !ignore_errors && !parsed.ignore_error) {
+                    std::cerr << "cknmake: command failed with exit code " << rc
+                              << ": " << command.command << "\n";
+                    return rc;
+                }
             }
         }
     } catch (const std::exception& error) {
