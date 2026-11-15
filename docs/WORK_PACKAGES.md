@@ -77,14 +77,14 @@ Reimplement the C compilation pipeline (`CL.EXE` / `C1` / `C2` / `C3`) as a nati
 
 Eliminate all precompiled `.LIB` and `.OBJ` files in `third_party/ms-dos-4/src/` so nothing links against historical Microsoft binary code.
 
-- [ ] **Audit CRT & startup dependencies:** Extract the exact symbol list and semantics required from `third_party/ms-dos-4/src/TOOLS/BLD/LIB/` (`SLIBCE.LIB`, `MLIBCE.LIB`, `LLIBCE.LIB`, `CLIBCE.LIB`, `LIBH.LIB`, `EM.LIB`, `SETARGV.OBJ`, `BINMODE.OBJ`, etc.).
-- [ ] **Audit tree binary libraries:** Extract the exact symbol list and semantics required from:
+- [x] **Audit CRT & startup dependencies:** Extract the exact symbol list and semantics required from `third_party/ms-dos-4/src/TOOLS/BLD/LIB/` (`SLIBCE.LIB`, `MLIBCE.LIB`, `LLIBCE.LIB`, `CLIBCE.LIB`, `LIBH.LIB`, `EM.LIB`, `SETARGV.OBJ`, `BINMODE.OBJ`, etc.).
+- [x] **Audit tree binary libraries:** Extract the exact symbol list and semantics required from:
   - `third_party/ms-dos-4/src/LIB/MEM.LIB`
   - `third_party/ms-dos-4/src/SELECT/CASSFAR.LIB`
   - `third_party/ms-dos-4/src/INC/COMSUBS.LIB`
   - `third_party/ms-dos-4/src/INC/PRINTF.OBJ`
   - `third_party/ms-dos-4/src/INC/STRING.OBJ`
-- [ ] **Clean-room implementation:** Write open-source C/assembly implementations for the audited symbols and package them via `ckcl`, `ckmasm`, and `cklib`.
+- [x] **Clean-room implementation:** Write open-source C/assembly implementations for the audited symbols and package them via `ckcl`, `ckmasm`, and `cklib`.
 
 > **Milestone (WP-1..WP-5):** Complete open-source build with zero historical DOS binaries or precompiled libraries.
 

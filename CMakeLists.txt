@@ -108,7 +108,8 @@ if(DOSBASE_BUILD_TESTS)
         tests/test_nmake_macros.cpp
         tests/test_nmake_plan.cpp
         tests/test_omf.cpp
-        tests/test_omf_module.cpp)
+        tests/test_omf_module.cpp
+        tests/test_runtime.cpp)
     target_link_libraries(dosbase_tests PRIVATE dosbase::devtools)
     target_compile_definitions(dosbase_tests PRIVATE
         DOSBASE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
