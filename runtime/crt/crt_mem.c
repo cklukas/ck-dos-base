@@ -1,6 +1,9 @@
 /* Clean-room 16-bit MS-DOS CRT memory allocation and manipulation (WP-5) */
 
-static unsigned char crt_heap[8192];
+extern unsigned int _heap_ptr;
+extern unsigned int _heap_limit;
+
+static unsigned char crt_heap[1024];
 static unsigned int crt_heap_top = 0;
 
 void *malloc(unsigned int size) {
@@ -10,6 +13,12 @@ void *malloc(unsigned int size) {
         size = 1;
     }
     aligned = (size + 1) & ~1u;
+    if (_heap_ptr != 0 && _heap_ptr + aligned <= _heap_limit &&
+        _heap_ptr + aligned >= _heap_ptr) {
+        ptr = (void *)_heap_ptr;
+        _heap_ptr += aligned;
+        return ptr;
+    }
     if (crt_heap_top + aligned > sizeof(crt_heap)) {
         return (void *)0;
     }

@@ -181,12 +181,30 @@ int sprintf(char *dst, const char *fmt, ...) {
     return vsprintf_mini(dst, fmt, ap);
 }
 
+static void write_text(int fd, const char *buf, int n) {
+    int i = 0;
+    int start = 0;
+    while (i < n) {
+        if (buf[i] == '\n') {
+            if (i > start) {
+                write(fd, buf + start, (unsigned int)(i - start));
+            }
+            write(fd, "\r\n", 2);
+            start = i + 1;
+        }
+        ++i;
+    }
+    if (i > start) {
+        write(fd, buf + start, (unsigned int)(i - start));
+    }
+}
+
 int fprintf(struct _iobuf *f, const char *fmt, ...) {
     char buf[512];
     char *ap = (char *)&fmt + sizeof(fmt);
     int n = vsprintf_mini(buf, fmt, ap);
     if (n > 0) {
-        write((int)f->_file, buf, (unsigned int)n);
+        write_text((int)f->_file, buf, n);
     }
     return n;
 }
@@ -196,7 +214,7 @@ int printf(const char *fmt, ...) {
     char *ap = (char *)&fmt + sizeof(fmt);
     int n = vsprintf_mini(buf, fmt, ap);
     if (n > 0) {
-        write(1, buf, (unsigned int)n);
+        write_text(1, buf, n);
     }
     return n;
 }

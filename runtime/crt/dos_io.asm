@@ -139,11 +139,17 @@ _int86  PROC    NEAR
         jne     chk_10
         jmp     i86_21
 chk_10: cmp     al, 10h
-        jne     chk_13
+        jne     chk_12
         jmp     i86_10
+chk_12: cmp     al, 12h
+        jne     chk_13
+        jmp     i86_12
 chk_13: cmp     al, 13h
-        jne     chk_16
+        jne     chk_15
         jmp     i86_13
+chk_15: cmp     al, 15h
+        jne     chk_16
+        jmp     i86_15
 chk_16: cmp     al, 16h
         jne     chk_2f
         jmp     i86_16
@@ -170,8 +176,14 @@ i86_21: i86_load
 i86_10: i86_load
         int     10h
         jmp     i86_store
+i86_12: i86_load
+        int     12h
+        jmp     i86_store
 i86_13: i86_load
         int     13h
+        jmp     i86_store
+i86_15: i86_load
+        int     15h
         jmp     i86_store
 i86_16: i86_load
         int     16h
@@ -206,11 +218,96 @@ _int86  ENDP
 _int86x PROC    NEAR
         push    bp
         mov     bp, sp
+        mov     ax, [bp+4]
+        cmp     al, 21h
+        jne     x_chk15
         push    [bp+10]
         push    [bp+8]
         push    [bp+6]
         call    _intdosx
         add     sp, 6
+        pop     bp
+        ret
+x_chk15:
+        push    si
+        push    di
+        push    ds
+        push    es
+        mov     bx, [bp+10]
+        mov     es, [bx+0]
+        mov     ax, [bx+6]
+        mov     bx, [bp+6]
+        push    ax
+        mov     ax, [bx+0]
+        mov     cx, [bx+4]
+        mov     dx, [bx+6]
+        mov     si, [bx+8]
+        mov     di, [bx+10]
+        mov     bx, [bx+2]
+        pop     ds
+        push    bp
+        mov     bp, [bp+4]
+        xchg    ax, bp
+        cmp     al, 15h
+        je      x_i15
+        cmp     al, 13h
+        je      x_i13
+        cmp     al, 10h
+        je      x_i10
+        cmp     al, 2Fh
+        je      x_i2f
+        cmp     al, 67h
+        je      x_i67
+        xchg    ax, bp
+        pop     bp
+        int     21h
+        jmp     x_done
+x_i15:  xchg    ax, bp
+        pop     bp
+        int     15h
+        jmp     x_done
+x_i13:  xchg    ax, bp
+        pop     bp
+        int     13h
+        jmp     x_done
+x_i10:  xchg    ax, bp
+        pop     bp
+        int     10h
+        jmp     x_done
+x_i2f:  xchg    ax, bp
+        pop     bp
+        int     2Fh
+        jmp     x_done
+x_i67:  xchg    ax, bp
+        pop     bp
+        int     67h
+x_done:
+        pushf
+        push    ds
+        push    bx
+        mov     bx, ss
+        mov     ds, bx
+        mov     bx, [bp+8]
+        mov     [bx+0], ax
+        pop     ax
+        mov     [bx+2], ax
+        mov     [bx+4], cx
+        mov     [bx+6], dx
+        mov     [bx+8], si
+        mov     [bx+10], di
+        pop     cx
+        mov     si, [bp+10]
+        mov     [si+6], cx
+        mov     cx, es
+        mov     [si+0], cx
+        pop     ax
+        and     ax, 1
+        mov     [bx+12], ax
+        mov     ax, [bx+0]
+        pop     es
+        pop     ds
+        pop     di
+        pop     si
         pop     bp
         ret
 _int86x ENDP

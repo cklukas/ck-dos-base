@@ -4,6 +4,10 @@
 _TEXT   SEGMENT BYTE PUBLIC 'CODE'
 _TEXT   ENDS
 
+NULL    SEGMENT PARA PUBLIC 'BEGDATA'
+        DB      16 DUP (0)
+NULL    ENDS
+
 _DATA   SEGMENT WORD PUBLIC 'DATA'
         PUBLIC  __acrtused
         PUBLIC  __osmajor
@@ -11,12 +15,20 @@ _DATA   SEGMENT WORD PUBLIC 'DATA'
         PUBLIC  _errno
         PUBLIC  __psp
         PUBLIC  _DOS_TopOfMemory
+        PUBLIC  __heap_ptr
+        PUBLIC  __heap_limit
 __acrtused  DW  1
 __osmajor   DB  4
 __osminor   DB  0
 _errno      DW  0
 __psp       DW  0
 _DOS_TopOfMemory DW 0A000h
+__heap_ptr  DW  0
+__heap_limit DW 0
+__argv_buf  DB  128 DUP (0)
+__argv_ptrs DW  32 DUP (0)
+__prog_name DB  'DOS', 0
+__env_empty DW  0
 _DATA   ENDS
 
 CONST   SEGMENT WORD PUBLIC 'CONST'
@@ -26,10 +38,10 @@ _BSS    SEGMENT WORD PUBLIC 'BSS'
 _BSS    ENDS
 
 _STACK  SEGMENT PARA STACK 'STACK'
-        DB      2048 DUP (0)
+        DB      128 DUP (0)
 _STACK  ENDS
 
-DGROUP  GROUP   _DATA, CONST, _BSS, _STACK
+DGROUP  GROUP   NULL, _DATA, CONST, _BSS, _STACK
 
         EXTRN   _main:NEAR
 
@@ -42,8 +54,39 @@ _TEXT   SEGMENT BYTE PUBLIC 'CODE'
 __start PROC    NEAR
         mov     ax, DGROUP
         mov     ds, ax
+        mov     bx, ss
+        sub     bx, ax
+        mov     cl, 4
+        shl     bx, cl
+        add     sp, bx
         mov     ss, ax
         mov     __psp, es
+
+        ; Expand DGROUP stack up to 64 KB (psp_memsz) and claim gap for heap
+        mov     bx, es:[2]
+        sub     bx, ax
+        jbe     no_heap_expand
+        test    bx, 0F000h
+        jz      heap_shift
+        mov     bx, 0FFF0h
+        jmp     SHORT heap_chk
+heap_shift:
+        mov     cl, 4
+        shl     bx, cl
+heap_chk:
+        mov     dx, sp
+        add     dx, 2048
+        jc      no_heap_expand
+        cmp     bx, dx
+        jbe     no_heap_expand
+        mov     dx, sp
+        inc     dx
+        and     dx, 0FFFEh
+        mov     __heap_ptr, dx
+        mov     sp, bx
+        sub     bx, 2048
+        mov     __heap_limit, bx
+no_heap_expand:
 
         ; Query DOS version (INT 21h AH=30h)
         mov     ah, 30h
@@ -51,11 +94,81 @@ __start PROC    NEAR
         mov     __osmajor, al
         mov     __osminor, ah
 
-        ; Call _main(0, 0, 0) - minimal startup; argv/envp can be populated by _setargv
+        ; Parse PSP command tail (es:80h = length, es:81h.. = chars)
+        mov     es, __psp
+        xor     cx, cx
+        mov     cl, es:[80h]
+        cmp     cx, 127
+        jbe     len_ok
+        mov     cx, 127
+len_ok:
+        mov     si, 81h
+        mov     di, OFFSET __argv_buf
+        jcxz    copy_done
+copy_loop:
+        mov     al, es:[si]
+        mov     [di], al
+        inc     si
+        inc     di
+        loop    copy_loop
+copy_done:
+        mov     BYTE PTR [di], 0
+
+        ; Build argv[0..argc-1] in __argv_ptrs
+        mov     di, OFFSET __argv_ptrs
+        mov     ax, OFFSET __prog_name
+        mov     [di], ax
+        add     di, 2
+        mov     dx, 1
+        mov     si, OFFSET __argv_buf
+skip_ws:
+        mov     al, [si]
+        cmp     al, 0
+        je      args_done
+        cmp     al, 0Dh
+        je      args_done
+        cmp     al, ' '
+        je      next_ws
+        cmp     al, 09h
+        je      next_ws
+        cmp     dx, 30
+        jae     args_done
+        mov     [di], si
+        add     di, 2
+        inc     dx
+scan_arg:
+        inc     si
+        mov     al, [si]
+        cmp     al, 0
+        je      args_done
+        cmp     al, 0Dh
+        je      term_done
+        cmp     al, ' '
+        je      term_arg
+        cmp     al, 09h
+        je      term_arg
+        jmp     scan_arg
+term_arg:
+        mov     BYTE PTR [si], 0
+        inc     si
+        jmp     skip_ws
+term_done:
+        mov     BYTE PTR [si], 0
+        jmp     args_done
+next_ws:
+        inc     si
+        jmp     skip_ws
+args_done:
         xor     ax, ax
+        mov     [di], ax
+        mov     es, __psp
+
+        ; Call _main(argc, argv, envp)
+        mov     ax, OFFSET __env_empty
         push    ax
+        mov     ax, OFFSET __argv_ptrs
         push    ax
-        push    ax
+        push    dx
         call    _main
         add     sp, 6
 

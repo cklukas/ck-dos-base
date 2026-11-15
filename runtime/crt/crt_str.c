@@ -31,6 +31,9 @@ int toupper(int c) {
 
 unsigned int strlen(const char *s) {
     unsigned int n = 0;
+    if (s == (const char *)0) {
+        return 0;
+    }
     while (s[n] != '\0') {
         ++n;
     }
@@ -39,6 +42,10 @@ unsigned int strlen(const char *s) {
 
 char *strcpy(char *dst, const char *src) {
     char *d = dst;
+    if (src == (const char *)0) {
+        *d = '\0';
+        return dst;
+    }
     while ((*d++ = *src++) != '\0') {
     }
     return dst;
@@ -59,6 +66,9 @@ char *strncpy(char *dst, const char *src, unsigned int n) {
 
 char *strcat(char *dst, const char *src) {
     char *d = dst;
+    if (src == (const char *)0) {
+        return dst;
+    }
     while (*d != '\0') {
         ++d;
     }

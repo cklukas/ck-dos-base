@@ -114,9 +114,9 @@ Close the remaining tool-compatibility gaps so all 60 `MAKEFILE` directories in 
 
 Verify that the natively built OS and utilities actually boot and run correctly under real 16-bit x86 execution (QEMU / DOSBox-X / 86Box).
 
-- [ ] **Bootable disk image & OS boot test:** Assemble a bootable disk image from `MSBOOT.BIN`, `IO.SYS`, `MSDOS.SYS`, and `COMMAND.COM` and verify headless boot to a `C:\>` prompt.
-- [ ] **C utility & CRT runtime validation:** Run `ckcl`-compiled utilities (`ATTRIB`, `FC`, `MEM`, `BACKUP`, `RESTORE`, `FDISK`, `JOIN`, `SUBST`, `FLUSH13`) inside the emulator and fix any `ckcl` 8086 codegen or `runtime/` library bugs uncovered.
-- [ ] **Automated emulator smoke test:** Add a reproducible headless emulator test script to verify OS boot and core command execution.
+- [x] **Bootable disk image & OS boot test:** Assemble a bootable disk image from `MSBOOT.BIN`, `IO.SYS`, `MSDOS.SYS`, and `COMMAND.COM` and verify headless boot to a `C:\>` prompt.
+- [x] **C utility & CRT runtime validation:** Run `ckcl`-compiled utilities (`ATTRIB`, `FC`, `MEM`, `BACKUP`, `RESTORE`, `FDISK`, `JOIN`, `SUBST`, `FLUSH13`) inside the emulator and fix any `ckcl` 8086 codegen or `runtime/` library bugs uncovered.
+- [x] **Automated emulator smoke test:** Add a reproducible headless emulator test script to verify OS boot and core command execution.
 
 ---
 

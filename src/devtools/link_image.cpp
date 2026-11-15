@@ -919,6 +919,7 @@ LinkResult link_modules(const std::vector<Module>& modules, bool map_publics,
                                          plain.begin() + prefix);
         std::size_t at = prefix;
         bool first_command = true;
+        bool overlap = false;
         const auto emit = [&](std::uint8_t opcode, std::uint32_t length) {
             packed.push_back(static_cast<std::uint8_t>(length & 0xFF));
             packed.push_back(static_cast<std::uint8_t>(length >> 8));
@@ -928,17 +929,22 @@ LinkResult link_modules(const std::vector<Module>& modules, bool map_publics,
         };
         while (at < plain.size()) {
             std::size_t run_end = at + 1;
-            while (run_end < plain.size() && plain[run_end] == plain[at]) {
+            while (run_end < plain.size() && plain[run_end] == plain[at] &&
+                   run_end - at < 0x4000u) {
                 ++run_end;
             }
             if (run_end - at >= 8) {
                 packed.push_back(plain[at]);
                 emit(0xB0, static_cast<std::uint32_t>(run_end - at));
                 at = run_end;
+                if (packed.size() > at) {
+                    overlap = true;
+                    break;
+                }
                 continue;
             }
             std::size_t copy_end = at;
-            while (copy_end < plain.size()) {
+            while (copy_end < plain.size() && copy_end - at < 0x4000u) {
                 std::size_t probe = copy_end + 1;
                 while (probe < plain.size() && plain[probe] == plain[copy_end]) {
                     ++probe;
@@ -950,7 +956,12 @@ LinkResult link_modules(const std::vector<Module>& modules, bool map_publics,
                           plain.begin() + copy_end);
             emit(0xB2, static_cast<std::uint32_t>(copy_end - at));
             at = copy_end;
+            if (packed.size() > at) {
+                overlap = true;
+                break;
+            }
         }
+        if (!overlap) {
         if (dest_bytes > kept) {
             // The paragraph pad goes out as its own fill command
             // repeating the final content byte (FIND's closing 0x0d).
@@ -1020,6 +1031,7 @@ LinkResult link_modules(const std::vector<Module>& modules, bool map_publics,
         std::copy(stub.begin(), stub.end(),
                   packed_exe.begin() + 512 + packed.size());
         exe = std::move(packed_exe);
+        }
     }
 
     // ------------------------------------------------------------ the map

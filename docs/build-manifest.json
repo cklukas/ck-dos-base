@@ -104,12 +104,12 @@
     "size": 5753
   },
   "CMD/ATTRIB/ATTRIB.EXE": {
-    "sha256": "2e73d1b4597f85bcd93e88dc82b86f57dfcb210fd7bd4fd15a6d680bbf376673",
-    "size": 28889
+    "sha256": "808b8dd1f1117d82c27d039b5b1733b7b8ff1c7ddda061760a4873db3973b9af",
+    "size": 27953
   },
   "CMD/ATTRIB/ATTRIB.OBJ": {
-    "sha256": "c86827da6910fe07ecbe5b6fbef7a4391d411b621803eabdad901ffb925a1cef",
-    "size": 23292
+    "sha256": "4ada3b01ae4c62fcdd1b2b6e0ff322ab1a0f433d914c6402ecc28b8811a441ee",
+    "size": 22195
   },
   "CMD/ATTRIB/ATTRIBA.OBJ": {
     "sha256": "e2ed2ae3f2f2aff8ccc2c6c689fa46ead8b6eb108511378546db15b4cf471bdb",
@@ -124,12 +124,12 @@
     "size": 4316
   },
   "CMD/BACKUP/BACKUP.COM": {
-    "sha256": "239aab4d7e5174f4b524304f5709440bee177a44fd984f688825cdcd85274c25",
-    "size": 56907
+    "sha256": "dae76bf48c71e5404e80fa3b4c8f903dbbd9fb46e1980f66a8c419f477ce7b38",
+    "size": 48347
   },
   "CMD/BACKUP/BACKUP.OBJ": {
-    "sha256": "d7df2d803863d69b471cd87b19bff23d21ba118c2d5ab0551faec50e239193b7",
-    "size": 37501
+    "sha256": "751d75d12007045695cca64b830f164476892ad08ccffab5e663bf7b2b3b6e9b",
+    "size": 35370
   },
   "CMD/BACKUP/_MSGRET.OBJ": {
     "sha256": "7431cd8d5bc54d0bdf236518bf46df41960fbf2d10aef04c58fa58701a492003",
@@ -496,20 +496,20 @@
     "size": 4227
   },
   "CMD/FC/ERROR.OBJ": {
-    "sha256": "5099f1574785ec3d512907b3d259c8612310cf648782372552de7118ebcaaa0a",
-    "size": 349
+    "sha256": "20d2ccc7d54e468446a48bc2be7a9185e625540869ee279de6a2a19ab03af72c",
+    "size": 343
   },
   "CMD/FC/FC.EXE": {
-    "sha256": "1edfce04577a2ef74c1e35efe12b1f6af4d78afdfe03353ee46dd38ffcf33236",
-    "size": 28544
+    "sha256": "772824c014d4c523c4b0f65fed488449640829ac10be035b396d747ef853888d",
+    "size": 19360
   },
   "CMD/FC/FC.OBJ": {
-    "sha256": "fbed0ae723579d4c1bf02bab99783eca82965a620f2fec77f00c0193c505e04e",
-    "size": 8057
+    "sha256": "fdc93552a816526959ec032ca21ffccd43131cc2687d7e5a10dfb3ea292dc98d",
+    "size": 7502
   },
   "CMD/FC/FGETL.OBJ": {
-    "sha256": "f91f7aebc2348c8ceed0de5bc21a6c6c2e1fff30c5ed6d15538897600c2a63b1",
-    "size": 821
+    "sha256": "67b0e457a661a4019a9ebe9cd8af619777d4ad76ec5e3eaa0f12e9c04ff9ce14",
+    "size": 791
   },
   "CMD/FC/GETL.OBJ": {
     "sha256": "844a94b76b9d1c7fef733394f391973e61e90f14be3b948718897be8ec68ab49",
@@ -532,16 +532,16 @@
     "size": 226
   },
   "CMD/FC/NTOI.OBJ": {
-    "sha256": "df8096e2a4ec09abdc0ae36696849ee9fa8a287376079e0ecfdf2ffa7872a3a3",
-    "size": 558
+    "sha256": "b12cc1f31b7e3abb7d5aab96e8310fd7d6f66a5b4df1742001f948494fbdd7fa",
+    "size": 539
   },
   "CMD/FC/STRING.OBJ": {
     "sha256": "fd3ca21c815e5db532a89d73e072e20929bf14d1ac804f2b5220c568a47a7d72",
     "size": 336
   },
   "CMD/FC/UPDATE.OBJ": {
-    "sha256": "0856bc49493f0efdc28d23846e0e4000bc1d6f7eb2444d11610aa870321f8621",
-    "size": 1655
+    "sha256": "aca4821f691b30bd94a3b923902feffd346e5553e2af79aabc7d7e23e6b2e217",
+    "size": 1536
   },
   "CMD/FC/XTAB.OBJ": {
     "sha256": "f63585f77c45cb9ab2416f08bde9404f4cf6183a07044045cb7af9e6867d2eff",
@@ -552,24 +552,24 @@
     "size": 1195
   },
   "CMD/FDISK/CONVERT.OBJ": {
-    "sha256": "397ebb82d3d63faf9f56cf988b0856207a43a6d1594ea0fe4a0314925213d849",
-    "size": 3055
+    "sha256": "b23dde27d3bca09aef8588d5446fdd09c7aaa7190daeb4b3ec32da0b92f298fa",
+    "size": 3572
   },
   "CMD/FDISK/C_MENUS.OBJ": {
-    "sha256": "bb0376570a6ed232bddc03642d2e206fbfcff58b577c065c7e1f9efb3a50605f",
-    "size": 8586
+    "sha256": "06e9e837574436ece3544bb7bac6dec4954fbaff480c65989c50803ad634cbe0",
+    "size": 8143
   },
   "CMD/FDISK/DISKOUT.OBJ": {
-    "sha256": "faaabf8df26fe1b4befb6f1cd17b769cef7ebf511e120f03b60b68ac47cb5a9b",
-    "size": 7948
+    "sha256": "063919ed9646b353a7cd156e666fa583e8c75b1d30e68799167a262c78de46b0",
+    "size": 7992
   },
   "CMD/FDISK/DISPLAY.OBJ": {
-    "sha256": "5ef652c310b265652e06266696048b31112a2663e6b2ef6284d8b4015516befa",
-    "size": 4930
+    "sha256": "121f2f71c4140f0a2950fd7ac4b4ba9cdf57e2242ef1ca68be41a594b1f31ae5",
+    "size": 4895
   },
   "CMD/FDISK/D_MENUS.OBJ": {
-    "sha256": "ea7d3b642639f314edfaf9dfed8bf98b48b3b6740298119977738090b244d6aa",
-    "size": 10565
+    "sha256": "c5241cf41759645ad9a01df6c95f324de824b5a02b512d17716bee46c56fc00e",
+    "size": 9963
   },
   "CMD/FDISK/FDBOOT.BIN": {
     "sha256": "e0131f9e49bbf5678c79a19970124838343b4e81fceb909f0584c0fcf81dfa82",
@@ -580,72 +580,72 @@
     "size": 379
   },
   "CMD/FDISK/FDISK.EXE": {
-    "sha256": "727167bd76f099acd3a3815f5264b11306c0c2270952ec151e2b3b23ee1237f8",
-    "size": 96077
+    "sha256": "f5cd12e973fc53bc92ad39b9575c249222c188c395f42112e54750a6e4923efe",
+    "size": 103088
   },
   "CMD/FDISK/FDISK.OBJ": {
-    "sha256": "a6cf16ff8cd054ce2e6a666cf067355588c4a9509ec1310a7bf9d7fc32d0e2fd",
-    "size": 16553
+    "sha256": "4d3a33f6859283abe61fb31e4444a3e22ac1e53f728b4dfbd83ff575c11bf2fc",
+    "size": 15806
   },
   "CMD/FDISK/FDISKM.OBJ": {
     "sha256": "a34cef966a3658fc8e836d0b92737cb8aad7b68c9770adf249b61400139ce17a",
     "size": 10755
   },
   "CMD/FDISK/FDPARSE.OBJ": {
-    "sha256": "3859f07c70659576f7bb9b8d53fca66c152c3303ac72001a54e59a845a5f4bb7",
-    "size": 3673
+    "sha256": "79c79002a29c9d580f4d161cca4282faec3210a9deb2f2ead1b94137680bfdb7",
+    "size": 3558
   },
   "CMD/FDISK/GLOBAL.OBJ": {
     "sha256": "480b3cf5bc7a81d13158805053fb0dc32cba9a1fbe1a56b56af1a46257289321",
     "size": 884
   },
   "CMD/FDISK/INPUT.OBJ": {
-    "sha256": "999628411e95b176a6804f84e613f7c9fd94e904880974238533567bfca80559",
-    "size": 6459
+    "sha256": "c98221cdde74ec4c971a07f3b75bfcb9baca77d680599d723dc0a027e34ec147",
+    "size": 6270
   },
   "CMD/FDISK/INT13.OBJ": {
-    "sha256": "d96487def2ef864b3e323e0e2ac11a5d2a13cefd3327079f18cf8c0c6a8c9681",
-    "size": 4362
+    "sha256": "aff2d057747858dde78eb8bea733564f88b18b55570f7388ff15134b9987c0e0",
+    "size": 4399
   },
   "CMD/FDISK/MAIN.OBJ": {
-    "sha256": "a5306e7fa52ddd9eb2e0cc67dfc87c9d3e0968ebc8d679f3d04ba2420ec8925c",
-    "size": 3523
+    "sha256": "d943887d6a6d9cf0240f590cace0a3d579ff2bce246daa99d7621b920f401096",
+    "size": 3433
   },
   "CMD/FDISK/MAINMENU.OBJ": {
-    "sha256": "a7f45d05229f4f73848b702139d3d96cff75492652499de975789edaeb50ef6a",
-    "size": 2030
+    "sha256": "287d729c0b37deee97880eac614f3fc9ed4c0919e7b59aad1fddd2a67af21099",
+    "size": 1938
   },
   "CMD/FDISK/MAKEPART.OBJ": {
-    "sha256": "26c9fd0ae1d3836966e161463cb9bccc81e72368840e538a6743f3fd0504ed5c",
-    "size": 5268
+    "sha256": "e475fe7753468c831e15209c9ae807bc07b6967335e8792d10c96c99811bfddb",
+    "size": 5177
   },
   "CMD/FDISK/MESSAGES.OBJ": {
-    "sha256": "f8fcd55377327e57074b2a5037d82d1e0534cb2856cfa9900d1c56e67e287497",
-    "size": 1117
+    "sha256": "fa1292f3c6e30b8d5403a564274c5d8f1f812fb530f1f3966383d16bb93fa226",
+    "size": 1076
   },
   "CMD/FDISK/PARTINFO.OBJ": {
-    "sha256": "97d30b2ea39f24aea311af0bb271cd070ef0823443bfad33ab14c303a42193a1",
-    "size": 2889
+    "sha256": "9932569afac52e8f24b10ac06ebad4eabe51281f7b4edcb30d1f5b9049e2b987",
+    "size": 2656
   },
   "CMD/FDISK/REBOOT.OBJ": {
     "sha256": "757d3bbcf0ccc6945eccde2a9faa91c7756adeafadd1f98357b71cc20b0f76a7",
     "size": 169
   },
   "CMD/FDISK/SPACE.OBJ": {
-    "sha256": "23b39fd455794c2b290d4f4938f5c0a696e2a0775928f3d844735ef22b005f9c",
-    "size": 10018
+    "sha256": "1b840c65db8a4c4e646fbe519a9857ee91b9f161b51fbf620228597010346350",
+    "size": 9576
   },
   "CMD/FDISK/TDISPLAY.OBJ": {
-    "sha256": "b214eb4b3450b3bb2a7a58377224a45cba8986e5132465e2316c1375ed96f5ec",
-    "size": 2126
+    "sha256": "68e527965db87d49136edcdf1e80704064da72ac9fbb5f487df03febba6a7c0f",
+    "size": 2043
   },
   "CMD/FDISK/VDISPLAY.OBJ": {
-    "sha256": "e4887a304fa2623150cec04821ae54828d15f51d5595e9e02953d5c0f9e0ee25",
-    "size": 3138
+    "sha256": "5b2fcfe4a5c68f065da7f3dc6bdaed5cfaafda21d0c48a090647286456eae0b9",
+    "size": 2965
   },
   "CMD/FDISK/VIDEO.OBJ": {
-    "sha256": "318426199e54f0ba68d7f37e986cc5c5696edd7d3cce4423216e59250172c3ed",
-    "size": 1220
+    "sha256": "4aca7b03f5c2f08230f1aeb2eb3bd94a740be5a875a6e4cdb11ed79b693e13ca",
+    "size": 1191
   },
   "CMD/FDISK/_MSGRET.OBJ": {
     "sha256": "03b5a8026b459afd9ffbad74fe73073d405741ba9ff91b66398d5055357ded4b",
@@ -656,12 +656,12 @@
     "size": 3706
   },
   "CMD/FILESYS/FILESYS.EXE": {
-    "sha256": "52b4b02abc5d357d78bfe490571941195c6931c81d92d859f3ff42586478abb8",
-    "size": 15538
+    "sha256": "568daf979a89fc34ed69aac31a1ecee91545d39ffc0d52ffb837578d158af224",
+    "size": 16736
   },
   "CMD/FILESYS/FILESYS.OBJ": {
-    "sha256": "450410748a3df7633d17a94589750d0b39d48f7eeb98c2a39bddc6bcc450ac7e",
-    "size": 8247
+    "sha256": "709e0d9b14e8b72693e78e608ca960ad63fb51e6d0dca6bd19822f82ccb1ccdb",
+    "size": 7944
   },
   "CMD/FILESYS/_MSGRET.OBJ": {
     "sha256": "567fac3249a8a3a9ab615533157ed651d799b1b974dd8dd88a1627f30f513542",
@@ -860,12 +860,12 @@
     "size": 5072
   },
   "CMD/JOIN/JOIN.EXE": {
-    "sha256": "9fa72d21f410ba535e01a14878e034b890384fd3ecef1be0840c7721d6749a48",
-    "size": 23745
+    "sha256": "42ec546fae457e4d62a5d72b2b108d28f9b6471ed5a6e84ead8d7f7949a48d76",
+    "size": 24000
   },
   "CMD/JOIN/JOIN.OBJ": {
-    "sha256": "fcef50c9979d00add1a2c353e17ece6b819cda12ffb847aba743c157fe89eff5",
-    "size": 7291
+    "sha256": "73803efa6f01d199bf18741c95a95a3e5834e350b5a090c68a72a93386760f02",
+    "size": 6950
   },
   "CMD/JOIN/_MSGRET.OBJ": {
     "sha256": "b0fbc9ea4171a9eb3f3fdf1f14debd2845b97d4a4b2da091a744e45dbbe7771a",
@@ -932,12 +932,12 @@
     "size": 3679
   },
   "CMD/MEM/MEM.EXE": {
-    "sha256": "9018447f1b7e76c2ad1226660e3088c1f3ac09ac849b105056a5513b91aac8d1",
-    "size": 33312
+    "sha256": "2e90d903efdf4f77c8e33985d541c94041ab102a5cf2f171c83a0635e6f1e38e",
+    "size": 31904
   },
   "CMD/MEM/MEM.OBJ": {
-    "sha256": "23569ebc9238218717366f12b266a57e69e2657d82b22c5128d26b0bd5baf86f",
-    "size": 20764
+    "sha256": "7158c83968aec1ed0633361aae82572fa521630a891110d3b7f9d2e345a77d6b",
+    "size": 20661
   },
   "CMD/MEM/_MSGRET.OBJ": {
     "sha256": "a992b39f8db0e68ab45beedb1a6872fb8257ccce8b48a61640a5b9d0d1028143",
@@ -1080,12 +1080,12 @@
     "size": 1320
   },
   "CMD/REPLACE/REPLACE.EXE": {
-    "sha256": "783ba62bf889ef9a4318f3bc579f8173d0737c657ddea6720e77f7a966a9e61c",
-    "size": 29652
+    "sha256": "5ef9ac4431e807e50887860627a067ef4e2fbc74a13045789341f7faf6f94e2c",
+    "size": 29248
   },
   "CMD/REPLACE/REPLACE.OBJ": {
-    "sha256": "07cfcc4b642dd97368205367c283827578bbcf606a77498c4d54b8417b5e6aea",
-    "size": 23682
+    "sha256": "24b78922ed1db02a20f213abd762778d6efad95d8099421cb8cb43c475e15c06",
+    "size": 22582
   },
   "CMD/REPLACE/_MSGRET.OBJ": {
     "sha256": "e57de7ccee00be6f22a5322f9febe7dac31feb28a11bcd19f9ca6dfe0bbc2fdd",
@@ -1100,56 +1100,56 @@
     "size": 397
   },
   "CMD/RESTORE/RESTORE.COM": {
-    "sha256": "849f1507e3195eade2c229db9da2ca2d7414cf8a73ca6a9ab18586d6f16f370c",
-    "size": 65229
+    "sha256": "2a08e2b6e2fd266815687233823d396068ec67edc2351bd4bb66a3bfbb94f008",
+    "size": 63419
   },
   "CMD/RESTORE/RESTORE.OBJ": {
-    "sha256": "f8b00eb474c8d2dee2846ed6b8c78777a6a4bd4eeb71a6256db96246d621edab",
-    "size": 1201
+    "sha256": "07d4430da75e4b007925165224b0f6a9cc03bf8b58948853c72b1a21bd86f5ca",
+    "size": 1185
   },
   "CMD/RESTORE/RESTPARS.OBJ": {
-    "sha256": "5b5d5678dfca5ed007c696cd16cdfd543dd210a32d975ed2c9c8971513fee6a3",
-    "size": 15167
+    "sha256": "fb4a582b1064a9ba1400774fd2bb9d53b7ccb64cce8ed558966d4cc972ec5460",
+    "size": 14409
   },
   "CMD/RESTORE/RTDO.OBJ": {
-    "sha256": "95e3b9025d696a3ccbf769da891b852e2a212dcffe2065a538c45ddba6763c87",
-    "size": 4385
+    "sha256": "57684f25710407900510e44f41379f63c8bedda65ae55618566a0e9d5961ac2b",
+    "size": 4248
   },
   "CMD/RESTORE/RTDO1.OBJ": {
-    "sha256": "2499ac0dbfcb1921d9f4c3bf781865c1874b3eec94a91b5276e321a6826f3900",
-    "size": 4205
+    "sha256": "59006ccb8005484866316f6db452e356b2bcb4a1edf84915860711f048c20988",
+    "size": 4036
   },
   "CMD/RESTORE/RTFILE.OBJ": {
-    "sha256": "14cb065c1a089f14c34dd27ff198b11ca902e534e42b14dcd0cba7c22b32ba5c",
-    "size": 5956
+    "sha256": "b5429a63e6564a7cca7ddc89b0921e8426ffbfd2c88b9d4206831183c82077f6",
+    "size": 5841
   },
   "CMD/RESTORE/RTFILE1.OBJ": {
-    "sha256": "2fbe2435d675511cee8800b5733a75b917c77693d4ba613b6a242be2f4a90b24",
-    "size": 3220
+    "sha256": "711f051fa95015c811f8e738d9cf4b243749afbdccc18852212172b26e15e9f3",
+    "size": 3113
   },
   "CMD/RESTORE/RTNEW.OBJ": {
-    "sha256": "79c1cf4c9e562bb89cd63e84a3f3b986767b91d7243cf4726f331ebc56e1a2fa",
-    "size": 2424
+    "sha256": "d01a7ceeb876f35130165122c3131761a8f70a9b1a4c02783caf29f1238c3cfe",
+    "size": 2323
   },
   "CMD/RESTORE/RTNEW1.OBJ": {
-    "sha256": "ef5c3eabc25c752aa1d0433fa4bd2dbd74cd0650ed1267ebf869c0f2c26c4230",
-    "size": 4903
+    "sha256": "2cd3765e47e2483f04e108aff84634ec1de1cc9f8042f3a8f85b06dcb3bd3eda",
+    "size": 4641
   },
   "CMD/RESTORE/RTOLD.OBJ": {
-    "sha256": "68aa112480eb9bd95c969e966cb2cc6b7925090815b8b348f9cf69b3fd6aecc4",
-    "size": 2590
+    "sha256": "cf64d838694f708c821f3b60dd60c0a3b2d855b9aa9b9ee0a0f2618985b17c9a",
+    "size": 2443
   },
   "CMD/RESTORE/RTOLD1.OBJ": {
-    "sha256": "1c5a0be68f867da1b512066b28a9ec355cc53105351cb661ed5c43375798e989",
-    "size": 5939
+    "sha256": "b577967ba8f7e78458b7ea6fa04a615c62895102ee3748aaf494c9673b484118",
+    "size": 5550
   },
   "CMD/RESTORE/RTT1.OBJ": {
-    "sha256": "ce0e1c2e1dad458295443613a16f6f51170101397c69c80ec3eb8663bca51595",
-    "size": 567
+    "sha256": "580fa2fef4afedaa668918f65dda5e67dc6b0fbafe8e6982968a023b109a4b76",
+    "size": 535
   },
   "CMD/RESTORE/RTT3.OBJ": {
-    "sha256": "38d75a53c1bad92a9debc70555b770af1cd13c7cdf138a57852dcb19f66c29db",
-    "size": 4065
+    "sha256": "12e010c28d9ce6df9947849c9e8ead8377af21f996b560db8e3978a0fbd42aaf",
+    "size": 3851
   },
   "CMD/RESTORE/_MSGRET.OBJ": {
     "sha256": "8c5a13c91df85f28d6ad99f82eba652804f1ef6dce2f81d782d62393a3655dc7",
@@ -1192,12 +1192,12 @@
     "size": 327
   },
   "CMD/SUBST/SUBST.EXE": {
-    "sha256": "0159d5421a01959de4c456e7b1f535841314d0b2bab43c3d44aeb9d76ebc0d85",
-    "size": 24935
+    "sha256": "d7af32718abd278fe6102d0f9f75d5c1028f06fdd99a376f5c64ddc4f60fa784",
+    "size": 26304
   },
   "CMD/SUBST/SUBST.OBJ": {
-    "sha256": "1bd60eabdb48373edc4290cc354792601b98645c9b7dc978bf8412437cb32ea0",
-    "size": 7984
+    "sha256": "169ea10c18ba61b7dd1ca15803332dae65c71b199c3ad9856f957ddab5a68e67",
+    "size": 7588
   },
   "CMD/SUBST/_MSGRET.OBJ": {
     "sha256": "3fb22a7fc530e5b00831476ce297d7a27df9c99773c49747fa116155186e130d",
@@ -1780,11 +1780,11 @@
     "size": 533
   },
   "INC/CDS.OBJ": {
-    "sha256": "ac5ba5eaf240c82f550313b12fba9e4b8ea4b4a624dd9eb2eb83319e60f74558",
-    "size": 1253
+    "sha256": "bc4c0424dda573afc2fd518d7b8cb6499b1969e3e2a8256ec7d7491db225aad6",
+    "size": 1215
   },
   "INC/COMSUBS.LIB": {
-    "sha256": "b190ed747500a799fa8feef0f72ce7f0bb827d4b3ea4ba9d0ec8fc30fa720405",
+    "sha256": "190412bea97883c19b0b00d045a2d65deb07c836ffcb6e607d547b202b5cfe41",
     "size": 4629
   },
   "INC/CONST2.OBJ": {
@@ -1792,16 +1792,16 @@
     "size": 1561
   },
   "INC/DPB.OBJ": {
-    "sha256": "153f5a6acebb13d65fad31322d5386ab1980d81eca97b88986d70f4cb03511a5",
-    "size": 453
+    "sha256": "0a9f73ae3a1a779fa9ff75e045899b2c3a5ffcfb36095ba6f7b4c23d8a648792",
+    "size": 425
   },
   "INC/ERRTST.OBJ": {
-    "sha256": "d6043d0d486c17b314581db930ad1c7dbbbdd3439f9373eda336bd59f78afcad",
-    "size": 2930
+    "sha256": "ea1b84b4c96e1ad3b7fd185cee982496fb215b05ec2deef4ac3f824c94c928cf",
+    "size": 2720
   },
   "INC/KSTRING.OBJ": {
-    "sha256": "f51d3643e4b7f9a40982da974e3a1b1f48aa0fef3ad51f4c2e77918c509202b5",
-    "size": 985
+    "sha256": "e2bb9834c3b86dc1ed8a8e22b2f4c540cf8dd160166da151ddf2978356d14079",
+    "size": 929
   },
   "INC/MSDATA.OBJ": {
     "sha256": "606da0d134591f6627e22edb3859f12bdac01f829d6b1e05c46c358987a1b90e",
@@ -1824,20 +1824,20 @@
     "size": 1159
   },
   "INC/STRING.OBJ": {
-    "sha256": "e5d42e61c3bf4e3cbaeceea54b93138df49073c2cece1ee35ff684dcba25011f",
-    "size": 520
+    "sha256": "23af885b596af475e01e3c960da1cdd8acd31b89cff018242fb019357fcb4186",
+    "size": 477
   },
   "INC/SYSVAR.OBJ": {
-    "sha256": "e77f7b4083c1e9be3202b64632ef849794324fd623b1d79085ec531c57e46909",
-    "size": 600
+    "sha256": "286dcf545f42e3350196f05aca6ab40cdbf3c7076a63faf71741f4dad53abe75",
+    "size": 632
   },
   "LIB/LIB.EXE": {
     "sha256": "7800edec19b10a051050aed5948e16ee96f0cb454ea18db0f32a1ab2757ed9ba",
     "size": 46071
   },
   "LIB/MEM.LIB": {
-    "sha256": "722c035ab9deaff224a95ecf4c84afbec30a42a157f32d87ce124cb04f4ab7a3",
-    "size": 10285
+    "sha256": "7e707ba63a5e1c1df5eabe67c82f7586824107a7e21b63513dc21de49a235903",
+    "size": 11823
   },
   "MAPPER/ALLOCSEG.OBJ": {
     "sha256": "a7a7734fdd777f50e9aaac77df2bbf97621bd2b7baec195c8d799d0d08c0aa8f",
@@ -2056,8 +2056,8 @@
     "size": 126
   },
   "MEMM/EMM/EMM40.OBJ": {
-    "sha256": "f54c010f343b402676df31a11d6fae9bed02c5c24f02446f5dde218a75344e4f",
-    "size": 5614
+    "sha256": "175fc590ac7be8e971fc0b96ab1b9f3341642d9305b28aaa18c1f131a886b385",
+    "size": 5302
   },
   "MEMM/EMM/EMMDATA.OBJ": {
     "sha256": "276bfdeff2a78f6b3ffd2e2b7c4e368180d2087a26f9dd08b1070d9d10d45832",
@@ -2068,16 +2068,16 @@
     "size": 1309
   },
   "MEMM/EMM/EMMFUNCT.OBJ": {
-    "sha256": "fb9517c3ff88850c12b4a8118c64fad326d9292c422ceeebd937a31dbc1c8b3c",
-    "size": 3876
+    "sha256": "031021dbbad03fde8f4e4615397921f695c4b328a7063117b0c530899450efcd",
+    "size": 3637
   },
   "MEMM/EMM/EMMINC.OBJ": {
     "sha256": "b6d22970915ef59493d8f71dff89c6539e14fa41a09e4cd76ff74d2a52469472",
     "size": 377
   },
   "MEMM/EMM/EMMLIB.LIB": {
-    "sha256": "d1002235a5f6a754e96597ddfa6fc472cc6cd07103ed63549619562f1974e44b",
-    "size": 35401
+    "sha256": "770b1cbc4326b321b154d7a72b2109fe062139b0027fe996ca5de5ce77b9c2f8",
+    "size": 34889
   },
   "MEMM/EMM/EMMP.OBJ": {
     "sha256": "21e446451df5a00f3b5bf56f66be752be0a490fc719a61011e0212fa839588a3",
@@ -2164,8 +2164,8 @@
     "size": 405
   },
   "MEMM/MEMM/MAPDMA.OBJ": {
-    "sha256": "ef48c32cd5384e5f5039954746cfbeacb88f6b9e53df467eb3f3949ec2f4c15a",
-    "size": 5208
+    "sha256": "45f3a346ded92cb5132bd47ca50c9c73de19b5797ac19e1957fd0436ebf11b7e",
+    "size": 5890
   },
   "MEMM/MEMM/MAPLIN.OBJ": {
     "sha256": "c1e61a2a0d67128c8446a9a6eb9f09d4e7ffd4633de2ea927447e40dd949d9f5",
@@ -2240,8 +2240,8 @@
     "size": 1800
   },
   "MEMM/MEMM/emm386.sys": {
-    "sha256": "66afc53be247876f30f9a5728b6f52be9aeb5e0d895552b5f1dda64db977c894",
-    "size": 94768
+    "sha256": "55efc5fbcf114adf75dc51e3bfa8c559dc51bfaa45f66a5c14a4cc63766d34c1",
+    "size": 94896
   },
   "SELECT/ASM2C.OBJ": {
     "sha256": "60bd452b76916331f87e765c4af866f575e00f9876fe9e34ca727178eb1409be",
@@ -2280,8 +2280,8 @@
     "size": 741
   },
   "SELECT/GET_STAT.OBJ": {
-    "sha256": "51ad52e8e8ffcb135dbba753e2465dcb310a9bbd7e9d0ff406ce8947165c1a55",
-    "size": 24231
+    "sha256": "516bb0187b8030303ca5f0f520dffd0f9cb3c6bc8ff78418d495bacf53ac1fcf",
+    "size": 23272
   },
   "SELECT/GLOBAL.OBJ": {
     "sha256": "b4b4582baf66504c3f2546417b5de7561a531328db22a36c0dd1a54c489d4f24",
@@ -2296,8 +2296,8 @@
     "size": 4215
   },
   "SELECT/INT13.OBJ": {
-    "sha256": "23e96793f8be8eaf16c7764f0bd944738f1b067eebe109775383fddede4a4749",
-    "size": 2101
+    "sha256": "0f7dbb2bb4b538b9df529f34f5044d74e8be74ac1c2a47673a2292106e7a24dd",
+    "size": 2034
   },
   "SELECT/INTVEC.OBJ": {
     "sha256": "53ea1c9b1be437db47ea474e56e04ed89606df10d5d056992dee2ad8274726c9",
@@ -2352,8 +2352,8 @@
     "size": 3642
   },
   "SELECT/SELECT.EXE": {
-    "sha256": "7fab2fcbf11165d550f4682f94214587c986a9e6a48eb1f85faaf6b346f31be9",
-    "size": 81837
+    "sha256": "b729590a4c86d7f98e87ed69d4e84cf29ca65eaf8e6f2ff60d2b2fb8118af477",
+    "size": 81053
   },
   "SELECT/SELECT0.OBJ": {
     "sha256": "eb815b48a2ff8d0234cfa63909e61ac026792a9b6d80f89516634277f83ffd04",
@@ -2448,8 +2448,8 @@
     "size": 153
   },
   "TOOLS/BLD/LIB/CLIBCE.LIB": {
-    "sha256": "722c035ab9deaff224a95ecf4c84afbec30a42a157f32d87ce124cb04f4ab7a3",
-    "size": 10285
+    "sha256": "7e707ba63a5e1c1df5eabe67c82f7586824107a7e21b63513dc21de49a235903",
+    "size": 11823
   },
   "TOOLS/BLD/LIB/CLIBCR.LIB": {
     "sha256": "adedef4ea1deef051c56d9cf4863fcdc2a3722eddc3602d0d73df03b96d4ed0d",
@@ -2476,8 +2476,8 @@
     "size": 14209
   },
   "TOOLS/BLD/LIB/LLIBCE.LIB": {
-    "sha256": "722c035ab9deaff224a95ecf4c84afbec30a42a157f32d87ce124cb04f4ab7a3",
-    "size": 10285
+    "sha256": "7e707ba63a5e1c1df5eabe67c82f7586824107a7e21b63513dc21de49a235903",
+    "size": 11823
   },
   "TOOLS/BLD/LIB/LLIBCR.LIB": {
     "sha256": "7961eafce689dbf17acc3fd6fe34be6bc000f60d0f02fb1af2602b09112f3d2e",
@@ -2492,8 +2492,8 @@
     "size": 487
   },
   "TOOLS/BLD/LIB/MLIBCE.LIB": {
-    "sha256": "722c035ab9deaff224a95ecf4c84afbec30a42a157f32d87ce124cb04f4ab7a3",
-    "size": 10285
+    "sha256": "7e707ba63a5e1c1df5eabe67c82f7586824107a7e21b63513dc21de49a235903",
+    "size": 11823
   },
   "TOOLS/BLD/LIB/MLIBCR.LIB": {
     "sha256": "a8c6bf65551559a795f3bdcef3f70178086bf944296413716e48cba95814b9cb",
@@ -2508,16 +2508,16 @@
     "size": 507
   },
   "TOOLS/BLD/LIB/SETARGV.OBJ": {
-    "sha256": "acfa7e5e416ae6f91e0ced35272297d08f40e7ae29d8fc805cf7b03c3ae0848e",
-    "size": 160
+    "sha256": "1d77c8902ac469943c71891949c4c3fa5f0232257939f055c1f8ef68588c2885",
+    "size": 154
   },
   "TOOLS/BLD/LIB/SLIBC.LIB": {
-    "sha256": "722c035ab9deaff224a95ecf4c84afbec30a42a157f32d87ce124cb04f4ab7a3",
-    "size": 10285
+    "sha256": "7e707ba63a5e1c1df5eabe67c82f7586824107a7e21b63513dc21de49a235903",
+    "size": 11823
   },
   "TOOLS/BLD/LIB/SLIBCE.LIB": {
-    "sha256": "722c035ab9deaff224a95ecf4c84afbec30a42a157f32d87ce124cb04f4ab7a3",
-    "size": 10285
+    "sha256": "7e707ba63a5e1c1df5eabe67c82f7586824107a7e21b63513dc21de49a235903",
+    "size": 11823
   },
   "TOOLS/BLD/LIB/SLIBCR.LIB": {
     "sha256": "ce2dc6d740ae477135e2d9f11802c2357914994835e82a165423b43ccd30728f",
