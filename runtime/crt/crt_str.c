@@ -1,5 +1,8 @@
 /* Clean-room 16-bit MS-DOS CRT string and ctype functions (WP-5) */
 
+unsigned char _ctype_[257] = { 0 };
+unsigned char *_ctype = _ctype_;
+
 int isalpha(int c) {
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
 }

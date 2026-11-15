@@ -33,14 +33,21 @@ int main(int argc, char** argv) {
     }
     try {
         std::string response_text = command;
-        if (!command.empty() && command.front() == '@') {
-            std::string response_name = command.substr(1);
-            while (!response_name.empty() && response_name.back() == ';') {
+        const std::size_t at_pos = command.find('@');
+        if (at_pos != std::string::npos &&
+            (at_pos == 0 || command[at_pos - 1] == ' ')) {
+            std::string prefix_switches = command.substr(0, at_pos);
+            std::string response_name = command.substr(at_pos + 1);
+            while (!response_name.empty() &&
+                   (response_name.back() == ';' || response_name.back() == ' ')) {
                 response_name.pop_back();
             }
             const std::vector<std::uint8_t> raw =
                 read_file(resolve_dos_input(response_name).string());
             response_text.assign(raw.begin(), raw.end());
+            if (!prefix_switches.empty()) {
+                response_text = prefix_switches + "\n" + response_text;
+            }
         }
         const LinkResponse response = parse_link_response(response_text);
         std::vector<Module> modules;
@@ -50,7 +57,12 @@ int main(int argc, char** argv) {
         std::vector<std::string> default_libraries;
         for (const std::string& object : response.objects) {
             std::string name = object;
-            if (name.find('.') == std::string::npos) name += ".obj";
+            const std::size_t slash = name.find_last_of("\\/");
+            const std::size_t dot = name.rfind('.');
+            if (dot == std::string::npos ||
+                (slash != std::string::npos && dot < slash)) {
+                name += ".obj";
+            }
             const std::vector<std::uint8_t> raw =
                 read_file(resolve_dos_input(name).string());
             const std::vector<OmfRecord> records = parse_omf_records(raw, 0, true);

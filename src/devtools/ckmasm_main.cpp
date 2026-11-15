@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 int main(int argc, char** argv) {
@@ -29,6 +30,20 @@ int main(int argc, char** argv) {
                 }
             } else if (flag == 't' || flag == 'T') {
                 terse = true;
+            } else if (flag == 'd' || flag == 'D') {
+                std::string def = argument.substr(2);
+                const std::size_t eq = def.find('=');
+                if (eq == std::string::npos) {
+                    options.defines.emplace_back(def, 1);
+                } else {
+                    const std::string name = def.substr(0, eq);
+                    std::int64_t val = 1;
+                    try {
+                        val = std::stoll(def.substr(eq + 1), nullptr, 0);
+                    } catch (...) {
+                    }
+                    options.defines.emplace_back(name, val);
+                }
             } else {
                 std::cerr << "ckmasm: unsupported option " << argument << "\n";
                 return 2;
@@ -51,8 +66,23 @@ int main(int argc, char** argv) {
         if (comma == std::string::npos) break;
         start = comma + 1;
     }
-    const std::string source = parts[0];
-    const std::string object = parts.size() > 1 && !parts[1].empty() ? parts[1] : source;
+    std::string source = parts[0];
+    if (source.find('.') == std::string::npos ||
+        (source.find_last_of("\\/") != std::string::npos &&
+         source.rfind('.') < source.find_last_of("\\/"))) {
+        source += ".asm";
+    }
+    std::string object;
+    if (parts.size() > 1 && !parts[1].empty()) {
+        object = parts[1];
+        if (object.find('.') == std::string::npos ||
+            (object.find_last_of("\\/") != std::string::npos &&
+             object.rfind('.') < object.find_last_of("\\/"))) {
+            object += ".obj";
+        }
+    } else {
+        object = std::filesystem::path(source).stem().string() + ".obj";
+    }
 
     const MasmResult result = masm_assemble(source, options);
     for (const std::string& line : result.console) std::cout << line << "\n";

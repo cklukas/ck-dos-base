@@ -218,6 +218,13 @@ class Planner {
         std::string_view stem;
         const std::string_view target_suffix = suffix_of(name, stem);
         if (target_suffix.empty()) return nullptr;
+        if (target_suffix.rfind(".cl", 0) == 0) {
+            if (const TargetRule* ctl = find_rule(makefile_, std::string(stem) + ".ctl");
+                ctl != nullptr) {
+                resolve(ctl->target);
+                return nullptr;
+            }
+        }
         for (const InferenceRule& candidate : makefile_.macros.rules) {
             if (candidate.to_suffix != target_suffix) continue;
             const std::string source =
@@ -248,19 +255,20 @@ class Planner {
 
 std::vector<TargetRule> parse_target_rules(const std::vector<std::string>& lines, const MacroFile& macros) {
     std::vector<TargetRule> rules;
-    TargetRule* active = nullptr;
+    std::size_t active_count = 0;
     for (const std::string& raw : lines) {
         const std::string_view line = raw;
         const std::string_view trimmed = trim(line);
         if (trimmed.empty()) {
-            active = nullptr;
             continue;
         }
-        if (active != nullptr && !line.empty() && (line.front() == '\t' || line.front() == ' ')) {
-            active->recipe.push_back(std::string(trimmed));
+        if (active_count > 0 && !line.empty() && (line.front() == '\t' || line.front() == ' ')) {
+            for (std::size_t k = rules.size() - active_count; k < rules.size(); ++k) {
+                rules[k].recipe.push_back(std::string(trimmed));
+            }
             continue;
         }
-        active = nullptr;
+        active_count = 0;
         if (looks_like_macro_definition(trimmed) || looks_like_suffix_rule_header(trimmed)) continue;
         const std::size_t colon = trimmed.find(':');
         if (colon == std::string_view::npos) continue;
@@ -268,8 +276,12 @@ std::vector<TargetRule> parse_target_rules(const std::vector<std::string>& lines
             expand_macros(trim(trimmed.substr(0, colon)), macros);
         if (name.empty()) continue;
         const std::string expanded_deps = expand_macros(trimmed.substr(colon + 1), macros);
-        rules.push_back({name, split_whitespace(expanded_deps), {}});
-        active = &rules.back();
+        const std::vector<std::string> targets = split_whitespace(name);
+        const std::vector<std::string> deps = split_whitespace(expanded_deps);
+        for (const std::string& t : targets) {
+            rules.push_back({t, deps, {}});
+        }
+        active_count = targets.size();
     }
     return rules;
 }

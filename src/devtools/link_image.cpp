@@ -727,6 +727,21 @@ LinkResult link_modules(const std::vector<Module>& modules, bool map_publics,
                     }
                     break;
                 }
+                case 9: {  // offset32
+                    const std::uint32_t cur =
+                        static_cast<std::uint32_t>(image[at]) |
+                        (static_cast<std::uint32_t>(image[at + 1]) << 8) |
+                        (static_cast<std::uint32_t>(image[at + 2]) << 16) |
+                        (static_cast<std::uint32_t>(image[at + 3]) << 24);
+                    const std::uint32_t val = fixup.segment_relative
+                        ? (cur + target_linear - target_frame * 16u)
+                        : (cur + target_linear - (at + 4));
+                    image[at] = static_cast<std::uint8_t>(val & 0xFF);
+                    image[at + 1] = static_cast<std::uint8_t>((val >> 8) & 0xFF);
+                    image[at + 2] = static_cast<std::uint8_t>((val >> 16) & 0xFF);
+                    image[at + 3] = static_cast<std::uint8_t>((val >> 24) & 0xFF);
+                    break;
+                }
                 case 2: {  // base
                     write16(at, static_cast<std::uint16_t>(read16(at) + target_frame));
                     if (target_relocatable) {

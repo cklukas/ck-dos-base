@@ -6,15 +6,17 @@ _TEXT   ENDS
 
 _DATA   SEGMENT WORD PUBLIC 'DATA'
         PUBLIC  __acrtused
-        PUBLIC  _osmajor
-        PUBLIC  _osminor
+        PUBLIC  __osmajor
+        PUBLIC  __osminor
         PUBLIC  _errno
         PUBLIC  __psp
+        PUBLIC  _DOS_TopOfMemory
 __acrtused  DW  1
-_osmajor    DB  4
-_osminor    DB  0
+__osmajor   DB  4
+__osminor   DB  0
 _errno      DW  0
 __psp       DW  0
+_DOS_TopOfMemory DW 0A000h
 _DATA   ENDS
 
 CONST   SEGMENT WORD PUBLIC 'CONST'
@@ -46,8 +48,8 @@ __start PROC    NEAR
         ; Query DOS version (INT 21h AH=30h)
         mov     ah, 30h
         int     21h
-        mov     _osmajor, al
-        mov     _osminor, ah
+        mov     __osmajor, al
+        mov     __osminor, ah
 
         ; Call _main(0, 0, 0) - minimal startup; argv/envp can be populated by _setargv
         xor     ax, ax

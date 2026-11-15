@@ -327,7 +327,8 @@ const std::map<std::string, int>& creg() {
     return table;
 }
 const std::map<std::string, int>& sreg() {
-    static const std::map<std::string, int> table{{"ES", 0}, {"CS", 1}, {"SS", 2}, {"DS", 3}};
+    static const std::map<std::string, int> table{
+        {"ES", 0}, {"CS", 1}, {"SS", 2}, {"DS", 3}, {"FS", 4}, {"GS", 5}};
     return table;
 }
 
@@ -338,6 +339,7 @@ struct Operand {
     bool value_known = true;
     // memory addressing
     bool has_base_bx = false, has_base_bp = false, has_si = false, has_di = false;
+    int base32 = -1;      // 0..7 for 32-bit base register [EAX..EDI]
     int size = 0;         // 0 unknown, 1 byte, 2 word (from ptr or register)
     // A 386 dword operand in a 16-bit segment: the encoding is the ordinary
     // 16-bit form behind a 66 operand-size prefix, with EAX..EDI riding the
@@ -526,6 +528,14 @@ class Assembler {
         comment_delimiter_ = '\0';
         if (pass_ == 1) {
             symbols_.clear();
+            for (const auto& [def_name, def_val] : options_.defines) {
+                Symbol sym;
+                sym.kind = Symbol::constant;
+                sym.spelling = def_name;
+                sym.value = static_cast<long>(def_val);
+                sym.defined = true;
+                symbols_[upper(def_name)] = std::move(sym);
+            }
             externs_.clear();
             extern_sequences_.clear();
             text_equates_.clear();
@@ -1868,10 +1878,17 @@ class Assembler {
         if (!list.empty() && list.front() == '<' && list.back() == '>') {
             list = list.substr(1, list.size() - 2);
         }
+        if (list.empty()) return;
         // Each item sheds one angle level, exactly like a macro argument:
         // STRUC.INC's `irp x,<<jeq,je>,...>` hands `$BuildJump x` the two
         // names as separate arguments.
         const auto push_item = [this](std::string item) {
+            while (!item.empty() && (item.front() == ' ' || item.front() == '\t')) {
+                item.erase(item.begin());
+            }
+            while (!item.empty() && (item.back() == ' ' || item.back() == '\t')) {
+                item.pop_back();
+            }
             if (item.size() >= 2 && item.front() == '<' && item.back() == '>') {
                 item = item.substr(1, item.size() - 2);
             }
@@ -3845,6 +3862,19 @@ class Assembler {
                         return token.kind == Token::ident &&
                                upper(token.text) == "OFFSET";
                     });
+                if (pass_ == 2 && !operand.from_offset) {
+                    for (const Token& token : expr) {
+                        if (token.kind != Token::ident) continue;
+                        const std::string w = upper(token.text);
+                        if (symbols_.contains(w) &&
+                            (symbols_.at(w).kind == Symbol::label ||
+                             symbols_.at(w).kind == Symbol::constant) &&
+                            !defined_this_pass_.contains(w)) {
+                            operand.forward_const = true;
+                            break;
+                        }
+                    }
+                }
                 at = end;
                 return operand;
             }
@@ -4148,6 +4178,7 @@ class Assembler {
             // not reached the definition.
             if (finished.kind == Operand::mem && !finished.has_base_bx &&
                 !finished.has_base_bp && !finished.has_si && !finished.has_di &&
+                finished.base32 < 0 &&
                 finished.fixup_segment == 0 && finished.fixup_extern == 0 &&
                 finished.segment_override < 0 && finished.home_segment == 0 &&
                 !finished.bracket_field && !finished.disp_symbolic) {
@@ -4163,7 +4194,7 @@ class Assembler {
             // memory displacement instead.
             else if (finished.kind == Operand::mem && finished.from_offset &&
                      !finished.has_base_bx && !finished.has_base_bp &&
-                     !finished.has_si && !finished.has_di) {
+                     !finished.has_si && !finished.has_di && finished.base32 < 0) {
                 finished.kind = Operand::imm;
                 finished.segment_override = -1;
             }
@@ -4499,6 +4530,12 @@ class Assembler {
                 if (word == "BP") { operand.has_base_bp = true; ++at; continue; }
                 if (word == "SI") { operand.has_si = true; ++at; continue; }
                 if (word == "DI") { operand.has_di = true; ++at; continue; }
+                if (reg32().contains(word)) {
+                    operand.base32 = reg32().at(word);
+                    operand.address_wide = true;
+                    ++at;
+                    continue;
+                }
                 // `[BP+OFFSET DOSGROUP:ESCFUNC]`: the OFFSET of a label
                 // inside brackets keeps its relocation -- MSDOSME's JMP
                 // rides FF A6 0000 with a fixup to TABLE:02ff.
@@ -4888,6 +4925,13 @@ class Assembler {
                 const Value value = expression(rest, &used);
                 operand.value += add ? value.value : -value.value;
                 at = stop;
+                continue;
+            }
+            if (operand.kind == Operand::mem && tokens[at].kind == Token::punct &&
+                tokens[at].text == "." && tokens[at + 1].kind == Token::punct &&
+                tokens[at + 1].text == "[") {
+                ++at;
+                memory_brackets(operand, tokens, at);
                 continue;
             }
             if (operand.kind == Operand::mem && tokens[at].kind == Token::punct &&
@@ -5305,6 +5349,10 @@ class Assembler {
 
     void operand_fixup(const Operand& operand, bool self_relative = false) {
         if (operand.fixup_loc == 0) return;
+        if (operand.fixup_group > 0) {
+            note_group_fixup(operand.fixup_loc, operand.fixup_group);
+            return;
+        }
         // An explicit `offset GROUP:x` qualifier frames the fixup even
         // through the generic path (CTRLC's `SUB AX,OFFSET
         // DOSGroup:ErrMap24`).
@@ -5319,7 +5367,7 @@ class Assembler {
 
     static bool is_direct(const Operand& mem) {
         return mem.kind == Operand::mem && !mem.has_base_bx && !mem.has_base_bp &&
-               !mem.has_si && !mem.has_di;
+               !mem.has_si && !mem.has_di && mem.base32 < 0;
     }
 
     // The group that frames a memory reference: the group ASSUMEd to the
@@ -5391,6 +5439,31 @@ class Assembler {
 
     // modrm for the slice's addressing subset
     void emit_modrm_mem(int reg, const Operand& mem) {
+        if (mem.base32 >= 0) {
+            const int rm = mem.base32;
+            const long disp = mem.value;
+            if (mem.fixup_segment != 0 || mem.fixup_extern != 0) {
+                emit_byte(static_cast<std::uint8_t>(0x80 | (reg << 3) | rm));
+                if (rm == 4) emit_byte(0x24);
+                pending_frame_group_ = reaching_group(mem);
+                note_fixup(9, mem.fixup_segment, mem.fixup_extern, false, disp);
+                emit_dword(0);
+                return;
+            }
+            if (disp == 0 && rm != 5 && !mem.disp_symbolic) {
+                emit_byte(static_cast<std::uint8_t>(0x00 | (reg << 3) | rm));
+                if (rm == 4) emit_byte(0x24);
+            } else if (disp >= -128 && disp <= 127 && !mem.disp_symbolic) {
+                emit_byte(static_cast<std::uint8_t>(0x40 | (reg << 3) | rm));
+                if (rm == 4) emit_byte(0x24);
+                emit_byte(static_cast<std::uint8_t>(disp));
+            } else {
+                emit_byte(static_cast<std::uint8_t>(0x80 | (reg << 3) | rm));
+                if (rm == 4) emit_byte(0x24);
+                emit_dword(static_cast<std::uint32_t>(disp));
+            }
+            return;
+        }
         int rm = -1;
         if (mem.has_base_bx && mem.has_si) rm = 0;
         else if (mem.has_base_bx && mem.has_di) rm = 1;
@@ -5483,7 +5556,7 @@ class Assembler {
             // MASM drops a prefix that names the mode's own default segment:
             // ds:[si] emits bare 8B 04 (measured off GETCNTRY.OBJ), es:[di] a
             // real 26. [bp]-based modes default to SS.
-            const bool bp_based = mem.has_base_bp;
+            const bool bp_based = mem.has_base_bp || mem.base32 == 5;
             const int default_segment = bp_based ? 2 : 3;
             if (mem.segment_override != default_segment ||
                 mem.kind != Operand::mem) {
@@ -5491,8 +5564,10 @@ class Assembler {
                     0x26 | (mem.segment_override << 3)));
             }
         }
-        if (mem.address_wide && !mem.has_base_bx && !mem.has_base_bp &&
-            !mem.has_si && !mem.has_di) {
+        if ((mem.address_wide && !mem.has_base_bx && !mem.has_base_bp &&
+             !mem.has_si && !mem.has_di) ||
+            (mem.base32 >= 0 &&
+             !(current_segment_ >= 0 && segment_uses_32(segments_[current_segment_])))) {
             emit_byte(0x67);
         }
     }
@@ -5522,13 +5597,21 @@ class Assembler {
             {"JNP", 0x7B}, {"JPO", 0x7B}, {"JL", 0x7C},  {"JNGE", 0x7C}, {"JGE", 0x7D},
             {"JNL", 0x7D}, {"JLE", 0x7E}, {"JNG", 0x7E}, {"JG", 0x7F},   {"JNLE", 0x7F},
             {"LOOPNE", 0xE0}, {"LOOPNZ", 0xE0}, {"LOOPE", 0xE1}, {"LOOPZ", 0xE1},
-            {"LOOP", 0xE2}, {"JCXZ", 0xE3}};
+            {"LOOP", 0xE2}, {"JCXZ", 0xE3}, {"JECXZ", 0xE3}};
         // reg,rm opcodes for the ALU family (MASM picks this direction for
         // reg,reg -- 33 C0 for xor ax,ax, 8B EC for mov bp,sp)
         static const std::map<std::string, std::uint8_t> alu_reg_rm{
             {"ADD", 0x03}, {"OR", 0x0B},  {"ADC", 0x13}, {"SBB", 0x1B},
             {"AND", 0x23}, {"SUB", 0x2B}, {"XOR", 0x33}, {"CMP", 0x3B}};
 
+        if (op == "LOCK") {
+            emit_byte(0xF0);
+            if (!rest.empty() && rest[0].kind == Token::ident) {
+                std::vector<Token> tail(rest.begin() + 1, rest.end());
+                encode_instruction(upper(rest[0].text), tail);
+            }
+            return;
+        }
         if (op == "REP" || op == "REPE" || op == "REPZ" || op == "REPNE" || op == "REPNZ") {
             emit_byte(op == "REPNE" || op == "REPNZ" ? 0xF2 : 0xF3);
             if (!rest.empty() && rest[0].kind == Token::ident) {
@@ -5596,7 +5679,9 @@ class Assembler {
         {
             static const std::map<std::string, std::uint8_t> string32{
                 {"MOVSD", 0xA5}, {"CMPSD", 0xA7}, {"STOSD", 0xAB}, {"LODSD", 0xAD},
-                {"SCASD", 0xAF}, {"INSD", 0x6D},   {"OUTSD", 0x6F}};
+                {"SCASD", 0xAF}, {"INSD", 0x6D},  {"OUTSD", 0x6F}, {"PUSHFD", 0x9C},
+                {"POPFD", 0x9D}, {"PUSHAD", 0x60},{"POPAD", 0x61}, {"IRETD", 0xCF},
+                {"CWDE", 0x98},  {"CDQ", 0x99}};
             if (const auto s = string32.find(op); s != string32.end()) {
                 emit_byte(0x66);
                 emit_byte(s->second);
@@ -5614,6 +5699,11 @@ class Assembler {
                 return;
             }
             if (operands.size() == 1 && operands[0].kind == Operand::seg) {
+                if (operands[0].reg == 4 || operands[0].reg == 5) {
+                    emit_byte(0x0F);
+                    emit_byte(static_cast<std::uint8_t>((operands[0].reg == 4 ? 0xA0 : 0xA8) + (push ? 0 : 1)));
+                    return;
+                }
                 static const std::uint8_t pushes[] = {0x06, 0x0E, 0x16, 0x1E};
                 static const std::uint8_t pops[] = {0x07, 0x0F, 0x17, 0x1F};
                 emit_byte(push ? pushes[operands[0].reg] : pops[operands[0].reg]);
@@ -5723,9 +5813,13 @@ class Assembler {
                 // unconditional forward JMP -- MEMM's I286 keeps `0F 85 0000`
                 // with a self-relative fixup even where the target lands in
                 // short range. LOOP/JCXZ (no near form) stay short.
-                if (cpu_386_ && !backward && op != "LOOP" && op != "LOOPE" &&
-                    op != "LOOPNE" && op != "LOOPZ" && op != "LOOPNZ" &&
-                    op != "JCXZ" && operands[0].kind == Operand::lab) {
+                const bool backward_near =
+                    cpu_386_ && backward && operands[0].kind == Operand::lab &&
+                    (target - (segment().location + 2) < -128 ||
+                     target - (segment().location + 2) > 127);
+                if (cpu_386_ && (!backward || backward_near) && op != "LOOP" &&
+                    op != "LOOPE" && op != "LOOPNE" && op != "LOOPZ" && op != "LOOPNZ" &&
+                    op != "JCXZ" && op != "JECXZ" && operands[0].kind == Operand::lab) {
                     emit_byte(0x0F);
                     emit_byte(static_cast<std::uint8_t>(conditional->second + 0x10));
                     note_fixup(1, operands[0].fixup_segment, operands[0].fixup_extern,
@@ -5733,6 +5827,7 @@ class Assembler {
                     emit_word(0);
                     return;
                 }
+                if (op == "JECXZ" && segment().use_attr != 1) emit_byte(0x67);
                 emit_byte(conditional->second);
                 const long rel = target - (segment().location + 1);
                 if (pass_ == 2 && (rel < -128 || rel > 127)) fail("relative jump out of range");
@@ -5965,6 +6060,11 @@ class Assembler {
             Operand& dst = operands[0];
             Operand& src = operands[1];
             if (dst.kind == Operand::lab) dst = label_as_memory(dst);
+            if (pass_ == 1 && dst.kind == Operand::mem && src.kind == Operand::lab && src.forward_ref) {
+                src.kind = Operand::imm;
+                src.value = 0x100;
+                src.forward_const = true;
+            }
             if (src.kind == Operand::lab) src = label_as_memory(src);
             if (dst.kind == Operand::r16 && src.kind == Operand::r16) {
                 emit_opsize(dst.wide || src.wide);
@@ -6192,6 +6292,11 @@ class Assembler {
             Operand& dst = operands[0];
             Operand& src = operands[1];
             if (dst.kind == Operand::lab) dst = label_as_memory(dst);
+            if (pass_ == 1 && dst.kind == Operand::mem && src.kind == Operand::lab && src.forward_ref) {
+                src.kind = Operand::imm;
+                src.value = 0x100;
+                src.forward_const = true;
+            }
             if (src.kind == Operand::lab) src = label_as_memory(src);
             const std::uint8_t base = static_cast<std::uint8_t>(alu->second & ~0x02);
             if (dst.kind == Operand::r16 && src.kind == Operand::r16) {
@@ -6362,7 +6467,7 @@ class Assembler {
                 const bool immediate_establishes_word =
                     dst.size == 0 && src.value > 0xFF;
                 const bool fits =
-                    !immediate_establishes_word && src.fixup_loc == 0 &&
+                    !immediate_establishes_word && !src.forward_const && src.fixup_loc == 0 &&
                     (wide ? fits_signed_byte_wide(src.value) : fits_signed_byte(src.value));
                 emit_opsize(wide);
                 emit_byte(fits ? 0x83 : 0x81);
@@ -6565,6 +6670,37 @@ class Assembler {
             static const std::map<std::string, int> group_f7{{"NOT", 2}, {"NEG", 3}, {"MUL", 4},
                                                              {"IMUL", 5}, {"DIV", 6}, {"IDIV", 7}};
             if (const auto entry = group_f7.find(op); entry != group_f7.end()) {
+                if (op == "IMUL" && operands.size() == 3 &&
+                    operands[0].kind == Operand::r16 && operands[2].kind == Operand::imm) {
+                    Operand& dst = operands[0];
+                    Operand& src = operands[1];
+                    Operand& imm = operands[2];
+                    if (src.kind == Operand::lab) src = label_as_memory(src);
+                    const bool wide = dst.wide;
+                    const bool fits = wide ? fits_signed_byte_wide(imm.value)
+                                           : fits_signed_byte(imm.value);
+                    if (src.kind == Operand::mem) emit_override(src);
+                    emit_opsize(wide);
+                    emit_byte(fits ? 0x6B : 0x69);
+                    if (src.kind == Operand::mem) emit_modrm_mem(dst.reg, src);
+                    else emit_modrm_reg(dst.reg, src.reg);
+                    if (fits) emit_byte(static_cast<std::uint8_t>(imm.value));
+                    else if (wide) emit_dword(static_cast<std::uint32_t>(imm.value));
+                    else emit_word(static_cast<std::uint16_t>(imm.value));
+                    return;
+                }
+                if (op == "IMUL" && operands.size() == 2 && operands[0].kind == Operand::r16) {
+                    Operand& dst = operands[0];
+                    Operand& src = operands[1];
+                    if (src.kind == Operand::lab) src = label_as_memory(src);
+                    if (src.kind == Operand::mem) emit_override(src);
+                    emit_opsize(dst.wide);
+                    emit_byte(0x0F);
+                    emit_byte(0xAF);
+                    if (src.kind == Operand::mem) emit_modrm_mem(dst.reg, src);
+                    else emit_modrm_reg(dst.reg, src.reg);
+                    return;
+                }
                 if (operands.size() != 1) return fail(op + " needs one operand");
                 Operand& target = operands[0];
                 if (target.kind == Operand::lab) target = label_as_memory(target);

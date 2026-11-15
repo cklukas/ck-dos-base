@@ -474,6 +474,7 @@ struct Expr {
     TypePtr type;
     std::int64_t int_val = 0;
     std::string name;
+    std::string resolved_asm_name;
     Tok op = Tok::eof;
     bool is_postfix = false;
     bool is_arrow = false;
@@ -1382,16 +1383,7 @@ private:
                 gv.is_static = ds.is_static;
                 if (match(Tok::assign)) {
                     gv.has_init = true;
-                    parse_global_initializer(type, 0, gv.inits);
-                    if (type->kind == TypeKind::t_array && type->array_len == 0 && !gv.inits.empty()) {
-                        std::size_t elem_sz = type_size(type->base);
-                        if (gv.inits.back().is_string_bytes) {
-                            type->array_len = gv.inits.back().str_bytes.size();
-                        } else if (elem_sz > 0) {
-                            type->array_len = (gv.inits.back().offset / elem_sz) + 1;
-                        }
-                        type->cached_size = elem_sz * type->array_len;
-                    }
+                    parse_and_size_initializer(type, gv.inits);
                 }
                 globals.push_back(std::move(gv));
             } else if (match(Tok::assign)) {
@@ -1401,6 +1393,19 @@ private:
             if (!match(Tok::comma)) break;
         }
         consume(Tok::semi, "expected ';' after declaration");
+    }
+
+    void parse_and_size_initializer(const TypePtr& type, std::vector<InitItem>& out) {
+        parse_global_initializer(type, 0, out);
+        if (type->kind == TypeKind::t_array && type->array_len == 0 && !out.empty()) {
+            const std::size_t elem_sz = type_size(type->base);
+            if (out.back().is_string_bytes) {
+                type->array_len = out.back().str_bytes.size();
+            } else if (elem_sz > 0) {
+                type->array_len = (out.back().offset / elem_sz) + 1;
+            }
+            type->cached_size = elem_sz * type->array_len;
+        }
     }
 
     void parse_global_initializer(const TypePtr& type,
@@ -1500,7 +1505,7 @@ private:
                         gv.is_static = true;
                         if (match(Tok::assign)) {
                             gv.has_init = true;
-                            parse_global_initializer(type, 0, gv.inits);
+                            parse_and_size_initializer(type, gv.inits);
                         }
                         globals.push_back(std::move(gv));
                         continue;
@@ -1990,6 +1995,7 @@ private:
             const VarSymbol* sym = lookup_var(t.text);
             if (sym) {
                 e->type = sym->type;
+                if (sym->is_global) e->resolved_asm_name = sym->asm_name;
             } else if (at(Tok::lparen)) {
                 // Implicitly declared external function returning int
                 auto fn = std::make_shared<CType>();
@@ -2073,6 +2079,12 @@ public:
                 global_locs_[gv.name] = {4, static_cast<std::uint16_t>(off)};
                 if (!gv.is_static) omf_.add_pub(gv.name, 4, static_cast<std::uint16_t>(off));
                 continue;
+            }
+            for (const InitItem& item : gv.inits) {
+                const std::size_t item_end =
+                    item.offset + (item.is_string_bytes ? item.str_bytes.size()
+                                                        : type_size(item.type));
+                if (item_end > sz) sz = item_end;
             }
             std::size_t base = omf_.data.data.size();
             omf_.data.data.resize(base + sz, 0);
@@ -2492,7 +2504,10 @@ private:
                 return;
             }
             auto gf = parser_.global_syms.find(e->name);
-            std::string sym = gf != parser_.global_syms.end() ? gf->second.asm_name : ("_" + e->name);
+            std::string sym = !e->resolved_asm_name.empty()
+                                  ? e->resolved_asm_name
+                                  : (gf != parser_.global_syms.end() ? gf->second.asm_name
+                                                                     : ("_" + e->name));
             emit_u8(0xBB);  // mov bx, imm16
             pending_fixups_.push_back({omf_.code.data.size(), FixupKind::near_offset_dgroup, sym});
             emit_u16(0);
@@ -2573,13 +2588,23 @@ private:
     void emit_expr(const ExprPtr& e) {
         if (!e) return;
         switch (e->kind) {
-            case ExprKind::int_lit:
-                emit_u8(0xB8); emit_u16(static_cast<std::uint16_t>(e->int_val & 0xFFFF));  // mov ax, imm16
+            case ExprKind::int_lit: {
+                const std::uint16_t lo = static_cast<std::uint16_t>(e->int_val & 0xFFFF);
+                if (lo == 0) {
+                    emit_u8(0x33); emit_u8(0xC0);  // xor ax, ax
+                } else {
+                    emit_u8(0xB8); emit_u16(lo);   // mov ax, imm16
+                }
                 if (is_32bit_scalar(e->type)) {
-                    emit_u8(0xBA);
-                    emit_u16(static_cast<std::uint16_t>((e->int_val >> 16) & 0xFFFF));
+                    const std::uint16_t hi = static_cast<std::uint16_t>((e->int_val >> 16) & 0xFFFF);
+                    if (hi == 0) {
+                        emit_u8(0x33); emit_u8(0xD2);  // xor dx, dx
+                    } else {
+                        emit_u8(0xBA); emit_u16(hi);   // mov dx, imm16
+                    }
                 }
                 break;
+            }
 
             case ExprKind::str_lit: {
                 std::uint16_t off = intern_string(e->name);
@@ -2598,7 +2623,11 @@ private:
                     bool is_far = false;
                     if (e->type->kind == TypeKind::t_func) {
                         auto gf = parser_.global_syms.find(e->name);
-                        std::string sym = gf != parser_.global_syms.end() ? gf->second.asm_name : ("_" + e->name);
+                        std::string sym = !e->resolved_asm_name.empty()
+                                              ? e->resolved_asm_name
+                                              : (gf != parser_.global_syms.end()
+                                                     ? gf->second.asm_name
+                                                     : ("_" + e->name));
                         emit_u8(0xB8);  // mov ax, offset sym
                         pending_fixups_.push_back({omf_.code.data.size(), FixupKind::near_offset_dgroup, sym});
                         emit_u16(0);
@@ -2611,6 +2640,37 @@ private:
                         emit_lvalue_addr(e, is_far);
                         emit_u8(0x8B); emit_u8(0xC3);  // mov ax, bx
                         if (e->type->is_far) { emit_u8(0x8C); emit_u8(0xDA); }
+                    }
+                    break;
+                }
+                if (!is_32bit_scalar(e->type) &&
+                    !(e->type && e->type->kind == TypeKind::t_struct)) {
+                    if (auto loc = find_local(e->name)) {
+                        if (is_byte_scalar(e->type)) {
+                            emit_u8(0x8A); emit_bp_rm(0, loc->second);  // mov al, [bp+d]
+                            if (is_signed_type(e->type)) emit_u8(0x98);
+                            else { emit_u8(0x32); emit_u8(0xE4); }
+                        } else {
+                            emit_u8(0x8B); emit_bp_rm(0, loc->second);  // mov ax, [bp+d]
+                        }
+                        break;
+                    }
+                    auto gf = parser_.global_syms.find(e->name);
+                    std::string sym = !e->resolved_asm_name.empty()
+                                          ? e->resolved_asm_name
+                                          : (gf != parser_.global_syms.end()
+                                                 ? gf->second.asm_name
+                                                 : ("_" + e->name));
+                    if (is_byte_scalar(e->type)) {
+                        emit_u8(0xA0);  // mov al, [sym]
+                        pending_fixups_.push_back({omf_.code.data.size(), FixupKind::near_offset_dgroup, sym});
+                        emit_u16(0);
+                        if (is_signed_type(e->type)) emit_u8(0x98);
+                        else { emit_u8(0x32); emit_u8(0xE4); }
+                    } else {
+                        emit_u8(0xA1);  // mov ax, [sym]
+                        pending_fixups_.push_back({omf_.code.data.size(), FixupKind::near_offset_dgroup, sym});
+                        emit_u16(0);
                     }
                     break;
                 }
@@ -2662,6 +2722,27 @@ private:
 
             case ExprKind::assign: {
                 emit_expr(e->rhs);
+                if (e->lhs->kind == ExprKind::var && !is_32bit_scalar(e->type) &&
+                    !(e->type && e->type->kind == TypeKind::t_struct)) {
+                    if (auto loc = find_local(e->lhs->name)) {
+                        if (is_byte_scalar(e->type)) {
+                            emit_u8(0x88); emit_bp_rm(0, loc->second);  // mov [bp+d], al
+                        } else {
+                            emit_u8(0x89); emit_bp_rm(0, loc->second);  // mov [bp+d], ax
+                        }
+                        break;
+                    }
+                    auto gf = parser_.global_syms.find(e->lhs->name);
+                    std::string sym = !e->lhs->resolved_asm_name.empty()
+                                          ? e->lhs->resolved_asm_name
+                                          : (gf != parser_.global_syms.end()
+                                                 ? gf->second.asm_name
+                                                 : ("_" + e->lhs->name));
+                    emit_u8(is_byte_scalar(e->type) ? 0xA2 : 0xA3);  // mov [sym], al/ax
+                    pending_fixups_.push_back({omf_.code.data.size(), FixupKind::near_offset_dgroup, sym});
+                    emit_u16(0);
+                    break;
+                }
                 emit_u8(0x50);  // push ax
                 if (is_32bit_scalar(e->type)) emit_u8(0x52);  // push dx
                 bool is_far = false;
@@ -2743,12 +2824,9 @@ private:
                     emit_u8(0xF7); emit_u8(0xD0);  // not ax
                 } else if (e->op == Tok::bang) {
                     test_ax_or_dxax(e->lhs->type);
-                    std::size_t j_zero = emit_jcc_rel16(0x74);
-                    emit_u8(0xB8); emit_u16(0);
-                    std::size_t j_end = emit_jmp_rel16();
-                    patch_rel16(j_zero, omf_.code.data.size());
-                    emit_u8(0xB8); emit_u16(1);
-                    patch_rel16(j_end, omf_.code.data.size());
+                    emit_u8(0xB8); emit_u16(1);  // mov ax, 1
+                    emit_u8(0x74); emit_u8(2);   // jz +2
+                    emit_u8(0x33); emit_u8(0xC0);  // xor ax, ax
                 }
                 break;
             }
@@ -2785,6 +2863,58 @@ private:
                     emit_u8(0xB8); emit_u16(1);
                     patch_rel16(j_end, omf_.code.data.size());
                     break;
+                }
+
+                if (e->rhs->kind == ExprKind::int_lit && !is_32bit_scalar(e->type) &&
+                    !is_32bit_scalar(e->lhs->type) &&
+                    !(e->lhs->type && (e->lhs->type->kind == TypeKind::t_ptr ||
+                                       e->lhs->type->kind == TypeKind::t_array))) {
+                    const std::uint16_t imm = static_cast<std::uint16_t>(e->rhs->int_val);
+                    if (e->op == Tok::plus && imm == 1) {
+                        emit_expr(e->lhs);
+                        emit_u8(0x40);  // inc ax
+                        break;
+                    }
+                    if (e->op == Tok::minus && imm == 1) {
+                        emit_expr(e->lhs);
+                        emit_u8(0x48);  // dec ax
+                        break;
+                    }
+                    if (e->op == Tok::shl && imm == 1) {
+                        emit_expr(e->lhs);
+                        emit_u8(0xD1); emit_u8(0xE0);  // shl ax, 1
+                        break;
+                    }
+                    if (e->op == Tok::shr && imm == 1) {
+                        emit_expr(e->lhs);
+                        emit_u8(0xD1);
+                        emit_u8(is_signed_type(e->lhs->type) ? 0xF8 : 0xE8);  // sar/shr ax, 1
+                        break;
+                    }
+                    if (e->op == Tok::plus || e->op == Tok::minus ||
+                        e->op == Tok::amp || e->op == Tok::pipe || e->op == Tok::caret) {
+                        emit_expr(e->lhs);
+                        const std::uint8_t opc = e->op == Tok::plus    ? 0x05
+                                                 : e->op == Tok::minus ? 0x2D
+                                                 : e->op == Tok::amp   ? 0x25
+                                                 : e->op == Tok::pipe  ? 0x0D
+                                                                       : 0x35;
+                        emit_u8(opc);
+                        emit_u16(imm);
+                        break;
+                    }
+                    if (e->op == Tok::eq || e->op == Tok::ne || e->op == Tok::lt ||
+                        e->op == Tok::le || e->op == Tok::gt || e->op == Tok::ge) {
+                        emit_expr(e->lhs);
+                        if (imm == 0) {
+                            emit_u8(0x85); emit_u8(0xC0);  // test ax, ax
+                        } else {
+                            emit_u8(0x3D);  // cmp ax, imm16
+                            emit_u16(imm);
+                        }
+                        emit_cmp_setcc(e->op, is_signed_type(e->type));
+                        break;
+                    }
                 }
 
                 emit_expr(e->lhs);
@@ -2839,9 +2969,11 @@ private:
 
                 if (e->lhs->kind == ExprKind::var && !find_local(e->lhs->name).has_value()) {
                     auto gf = parser_.global_syms.find(e->lhs->name);
-                    std::string sym = gf != parser_.global_syms.end()
-                                          ? gf->second.asm_name
-                                          : ("_" + e->lhs->name);
+                    std::string sym = !e->lhs->resolved_asm_name.empty()
+                                          ? e->lhs->resolved_asm_name
+                                          : (gf != parser_.global_syms.end()
+                                                 ? gf->second.asm_name
+                                                 : ("_" + e->lhs->name));
                     if (is_far) {
                         emit_u8(0x9A);  // call far seg:off
                         pending_fixups_.push_back({omf_.code.data.size(), FixupKind::far_ptr, sym});
@@ -2873,6 +3005,19 @@ private:
                 break;
             }
         }
+    }
+
+    void emit_cmp_setcc(Tok op, bool is_signed) {
+        std::uint8_t jcc = 0x74;
+        if (op == Tok::eq) jcc = 0x74;
+        else if (op == Tok::ne) jcc = 0x75;
+        else if (op == Tok::lt) jcc = is_signed ? 0x7C : 0x72;
+        else if (op == Tok::le) jcc = is_signed ? 0x7E : 0x76;
+        else if (op == Tok::gt) jcc = is_signed ? 0x7F : 0x77;
+        else if (op == Tok::ge) jcc = is_signed ? 0x7D : 0x73;
+        emit_u8(0xB8); emit_u16(1);   // mov ax, 1
+        emit_u8(jcc);  emit_u8(2);    // jcc +2
+        emit_u8(0x33); emit_u8(0xC0); // xor ax, ax
     }
 
     void emit_alu_ax_cx(Tok op, const TypePtr& type) {
@@ -2907,19 +3052,7 @@ private:
                 break;
             case Tok::eq: case Tok::ne: case Tok::lt: case Tok::le: case Tok::gt: case Tok::ge: {
                 emit_u8(0x3B); emit_u8(0xC1);  // cmp ax, cx
-                std::uint8_t jcc = 0x74;
-                if (op == Tok::eq) jcc = 0x74;
-                else if (op == Tok::ne) jcc = 0x75;
-                else if (op == Tok::lt) jcc = is_signed ? 0x7C : 0x72;
-                else if (op == Tok::le) jcc = is_signed ? 0x7E : 0x76;
-                else if (op == Tok::gt) jcc = is_signed ? 0x7F : 0x77;
-                else if (op == Tok::ge) jcc = is_signed ? 0x7D : 0x73;
-                std::size_t jt = emit_jcc_rel16(jcc);
-                emit_u8(0xB8); emit_u16(0);
-                std::size_t je = emit_jmp_rel16();
-                patch_rel16(jt, omf_.code.data.size());
-                emit_u8(0xB8); emit_u16(1);
-                patch_rel16(je, omf_.code.data.size());
+                emit_cmp_setcc(op, is_signed);
                 break;
             }
             default:

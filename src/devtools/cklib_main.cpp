@@ -8,6 +8,8 @@
 #include "dosbase/devtools/binary.hpp"
 #include "dosbase/devtools/dos_file.hpp"
 #include "dosbase/devtools/lib_writer.hpp"
+#include "dosbase/devtools/omf_library.hpp"
+#include "dosbase/devtools/omf_record.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -43,26 +45,89 @@ bool write_file(const std::filesystem::path& path, const std::vector<std::uint8_
 int main(int argc, char** argv) {
     using namespace dosbase::devtools;
     std::vector<std::string> arguments(argv + 1, argv + argc);
-    if (arguments.size() != 1 || arguments[0].empty() || arguments[0][0] != '@') {
-        std::cerr << "usage: cklib @RESPONSE\n"
-                  << "  the pinned tree only ever drives LIB from a response file\n";
+    if (arguments.empty()) {
+        std::cerr << "usage: cklib @RESPONSE | cklib LIB [+-]OBJ...\n";
         return 2;
     }
     try {
-        const std::filesystem::path response = resolve_dos_input(arguments[0].substr(1));
-        const std::vector<std::uint8_t> text = read_file(response.string());
-        const LibraryRequest request = parse_library_response(
-            std::string_view(reinterpret_cast<const char*>(text.data()), text.size()));
-        if (request.library.empty() || request.additions.empty()) {
-            std::cerr << "cklib: the response file names no library or no members\n";
-            return 1;
+        LibraryRequest request;
+        if (arguments.size() == 1 && !arguments[0].empty() && arguments[0][0] == '@') {
+            const std::filesystem::path response = resolve_dos_input(arguments[0].substr(1));
+            const std::vector<std::uint8_t> text = read_file(response.string());
+            request = parse_library_response(
+                std::string_view(reinterpret_cast<const char*>(text.data()), text.size()));
+            if (request.library.empty() || request.additions.empty()) {
+                std::cerr << "cklib: the response file names no library or no members\n";
+                return 1;
+            }
+        } else {
+            std::string joined;
+            for (std::size_t i = 0; i < arguments.size(); ++i) {
+                if (i > 0) joined += ' ';
+                joined += arguments[i];
+            }
+            const std::size_t end_pos = joined.find_first_of(",;");
+            const std::string ops_part =
+                end_pos == std::string::npos ? joined : joined.substr(0, end_pos);
+            // First token up to whitespace or '+'/'-' is the library name.
+            std::size_t pos = 0;
+            while (pos < ops_part.size() &&
+                   (ops_part[pos] == ' ' || ops_part[pos] == '\t')) {
+                ++pos;
+            }
+            const std::size_t lib_start = pos;
+            while (pos < ops_part.size() && ops_part[pos] != ' ' &&
+                   ops_part[pos] != '\t' && ops_part[pos] != '+' &&
+                   ops_part[pos] != '-') {
+                ++pos;
+            }
+            request.library = ops_part.substr(lib_start, pos - lib_start);
+            if (!request.library.empty() &&
+                !std::filesystem::path(request.library).has_extension()) {
+                request.library += ".LIB";
+            }
+            while (pos < ops_part.size()) {
+                while (pos < ops_part.size() &&
+                       (ops_part[pos] == ' ' || ops_part[pos] == '\t' ||
+                        ops_part[pos] == '+' || ops_part[pos] == '-')) {
+                    ++pos;
+                }
+                const std::size_t tok_start = pos;
+                while (pos < ops_part.size() && ops_part[pos] != ' ' &&
+                       ops_part[pos] != '\t' && ops_part[pos] != '+' &&
+                       ops_part[pos] != '-') {
+                    ++pos;
+                }
+                if (pos > tok_start) {
+                    request.additions.push_back(ops_part.substr(tok_start, pos - tok_start));
+                }
+            }
         }
         std::vector<LibraryInput> members;
-        members.reserve(request.additions.size());
+        const std::filesystem::path existing_lib = resolve_dos_input(request.library);
+        std::error_code ec;
+        if (arguments[0][0] != '@' && std::filesystem::is_regular_file(existing_lib, ec)) {
+            const OmfLibrary parsed = OmfLibrary::parse(read_file(existing_lib.string()));
+            for (const LibraryMember& m : parsed.members()) {
+                members.push_back({m.name, serialize_omf_records(m.records)});
+            }
+        }
         for (const std::string& addition : request.additions) {
+            const std::string mod_name = module_name_of(addition);
             const std::filesystem::path object =
                 resolve_dos_input(with_default_extension(addition));
-            members.push_back({module_name_of(addition), read_file(object.string())});
+            std::vector<std::uint8_t> obj_bytes = read_file(object.string());
+            bool replaced = false;
+            for (LibraryInput& m : members) {
+                if (dos_upper(m.module_name) == dos_upper(mod_name)) {
+                    m.object = std::move(obj_bytes);
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced) {
+                members.push_back({mod_name, std::move(obj_bytes)});
+            }
         }
         const LibraryBuild build = build_library(members);
         if (!write_file(resolve_dos_output(request.library), build.bytes)) {

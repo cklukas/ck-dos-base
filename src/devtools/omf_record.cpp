@@ -111,17 +111,17 @@ std::uint32_t communal_length(ByteCursor& cursor) {
 }
 
 void dump_iterated_block(ByteCursor& cursor, const std::string& indent, std::size_t depth,
-                         bool data, std::string& out) {
+                         bool data, bool is32, std::string& out) {
     if (depth > kMaxIteratedDepth) {
         throw FormatError(cursor.absolute(), "iterated data nested too deeply");
     }
-    const std::uint16_t repeat = cursor.word();
+    const std::uint32_t repeat = is32 ? cursor.dword() : cursor.word();
     const std::uint16_t blocks = cursor.word();
     out += indent + "block repeat " + std::to_string(repeat) + " blocks " + std::to_string(blocks);
     if (blocks != 0) {
         out += "\n";
         for (std::uint16_t index = 0; index < blocks; ++index) {
-            dump_iterated_block(cursor, indent + "  ", depth + 1, data, out);
+            dump_iterated_block(cursor, indent + "  ", depth + 1, data, is32, out);
         }
         return;
     }
@@ -410,21 +410,24 @@ void dump_omf_record(const OmfRecord& record, OmfNameTable& table, const std::st
         }
         case OmfType::ledata: {
             const std::uint16_t segment_index = cursor.index();
-            const std::uint16_t offset = cursor.word();
+            const std::uint32_t offset = (record.type & 1U) != 0 ? cursor.dword() : cursor.word();
             const auto payload = cursor.take(cursor.remaining());
-            out += detail + "segment " + table.segment(segment_index) + " offset " + hex16(offset) +
+            out += detail + "segment " + table.segment(segment_index) + " offset " +
+                   ((record.type & 1U) != 0 ? hex32(offset) : hex16(static_cast<std::uint16_t>(offset))) +
                    " bytes " + std::to_string(payload.size()) + " crc32 " + hex32(crc32(payload));
             if (data) out += " data " + hex_bytes(payload);
             out += "\n";
             break;
         }
         case OmfType::lidata: {
+            const bool is32 = (record.type & 1U) != 0;
             const std::uint16_t segment_index = cursor.index();
-            const std::uint16_t offset = cursor.word();
-            out += detail + "segment " + table.segment(segment_index) + " offset " + hex16(offset) +
+            const std::uint32_t offset = is32 ? cursor.dword() : cursor.word();
+            out += detail + "segment " + table.segment(segment_index) + " offset " +
+                   (is32 ? hex32(offset) : hex16(static_cast<std::uint16_t>(offset))) +
                    "\n";
             while (!cursor.empty()) {
-                dump_iterated_block(cursor, detail + "  ", 0, data, out);
+                dump_iterated_block(cursor, detail + "  ", 0, data, is32, out);
             }
             break;
         }

@@ -121,11 +121,18 @@ std::vector<std::uint8_t> build_menu_source(
     std::optional<std::size_t> section_offset) {
     const std::string_view msg_text(
         reinterpret_cast<const char*>(country_messages.data()), country_messages.size());
-    const std::size_t start = section_offset.has_value()
-                                  ? *section_offset
-                                  : find_section_start(msg_text, section_name);
+    std::size_t start = section_offset.has_value()
+                            ? *section_offset
+                            : find_section_start(msg_text, section_name);
     if (start > msg_text.size()) {
         throw FormatError(start, "section offset past end of message file");
+    }
+    // IDX offsets point to the section header line itself (`FDISK <off> <cnt>`);
+    // advance past it so parse_section_messages doesn't stop on the header.
+    if (section_offset.has_value() && start < msg_text.size() &&
+        std::isalpha(static_cast<unsigned char>(msg_text[start]))) {
+        const std::size_t eol = msg_text.find('\n', start);
+        start = eol == std::string_view::npos ? msg_text.size() : eol + 1;
     }
 
     const auto messages = parse_section_messages(msg_text, start);

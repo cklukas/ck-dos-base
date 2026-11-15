@@ -40,12 +40,18 @@ std::optional<std::uint16_t> read_base_segment() {
 int main(int argc, char** argv) {
     using namespace dosbase::devtools;
     std::vector<std::string> arguments(argv + 1, argv + argc);
-    if (arguments.size() != 2) {
-        std::cerr << "usage: ckexe2bin INPUT.EXE OUTPUT\n";
+    if (arguments.size() != 1 && arguments.size() != 2) {
+        std::cerr << "usage: ckexe2bin INPUT.EXE [OUTPUT]\n";
         return 2;
     }
     try {
-        const std::filesystem::path input = resolve_dos_input(arguments[0]);
+        std::string in_arg = arguments[0];
+        if (in_arg.find('.') == std::string::npos) {
+            in_arg += ".EXE";
+        }
+        const std::filesystem::path input = resolve_dos_input(in_arg);
+        const std::string out_arg =
+            arguments.size() == 2 ? arguments[1] : (input.stem().string() + ".BIN");
         const MzImage image = MzImage::parse(read_file(input.string()));
         std::optional<std::uint16_t> base_segment;
         if (image.header().relocation_count != 0) {
@@ -57,7 +63,7 @@ int main(int argc, char** argv) {
             std::cout << "\n";
         }
         const Exe2BinResult result = exe2bin(image, base_segment);
-        const std::filesystem::path output = resolve_dos_output(arguments[1]);
+        const std::filesystem::path output = resolve_dos_output(out_arg);
         std::ofstream stream(output, std::ios::binary | std::ios::trunc);
         if (!stream) {
             std::cerr << "ckexe2bin: cannot write " << output.string() << "\n";

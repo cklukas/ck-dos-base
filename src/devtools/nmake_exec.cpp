@@ -74,6 +74,40 @@ bool wildcard_match_ci(std::string_view pattern, std::string_view text) {
     return p == pattern.size();
 }
 
+int run_mkcntry() {
+    const fs::path exe = resolve_dos_input("mkcntry.exe");
+    std::ifstream in(exe, std::ios::binary);
+    if (!in) return 1;
+    std::vector<char> bytes((std::istreambuf_iterator<char>(in)),
+                            std::istreambuf_iterator<char>());
+    const std::string_view view(bytes.data(), bytes.size());
+    const std::size_t start = view.find("\xff" "COUNTRY");
+    if (start == std::string_view::npos) return 1;
+    const std::size_t end = view.find(std::string_view("COUNTRY.SYS\0", 12), start);
+    if (end == std::string_view::npos || end <= start) return 1;
+    std::ofstream out("COUNTRY.SYS", std::ios::binary | std::ios::trunc);
+    if (!out) return 1;
+    out.write(bytes.data() + static_cast<std::ptrdiff_t>(start),
+              static_cast<std::streamsize>(end - start));
+    return out.good() ? 0 : 1;
+}
+
+int run_ren(const ParsedCommand& cmd) {
+    if (cmd.args.size() < 2) return 1;
+    const fs::path src = resolve_dos_input(cmd.args[0]);
+    std::string dst_arg = cmd.args[1];
+    for (char& ch : dst_arg) {
+        if (ch == '\\') ch = '/';
+    }
+    const fs::path dst_raw(dst_arg);
+    const fs::path dst = dst_raw.has_parent_path()
+                             ? resolve_dos_input(dst_raw.string())
+                             : (src.has_parent_path() ? src.parent_path() / dst_raw : dst_raw);
+    std::error_code ec;
+    fs::rename(src, dst, ec);
+    return ec ? 1 : 0;
+}
+
 int run_del(const ParsedCommand& cmd) {
     int status = 0;
     for (const std::string& arg : cmd.args) {
@@ -108,6 +142,15 @@ int run_copy(const ParsedCommand& cmd) {
     for (const std::string& arg : cmd.args) {
         if (arg.size() >= 2 && arg[0] == '/') continue;  // /B, /A, /V, /Y
         positional.push_back(arg);
+    }
+    if (positional.size() == 1) {
+        const fs::path src = resolve_dos_input(positional[0]);
+        const fs::path dst = resolve_dos_output(dos_upper(src.filename().string()));
+        std::error_code ec;
+        if (!fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec)) {
+            throw std::runtime_error("copy failed: " + ec.message());
+        }
+        return 0;
     }
     if (positional.size() != 2) {
         throw std::runtime_error("copy requires source and destination");
@@ -415,11 +458,13 @@ int execute_nmake_command(const ParsedCommand& cmd, const NmakeExecOptions& opti
 
     const std::string stem = program_stem_lower(cmd.program);
     if (stem == "del" || stem == "erase") return run_del(cmd);
+    if (stem == "ren" || stem == "rename") return run_ren(cmd);
     if (stem == "copy") return run_copy(cmd);
     if (stem == "mkdir" || stem == "md") return run_mkdir(cmd);
     if (stem == "cd" || stem == "chdir") return run_cd(cmd);
     if (stem == "echo") return run_echo(cmd);
     if (stem == "rem" || stem == "attrib") return 0;
+    if (stem == "mkcntry") return run_mkcntry();
 
     const std::optional<std::string> mapped = map_dos_tool_name(cmd.program);
     if (!mapped.has_value()) {

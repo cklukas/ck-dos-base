@@ -351,7 +351,19 @@ BuildMsgResult buildmsg(std::string_view skl_raw, const MsgDatabase& msg) {
         const bool is_def = head.rfind(":def", 0) == 0;
         if (!is_use && !is_def) continue;
         if (classes.empty()) throw FormatError(0, "directive before the first :class");
-        const std::vector<std::string_view> fields = split_fields(line, 3);
+        const std::vector<std::string_view> fields = split_fields(line, 4);
+        if (util.empty() && is_use && fields.size() == 4) {
+            std::string dummy_comp;
+            int dummy_num = 0;
+            if (!split_use_reference(fields[2], &dummy_comp, &dummy_num)) {
+                BuildMsgResult result;
+                for (auto& [id, body] : nosrvbld(skl_raw, "", msg)) {
+                    result.files.push_back({"CL" + id, std::move(body)});
+                }
+                result.files.push_back({"CTL", ""});
+                return result;
+            }
+        }
         SklEntry entry;
         if (is_def) {
             if (fields.size() < 2) throw FormatError(0, ":def without a message id");
@@ -362,6 +374,12 @@ BuildMsgResult buildmsg(std::string_view skl_raw, const MsgDatabase& msg) {
                 throw FormatError(0, "unparsable :use reference");
             }
             entry.local = entry.number;
+        } else if (fields.size() >= 4 &&
+                   !split_use_reference(fields[2], &entry.component, &entry.number)) {
+            std::from_chars(fields[1].data(), fields[1].data() + fields[1].size(), entry.local);
+            entry.number = entry.local;
+            entry.component = upper(fields[2]);
+            entry.ensure_crlf = true;
         } else {
             std::from_chars(fields[1].data(), fields[1].data() + fields[1].size(), entry.local);
             if (!split_use_reference(fields[2], &entry.component, &entry.number)) {

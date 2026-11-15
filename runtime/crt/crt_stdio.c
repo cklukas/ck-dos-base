@@ -201,6 +201,32 @@ int printf(const char *fmt, ...) {
     return n;
 }
 
+int sys_nerr = 1;
+char *sys_errlist[1] = { "DOS error" };
+
+char *fgets(char *s, int n, struct _iobuf *f) {
+    int i = 0;
+    int c;
+    if (s == (char *)0 || n <= 0) {
+        return (char *)0;
+    }
+    while (i + 1 < n) {
+        c = _filbuf(f);
+        if (c < 0) {
+            if (i == 0) {
+                return (char *)0;
+            }
+            break;
+        }
+        s[i++] = (char)c;
+        if (c == '\n') {
+            break;
+        }
+    }
+    s[i] = '\0';
+    return s;
+}
+
 int sscanf(const char *src, const char *fmt, ...) {
     (void)src;
     (void)fmt;

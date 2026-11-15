@@ -132,6 +132,8 @@ def run_build(repo_root: Path, tool_dir: Path, write_manifest: Path | None, veri
                 r = subprocess.run([cknmake], cwd=sub_dir, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
                 if r.returncode == 0:
                     built_dirs.append(rel)
+                else:
+                    failures.append((rel, r.returncode, r.stderr.strip()))
 
         required_outputs = [
             stage / "BOOT" / "MSBOOT.BIN",

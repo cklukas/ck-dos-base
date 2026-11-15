@@ -19,6 +19,8 @@ struct MasmOptions {
     std::vector<std::string> include_paths;
     // -Mx: spell PUBDEF/EXTDEF names as the source wrote them.
     bool preserve_public_case = false;
+    // -DNAME[=VAL] command-line constant definitions.
+    std::vector<std::pair<std::string, std::int64_t>> defines;
 };
 
 struct MasmResult {

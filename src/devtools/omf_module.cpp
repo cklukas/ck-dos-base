@@ -14,33 +14,42 @@ namespace {
 // of the literal block that holds it; returns the block's expanded length.
 std::uint32_t lidata_hits(const std::vector<std::uint8_t>& raw, std::size_t& pos,
                           std::uint16_t target, std::uint32_t expanded_base,
-                          std::vector<std::uint32_t>& hits) {
-    const std::uint16_t repeat =
-        static_cast<std::uint16_t>(raw[pos] | (raw[pos + 1] << 8));
+                          std::vector<std::uint32_t>& hits, bool is32) {
+    std::uint32_t repeat = 0;
+    if (is32) {
+        repeat = static_cast<std::uint32_t>(raw[pos]) |
+                 (static_cast<std::uint32_t>(raw[pos + 1]) << 8) |
+                 (static_cast<std::uint32_t>(raw[pos + 2]) << 16) |
+                 (static_cast<std::uint32_t>(raw[pos + 3]) << 24);
+        pos += 4;
+    } else {
+        repeat = static_cast<std::uint16_t>(raw[pos] | (raw[pos + 1] << 8));
+        pos += 2;
+    }
     const std::uint16_t blocks =
-        static_cast<std::uint16_t>(raw[pos + 2] | (raw[pos + 3] << 8));
-    pos += 4;
+        static_cast<std::uint16_t>(raw[pos] | (raw[pos + 1] << 8));
+    pos += 2;
     if (blocks == 0) {
         const std::uint8_t count = raw[pos];
         const std::size_t data_start = pos + 1;
         pos += 1U + count;
         if (target >= data_start && target < data_start + count) {
-            for (std::uint16_t k = 0; k < repeat; ++k) {
+            for (std::uint32_t k = 0; k < repeat; ++k) {
                 hits.push_back(expanded_base + k * count +
                                static_cast<std::uint32_t>(target - data_start));
             }
         }
-        return static_cast<std::uint32_t>(repeat) * count;
+        return repeat * count;
     }
     std::vector<std::uint32_t> inner_hits;
     std::uint32_t once = 0;
     for (std::uint16_t b = 0; b < blocks; ++b) {
-        once += lidata_hits(raw, pos, target, expanded_base + once, inner_hits);
+        once += lidata_hits(raw, pos, target, expanded_base + once, inner_hits, is32);
     }
     for (std::uint32_t hit : inner_hits) {
-        for (std::uint16_t k = 0; k < repeat; ++k) hits.push_back(hit + k * once);
+        for (std::uint32_t k = 0; k < repeat; ++k) hits.push_back(hit + k * once);
     }
-    return static_cast<std::uint32_t>(repeat) * once;
+    return repeat * once;
 }
 
 // A variable-length OMF number, used by COMDEF/LCOMDEF communal lengths.
@@ -99,22 +108,22 @@ FixupRef read_target(ByteCursor& cursor, std::uint8_t method, bool threaded, std
     return ref;
 }
 
-void expand_iterated(ByteCursor& cursor, std::vector<std::uint8_t>& out, std::size_t depth) {
+void expand_iterated(ByteCursor& cursor, std::vector<std::uint8_t>& out, std::size_t depth, bool is32) {
     if (depth > 16) throw FormatError(cursor.absolute(), "iterated data nested too deeply");
-    const std::uint16_t repeat = cursor.word();
+    const std::uint32_t repeat = is32 ? cursor.dword() : cursor.word();
     const std::uint16_t blocks = cursor.word();
     if (blocks != 0) {
         const std::size_t mark = out.size();
-        for (std::uint16_t index = 0; index < blocks; ++index) expand_iterated(cursor, out, depth + 1);
+        for (std::uint16_t index = 0; index < blocks; ++index) expand_iterated(cursor, out, depth + 1, is32);
         const std::vector<std::uint8_t> block(out.begin() + static_cast<std::ptrdiff_t>(mark), out.end());
-        for (std::uint16_t index = 1; index < repeat; ++index) {
+        for (std::uint32_t index = 1; index < repeat; ++index) {
             out.insert(out.end(), block.begin(), block.end());
         }
         return;
     }
     const std::size_t length = cursor.byte();
     const auto content = cursor.take(length);
-    for (std::uint16_t index = 0; index < repeat; ++index) out.insert(out.end(), content.begin(), content.end());
+    for (std::uint32_t index = 0; index < repeat; ++index) out.insert(out.end(), content.begin(), content.end());
 }
 
 }  // namespace
@@ -141,6 +150,7 @@ Module parse_module(const std::vector<OmfRecord>& records) {
     };
     std::uint32_t last_data_offset = 0;
     bool last_was_lidata = false;
+    bool last_lidata_is32 = false;
     std::vector<std::uint8_t> last_lidata_raw;
     // Record-stream order of each PUBDEF/EXTDEF/COMDEF name, so link_image can
     // recover LINK's symbol-table insertion order for the /M by-value tie-break.
@@ -290,10 +300,11 @@ Module parse_module(const std::vector<OmfRecord>& records) {
                 break;
             }
             case OmfType::ledata: {
+                const bool is32 = (record.type & 1U) != 0;
                 DataChunk chunk;
                 const std::uint16_t segment_index = cursor.index();
                 chunk.segment = segment_index - 1U;
-                chunk.offset = cursor.word();
+                chunk.offset = is32 ? cursor.dword() : cursor.word();
                 const auto payload = cursor.take(cursor.remaining());
                 chunk.bytes.assign(payload.begin(), payload.end());
                 last_data_segment = chunk.segment;
@@ -303,19 +314,21 @@ Module parse_module(const std::vector<OmfRecord>& records) {
                 break;
             }
             case OmfType::lidata: {
+                const bool is32 = (record.type & 1U) != 0;
                 DataChunk chunk;
                 const std::uint16_t segment_index = cursor.index();
                 chunk.segment = segment_index - 1U;
-                chunk.offset = cursor.word();
+                chunk.offset = is32 ? cursor.dword() : cursor.word();
                 {
                     const auto raw = cursor.take(cursor.remaining());
                     last_lidata_raw.assign(raw.begin(), raw.end());
                     ByteCursor replay(raw, cursor.absolute() - raw.size());
-                    while (!replay.empty()) expand_iterated(replay, chunk.bytes, 0);
+                    while (!replay.empty()) expand_iterated(replay, chunk.bytes, 0, is32);
                 }
                 last_data_segment = chunk.segment;
                 last_data_offset = chunk.offset;
                 last_was_lidata = true;
+                last_lidata_is32 = is32;
                 module.data.push_back(std::move(chunk));
                 break;
             }
@@ -375,7 +388,7 @@ Module parse_module(const std::vector<OmfRecord>& records) {
                         std::uint32_t expanded = 0;
                         while (raw_pos < last_lidata_raw.size()) {
                             expanded += lidata_hits(last_lidata_raw, raw_pos, data_offset,
-                                                    expanded, hits);
+                                                    expanded, hits, last_lidata_is32);
                         }
                         for (std::uint32_t hit : hits) {
                             Fixup replicated = fixup;
