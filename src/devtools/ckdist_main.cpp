@@ -2419,13 +2419,32 @@ std::string render_dos4_manifest_summary(const std::map<std::string, ManifestEnt
 }
 
 void generate_or_check_docs(const fs::path& repo_root, bool check_only) {
+    auto normalize_lf = [](const std::string& s) {
+        std::string out;
+        out.reserve(s.size());
+        for (std::size_t i = 0; i < s.size(); ++i) {
+            if (s[i] == '\r' && i + 1 < s.size() && s[i + 1] == '\n') continue;
+            out.push_back(s[i]);
+        }
+        return out;
+    };
+    auto sha256_lf_file = [&](const fs::path& p) {
+        std::ifstream in(p, std::ios::binary);
+        if (!in) throw std::runtime_error("cannot open file for sha256: " + p.string());
+        const std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        const std::string norm = normalize_lf(raw);
+        Sha256 hasher;
+        hasher.update(reinterpret_cast<const std::uint8_t*>(norm.data()), norm.size());
+        return hasher.final_hex();
+    };
+
     const fs::path topics_path = repo_root / "os" / "ck-dos-5" / "src" / "CMD" / "HELP" / "topics.json";
     const fs::path manifest_path = repo_root / "docs" / "build-manifest.json";
     const auto topics = parse_help_topics_json(topics_path);
     const auto manifest = parse_manifest_json(manifest_path);
 
-    const std::string dos5_cmd_md = render_dos5_command_reference(topics, sha256_file(topics_path));
-    const std::string dos4_man_md = render_dos4_manifest_summary(manifest, sha256_file(manifest_path));
+    const std::string dos5_cmd_md = render_dos5_command_reference(topics, sha256_lf_file(topics_path));
+    const std::string dos4_man_md = render_dos4_manifest_summary(manifest, sha256_lf_file(manifest_path));
 
     const std::vector<std::pair<fs::path, std::string>> targets = {
         {repo_root / "docs" / "dos5" / "command-reference.md", dos5_cmd_md},
@@ -2439,8 +2458,8 @@ void generate_or_check_docs(const fs::path& repo_root, bool check_only) {
                 throw std::runtime_error("missing generated documentation file: " + out_path.string() +
                                          " (run 'ckdist gen-docs --repo-root .')");
             }
-            const std::string actual((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-            if (actual != expected) {
+            const std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            if (normalize_lf(raw) != expected) {
                 throw std::runtime_error("generated documentation is out of date: " + out_path.string() +
                                          " (run 'ckdist gen-docs --repo-root .')");
             }
