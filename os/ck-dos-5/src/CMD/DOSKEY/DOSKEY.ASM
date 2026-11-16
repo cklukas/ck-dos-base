@@ -46,6 +46,7 @@ START:
         SUB     SI,0100h
 HOST_CALL_GO:
         INT     2Fh
+        JC      STANDALONE_ENTRY
         PUSH    DX                      ; DL = exit code
         JCXZ    HOST_NO_OUT
         PUSH    ES
