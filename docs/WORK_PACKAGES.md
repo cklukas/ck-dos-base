@@ -122,4 +122,4 @@ Verify that the natively built OS and utilities actually boot and run correctly 
 
 ## WP-9: Self-Hosting 16-Bit DOS Toolchain (Priority: P3)
 
-- [ ] **16-bit DOS port of core `ck*` tools:** Build or cross-compile a 16-bit DOS subset of the toolchain so MS-DOS 4 can rebuild itself from inside MS-DOS.
+- [x] **16-bit DOS port of core `ck*` tools:** Build or cross-compile a 16-bit DOS subset of the toolchain so MS-DOS 4 can rebuild itself from inside MS-DOS. (Shared C89 core in `include/dosbase/devtools/core/` + `src/devtools/core/` compiled into both host `dosbase_devtools` and 16-bit DOS `CKEXE2BN.EXE`, `CKEXEFIX.EXE`, `CKCONV.EXE`, `CKCMPRSS.EXE`, `CKBLDMSG.EXE`, `CKNOSRV.EXE`, `CKLIB.EXE`, `CKLINK.EXE`, `CKNMAKE.EXE`; verified byte-for-byte in MS-DOS 4 under QEMU via `scripts/verify_self_host.py`.)

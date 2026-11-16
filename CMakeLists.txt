@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(DOSBaseTools VERSION 0.1.0 LANGUAGES CXX)
+project(DOSBaseTools VERSION 0.1.0 LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 
@@ -28,6 +28,16 @@ function(dosbase_strict target)
 endfunction()
 
 add_library(dosbase_devtools
+    src/devtools/core/compress_core.c
+    src/devtools/core/convert_core.c
+    src/devtools/core/exe2bin_core.c
+    src/devtools/core/exefix_core.c
+    src/devtools/core/lib_core.c
+    src/devtools/core/link_core.c
+    src/devtools/core/msgtools_core.c
+    src/devtools/core/mz_core.c
+    src/devtools/core/nmake_core.c
+    src/devtools/core/omf_core.c
     src/devtools/asc2hlp.cpp
     src/devtools/binary.cpp
     src/devtools/cl_compiler.cpp

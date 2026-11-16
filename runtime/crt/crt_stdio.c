@@ -1,9 +1,11 @@
 /* Clean-room 16-bit MS-DOS CRT stdio, environment, and process stubs (WP-5) */
 
 extern int open(const char *path, int oflag);
+extern int creat(const char *path, int mode);
 extern int close(int fd);
 extern int read(int fd, void *buf, unsigned int count);
 extern int write(int fd, const void *buf, unsigned int count);
+extern long lseek(int fd, long offset, int origin);
 extern unsigned int strlen(const char *s);
 
 struct _iobuf {
@@ -44,13 +46,20 @@ int _flsbuf(int c, struct _iobuf *f) {
 struct _iobuf *fopen(const char *path, const char *mode) {
     int i;
     int fd;
-    int oflag = 0;
     if (mode[0] == 'w') {
-        oflag = 1;
+        fd = creat(path, 0);
     } else if (mode[0] == 'r' && mode[1] == '+') {
-        oflag = 2;
+        fd = open(path, 2);
+    } else if (mode[0] == 'a') {
+        fd = open(path, 2);
+        if (fd < 0) {
+            fd = creat(path, 0);
+        } else {
+            lseek(fd, 0L, 2);
+        }
+    } else {
+        fd = open(path, 0);
     }
-    fd = open(path, oflag);
     if (fd < 0) {
         return (struct _iobuf *)0;
     }
@@ -59,13 +68,72 @@ struct _iobuf *fopen(const char *path, const char *mode) {
             _iob[i]._ptr = (char *)0;
             _iob[i]._cnt = 0;
             _iob[i]._base = (char *)0;
-            _iob[i]._flag = (mode[0] == 'w') ? 0x02 : 0x01;
+            _iob[i]._flag = (mode[0] == 'w' || mode[0] == 'a') ? 0x02 : 0x01;
             _iob[i]._file = (char)fd;
             return &_iob[i];
         }
     }
     close(fd);
     return (struct _iobuf *)0;
+}
+
+int fflush(struct _iobuf *f) {
+    (void)f;
+    return 0;
+}
+
+unsigned int fread(void *buf, unsigned int size, unsigned int count, struct _iobuf *f) {
+    unsigned int total = size * count;
+    unsigned int got = 0;
+    char *p = (char *)buf;
+    int n;
+    if (total == 0 || size == 0 || f == (struct _iobuf *)0) {
+        return 0;
+    }
+    while (got < total) {
+        n = read((int)f->_file, p + got, total - got);
+        if (n <= 0) {
+            break;
+        }
+        got += (unsigned int)n;
+    }
+    return got / size;
+}
+
+int fseek(struct _iobuf *f, long offset, int origin) {
+    if (f == (struct _iobuf *)0) {
+        return -1;
+    }
+    return (lseek((int)f->_file, offset, origin) < 0L) ? -1 : 0;
+}
+
+long ftell(struct _iobuf *f) {
+    if (f == (struct _iobuf *)0) {
+        return -1L;
+    }
+    return lseek((int)f->_file, 0L, 1);
+}
+
+int fgetc(struct _iobuf *f) {
+    unsigned char ch;
+    if (f == (struct _iobuf *)0) {
+        return -1;
+    }
+    if (read((int)f->_file, &ch, 1) != 1) {
+        return -1;
+    }
+    return (int)ch;
+}
+
+int fputc(int c, struct _iobuf *f) {
+    unsigned char ch = (unsigned char)c;
+    if (f == (struct _iobuf *)0) {
+        return -1;
+    }
+    if (write((int)f->_file, &ch, 1) != 1) {
+        return -1;
+    }
+    return (int)ch;
 }
 
 int fclose(struct _iobuf *f) {
@@ -99,17 +167,20 @@ int fputs(const char *s, struct _iobuf *f) {
     return (write((int)f->_file, s, len) == (int)len) ? 0 : -1;
 }
 
-static void fmt_uint(char **dst, unsigned long v, unsigned int base, int upper) {
+static void fmt_uint(char **dst, unsigned long v, unsigned int base, int upper, int width, char pad) {
     char tmp[16];
     int i = 0;
     const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
     if (v == 0) {
-        *(*dst)++ = '0';
-        return;
+        tmp[i++] = '0';
+    } else {
+        while (v != 0) {
+            tmp[i++] = digits[v % base];
+            v /= base;
+        }
     }
-    while (v != 0) {
-        tmp[i++] = digits[v % base];
-        v /= base;
+    while (i < width && i < 16) {
+        tmp[i++] = pad;
     }
     while (i > 0) {
         *(*dst)++ = tmp[--i];
@@ -130,7 +201,14 @@ static int vsprintf_mini(char *out, const char *fmt, char *ap) {
         }
         {
             int is_long = 0;
-            while (*fmt == '-' || *fmt == '+' || *fmt == '0' || (*fmt >= '1' && *fmt <= '9')) {
+            int width = 0;
+            char pad = ' ';
+            while (*fmt == '-' || *fmt == '+' || *fmt == '0') {
+                if (*fmt == '0') pad = '0';
+                ++fmt;
+            }
+            while (*fmt >= '0' && *fmt <= '9') {
+                width = width * 10 + (*fmt - '0');
                 ++fmt;
             }
             if (*fmt == 'l') {
@@ -156,14 +234,15 @@ static int vsprintf_mini(char *out, const char *fmt, char *ap) {
                 if (v < 0) {
                     *out++ = '-';
                     v = -v;
+                    if (width > 0) --width;
                 }
-                fmt_uint(&out, (unsigned long)v, 10, 0);
+                fmt_uint(&out, (unsigned long)v, 10, 0, width, pad);
             } else if (*fmt == 'u' || *fmt == 'x' || *fmt == 'X') {
                 unsigned long v = is_long ? *(unsigned long *)ap : (unsigned long)(*(unsigned int *)ap);
                 unsigned int base = (*fmt == 'u') ? 10 : 16;
                 int upper = (*fmt == 'X');
                 ap += is_long ? sizeof(long) : sizeof(int);
-                fmt_uint(&out, v, base, upper);
+                fmt_uint(&out, v, base, upper, width, pad);
             } else if (*fmt != '\0') {
                 *out++ = *fmt;
             }

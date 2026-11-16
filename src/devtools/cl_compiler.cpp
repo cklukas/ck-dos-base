@@ -2768,9 +2768,11 @@ private:
                 test_ax_or_dxax(e->lhs->type);
                 std::size_t j_false = emit_jcc_rel16(0x74);
                 emit_expr(e->rhs);
+                if (is_32bit_scalar(e->type)) emit_widen_dxax(e->rhs->type);
                 std::size_t j_end = emit_jmp_rel16();
                 patch_rel16(j_false, omf_.code.data.size());
                 emit_expr(e->third);
+                if (is_32bit_scalar(e->type)) emit_widen_dxax(e->third->type);
                 patch_rel16(j_end, omf_.code.data.size());
                 break;
             }
@@ -3060,9 +3062,14 @@ private:
                 const bool is_pascal = fn_type && fn_type->is_pascal;
 
                 std::size_t arg_bytes = 0;
-                auto push_arg = [&](const ExprPtr& arg) {
+                auto push_arg = [&](std::size_t idx, const ExprPtr& arg) {
                     emit_expr(arg);
-                    if (is_32bit_scalar(arg->type)) {
+                    bool want32 = is_32bit_scalar(arg->type);
+                    if (fn_type && idx < fn_type->params.size() && fn_type->params[idx].type) {
+                        want32 = is_32bit_scalar(fn_type->params[idx].type);
+                        if (want32) emit_widen_dxax(arg->type);
+                    }
+                    if (want32) {
                         emit_u8(0x52);  // push dx (segment/high word first)
                         emit_u8(0x50);  // push ax (offset/low word)
                         arg_bytes += 4;
@@ -3072,9 +3079,9 @@ private:
                     }
                 };
                 if (is_pascal) {
-                    for (const ExprPtr& arg : e->args) push_arg(arg);
+                    for (std::size_t i = 0; i < e->args.size(); ++i) push_arg(i, e->args[i]);
                 } else {
-                    for (auto it = e->args.rbegin(); it != e->args.rend(); ++it) push_arg(*it);
+                    for (std::size_t i = e->args.size(); i > 0; --i) push_arg(i - 1, e->args[i - 1]);
                 }
 
                 if (e->lhs->kind == ExprKind::var && !find_local(e->lhs->name).has_value()) {
@@ -3223,10 +3230,10 @@ private:
             case Tok::gt:
             case Tok::ge:
                 emit_u8(0x3B); emit_u8(0xD1);  // cmp dx, cx
-                emit_u8(0x75); emit_u8(0x0A);  // jne +10
+                emit_u8(0x75); emit_u8(0x0B);  // jne +11
                 emit_u8(0x3B); emit_u8(0xC3);  // cmp ax, bx
                 emit_cmp_setcc(op, false);
-                emit_u8(0xEB); emit_u8(0x06);  // jmp +6
+                emit_u8(0xEB); emit_u8(0x07);  // jmp +7
                 emit_cmp_setcc(op, is_signed);
                 break;
             case Tok::slash:

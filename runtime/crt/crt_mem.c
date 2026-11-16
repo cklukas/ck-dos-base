@@ -59,6 +59,37 @@ void *memcpy(void *dst, const void *src, unsigned int count) {
     return dst;
 }
 
+void *memmove(void *dst, const void *src, unsigned int count) {
+    unsigned char *d = (unsigned char *)dst;
+    const unsigned char *s = (const unsigned char *)src;
+    unsigned int i;
+    if (d < s) {
+        for (i = 0; i < count; ++i) {
+            d[i] = s[i];
+        }
+    } else if (d > s) {
+        for (i = count; i > 0; --i) {
+            d[i - 1] = s[i - 1];
+        }
+    }
+    return dst;
+}
+
+void *realloc(void *ptr, unsigned int new_size) {
+    void *np;
+    if (ptr == (void *)0) {
+        return malloc(new_size);
+    }
+    if (new_size == 0) {
+        return (void *)0;
+    }
+    np = malloc(new_size);
+    if (np != (void *)0) {
+        memcpy(np, ptr, new_size);
+    }
+    return np;
+}
+
 int memcmp(const void *a, const void *b, unsigned int count) {
     const unsigned char *pa = (const unsigned char *)a;
     const unsigned char *pb = (const unsigned char *)b;

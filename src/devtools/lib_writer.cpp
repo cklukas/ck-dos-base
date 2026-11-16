@@ -3,178 +3,46 @@
 #include "dosbase/devtools/lib_writer.hpp"
 
 #include "dosbase/devtools/binary.hpp"
-#include "dosbase/devtools/dos_file.hpp"
-#include "dosbase/devtools/omf_record.hpp"
+#include "dosbase/devtools/core/lib_core.h"
 
 #include <algorithm>
-#include <map>
 
 namespace dosbase::devtools {
 namespace {
-
-constexpr std::uint8_t kLibraryHeader = 0xF0;
-constexpr std::uint8_t kLibraryEnd = 0xF1;
-constexpr std::uint8_t kExtendedDictionary = 0xF2;
-constexpr std::uint8_t kComment = 0x88;
-constexpr std::uint8_t kLibmodClass = 0xA3;
-constexpr std::size_t kDictionaryBlockBytes = 512;
-
-void append_word(std::vector<std::uint8_t>& out, std::uint16_t value) {
-    out.push_back(static_cast<std::uint8_t>(value & 0xFF));
-    out.push_back(static_cast<std::uint8_t>(value >> 8));
-}
 
 std::uint8_t fold_byte(char character) {
     return static_cast<std::uint8_t>(static_cast<std::uint8_t>(character) | 0x20U);
 }
 
-std::uint8_t checksum_for(std::span<const std::uint8_t> record) {
-    std::uint32_t sum = 0;
-    for (const std::uint8_t value : record) sum += value;
-    return static_cast<std::uint8_t>((0x100U - (sum & 0xFFU)) & 0xFFU);
-}
-
-// The comment LIB inserts after a member's THEADR to record its module name.
-OmfRecord libmod_record(const std::string& module_name) {
-    OmfRecord record;
-    record.type = kComment;
-    record.body.push_back(0x00);          // comment flags
-    record.body.push_back(kLibmodClass);  // LIBMOD
-    record.body.push_back(static_cast<std::uint8_t>(module_name.size()));
-    for (const char character : module_name) {
-        record.body.push_back(static_cast<std::uint8_t>(character));
-    }
-    record.declared_length = static_cast<std::uint16_t>(record.body.size() + 1);
-    std::vector<std::uint8_t> prefix{record.type,
-                                     static_cast<std::uint8_t>(record.declared_length & 0xFF),
-                                     static_cast<std::uint8_t>(record.declared_length >> 8)};
-    prefix.insert(prefix.end(), record.body.begin(), record.body.end());
-    record.checksum = checksum_for(prefix);
-    return record;
-}
-
-std::size_t round_up(std::size_t value, std::size_t multiple) {
-    return ((value + multiple - 1) / multiple) * multiple;
-}
-
 }  // namespace
 
 LibraryBuild build_library(const std::vector<LibraryInput>& members, std::size_t page_size) {
+    std::vector<ck_lib_member_in> c_members(members.size());
+    for (std::size_t i = 0; i < members.size(); ++i) {
+        c_members[i].module_name = members[i].module_name.c_str();
+        c_members[i].object = members[i].object.data();
+        c_members[i].object_size = static_cast<ck_u32>(members[i].object.size());
+    }
+    ck_lib_build_out c_out{};
+    ck_error err{};
+    if (ck_lib_build(c_members.data(), c_members.size(), page_size, &c_out, &err) != 0) {
+        throw FormatError(err.offset, err.message);
+    }
     LibraryBuild build;
-    std::vector<std::vector<std::uint8_t>> bodies;
-    std::vector<std::vector<std::string>> externals;
-    bodies.reserve(members.size());
-
-    std::size_t offset = page_size;  // the header record occupies page zero
-    for (const LibraryInput& member : members) {
-        std::vector<OmfRecord> records = parse_omf_records(member.object, 0, false);
-        if (records.empty()) throw FormatError(0, "member " + member.module_name + " has no records");
-        records.insert(records.begin() + 1, libmod_record(member.module_name));
-        std::vector<std::uint8_t> body = serialize_omf_records(records);
-
-        const auto page = static_cast<std::uint16_t>(offset / page_size);
-        build.pages.push_back(page);
-        build.symbols.push_back({member.module_name + "!", page});
-        std::vector<std::string> names;
-        std::vector<std::string> referenced;
-        std::uint16_t size = 0;
-        OmfNameTable table;
-        for (const OmfRecord& record : records) {
-            ByteCursor cursor(record.body, 0);
-            const std::uint8_t base = record.type & 0xFEU;
-            if (base == static_cast<std::uint8_t>(OmfType::pubdef)) {
-                (void)cursor.index();
-                const std::uint16_t segment = cursor.index();
-                if (segment == 0) (void)cursor.word();
-                while (!cursor.empty()) {
-                    names.push_back(cursor.name());
-                    (void)cursor.word();
-                    (void)cursor.index();
-                }
-            } else if (base == static_cast<std::uint8_t>(OmfType::extdef)) {
-                while (!cursor.empty()) {
-                    referenced.push_back(cursor.name());
-                    (void)cursor.index();
-                }
-            } else if (base == static_cast<std::uint8_t>(OmfType::segdef)) {
-                const std::uint8_t acbp = cursor.byte();
-                if ((acbp >> 5) == 0) {
-                    (void)cursor.word();
-                    (void)cursor.byte();
-                }
-                size = static_cast<std::uint16_t>(size + cursor.word());
-            }
-        }
-        for (const std::string& name : names) build.symbols.push_back({name, page});
-        build.publics.push_back(names);
-        externals.push_back(referenced);
-        build.sizes.push_back(size);
-
-        const std::size_t padded = round_up(body.size(), page_size);
-        body.resize(padded, 0);
-        offset += padded;
-        bodies.push_back(std::move(body));
+    build.bytes.assign(c_out.bytes, c_out.bytes + c_out.size);
+    build.pages.assign(c_out.pages, c_out.pages + c_out.member_count);
+    build.sizes.assign(c_out.sizes, c_out.sizes + c_out.member_count);
+    build.symbols.reserve(c_out.symbol_count);
+    for (std::size_t i = 0; i < c_out.symbol_count; ++i) {
+        build.symbols.push_back({c_out.symbols[i].name, c_out.symbols[i].page});
     }
-
-    const std::size_t blocks = dictionary_blocks_for(build.symbols);
-    const auto dictionary = build_dictionary(build.symbols, blocks);
-    if (!dictionary) throw FormatError(0, "the dictionary does not fit the symbols");
-
-    // The dictionary starts on a 512-byte boundary; an 0xF1 record fills the gap.
-    std::size_t dictionary_offset = round_up(offset + 3, kDictionaryBlockBytes);
-    const std::size_t end_record_bytes = dictionary_offset - offset;
-
-    build.bytes.reserve(dictionary_offset + dictionary->size() + 512);
-    build.bytes.push_back(kLibraryHeader);
-    append_word(build.bytes, static_cast<std::uint16_t>(page_size - 3));
-    append_word(build.bytes, static_cast<std::uint16_t>(dictionary_offset & 0xFFFF));
-    append_word(build.bytes, static_cast<std::uint16_t>(dictionary_offset >> 16));
-    append_word(build.bytes, static_cast<std::uint16_t>(blocks));
-    build.bytes.push_back(0x00);  // flags
-    build.bytes.resize(page_size, 0);
-    for (const std::vector<std::uint8_t>& body : bodies) {
-        build.bytes.insert(build.bytes.end(), body.begin(), body.end());
-    }
-    build.bytes.push_back(kLibraryEnd);
-    append_word(build.bytes, static_cast<std::uint16_t>(end_record_bytes - 3));
-    build.bytes.resize(dictionary_offset, 0);
-    build.bytes.insert(build.bytes.end(), dictionary->begin(), dictionary->end());
-
-    // The extended dictionary: per member, the members that define the names
-    // it references, as zero-based indices.
-    std::map<std::string, std::size_t> definer;
-    for (std::size_t index = 0; index < members.size(); ++index) {
-        for (const std::string& name : build.publics[index]) {
-            definer.emplace(dos_upper(name), index);
+    build.publics.resize(c_out.member_count);
+    for (std::size_t i = 0; i < c_out.member_count; ++i) {
+        for (std::size_t j = 0; j < c_out.public_counts[i]; ++j) {
+            build.publics[i].push_back(c_out.publics[i][j]);
         }
     }
-    std::vector<std::uint8_t> pairs;
-    std::vector<std::uint8_t> payload;
-    std::size_t entry_offset = 4 * (members.size() + 1);
-    for (std::size_t index = 0; index < members.size(); ++index) {
-        std::vector<std::uint16_t> uses;
-        for (const std::string& name : externals[index]) {
-            const auto found = definer.find(dos_upper(name));
-            if (found == definer.end()) continue;
-            const auto value = static_cast<std::uint16_t>(found->second);
-            if (std::find(uses.begin(), uses.end(), value) == uses.end()) uses.push_back(value);
-        }
-        std::sort(uses.begin(), uses.end());
-        append_word(pairs, build.pages[index]);
-        append_word(pairs, static_cast<std::uint16_t>(entry_offset));
-        append_word(payload, static_cast<std::uint16_t>(uses.size()));
-        for (const std::uint16_t value : uses) append_word(payload, value);
-        entry_offset += 2 + 2 * uses.size();
-    }
-    append_word(pairs, 0);
-    append_word(pairs, 0);
-    std::vector<std::uint8_t> extended;
-    append_word(extended, static_cast<std::uint16_t>(members.size()));
-    extended.insert(extended.end(), pairs.begin(), pairs.end());
-    extended.insert(extended.end(), payload.begin(), payload.end());
-    build.bytes.push_back(kExtendedDictionary);
-    append_word(build.bytes, static_cast<std::uint16_t>(extended.size()));
-    build.bytes.insert(build.bytes.end(), extended.begin(), extended.end());
+    ck_lib_build_out_free(&c_out);
     return build;
 }
 
@@ -265,56 +133,18 @@ std::string build_listing(const std::vector<LibraryInput>& members, const Librar
 }
 
 LibraryRequest parse_library_response(std::string_view text) {
-    std::vector<std::string> lines;
-    std::string current;
-    for (const char character : text) {
-        if (character == '\r') continue;
-        if (character == '\n') {
-            lines.push_back(current);
-            current.clear();
-            continue;
-        }
-        if (character == '\x1A') break;  // DOS end of file
-        current.push_back(character);
+    ck_lib_request c_req{};
+    ck_error err{};
+    if (ck_lib_parse_response(text.data(), static_cast<ck_u32>(text.size()), &c_req, &err) != 0) {
+        throw FormatError(err.offset, err.message);
     }
-    if (!current.empty()) lines.push_back(current);
-
     LibraryRequest request;
-    std::size_t index = 0;
-    while (index < lines.size() && lines[index].empty()) ++index;
-    if (index < lines.size()) request.library = lines[index++];
-    if (index < lines.size() && (lines[index] == "y" || lines[index] == "Y")) ++index;
-    std::string operations;
-    for (; index < lines.size(); ++index) {
-        std::string line = lines[index];
-        while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) line.pop_back();
-        if (line.empty()) continue;
-        const bool continued = line.back() == '&';
-        if (continued) line.pop_back();
-        operations += line;
-        if (!continued) {
-            ++index;
-            break;
-        }
+    if (c_req.library) request.library = c_req.library;
+    if (c_req.listing) request.listing = c_req.listing;
+    for (std::size_t i = 0; i < c_req.addition_count; ++i) {
+        request.additions.emplace_back(c_req.additions[i]);
     }
-    for (; index < lines.size(); ++index) {
-        std::string line = lines[index];
-        while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) line.pop_back();
-        if (line.empty()) continue;
-        if (!line.empty() && line.back() == ';') line.pop_back();
-        request.listing = line;
-        break;
-    }
-    std::string token;
-    for (const char character : operations) {
-        if (character == '+' || character == ' ' || character == '\t' || character == ';') {
-            if (!token.empty()) request.additions.push_back(token);
-            token.clear();
-            continue;
-        }
-        token.push_back(character);
-    }
-    if (!token.empty()) request.additions.push_back(token);
+    ck_lib_request_free(&c_req);
     return request;
 }
 

@@ -1,8 +1,13 @@
 ; Clean-room 16-bit MS-DOS C Runtime startup (WP-5)
 ; Provides __acrtused, __chkstk, _osmajor, _osminor, _errno, and DOS entry point.
 
+IFDEF FARCODE
+CRT0_TEXT SEGMENT BYTE PUBLIC 'CODE'
+CRT0_TEXT ENDS
+ELSE
 _TEXT   SEGMENT BYTE PUBLIC 'CODE'
 _TEXT   ENDS
+ENDIF
 
 NULL    SEGMENT PARA PUBLIC 'BEGDATA'
         DB      16 DUP (0)
@@ -43,10 +48,15 @@ _STACK  ENDS
 
 DGROUP  GROUP   NULL, _DATA, CONST, _BSS, _STACK
 
+IFDEF FARCODE
+        EXTRN   _main:FAR
+CRT0_TEXT SEGMENT BYTE PUBLIC 'CODE'
+        ASSUME  CS:CRT0_TEXT, DS:DGROUP, SS:DGROUP
+ELSE
         EXTRN   _main:NEAR
-
 _TEXT   SEGMENT BYTE PUBLIC 'CODE'
         ASSUME  CS:_TEXT, DS:DGROUP, SS:DGROUP
+ENDIF
 
         PUBLIC  __start
         PUBLIC  __chkstk
@@ -86,6 +96,17 @@ heap_chk:
         mov     sp, bx
         sub     bx, 2048
         mov     __heap_limit, bx
+        ; Shrink DOS memory block to DGROUP + 64KB so child EXEC has RAM
+        push    es
+        mov     es, __psp
+        mov     ax, DGROUP
+        add     ax, 1000h
+        mov     bx, __psp
+        sub     ax, bx
+        mov     bx, ax
+        mov     ah, 4Ah
+        int     21h
+        pop     es
 no_heap_expand:
 
         ; Query DOS version (INT 21h AH=30h)
@@ -103,7 +124,7 @@ no_heap_expand:
         mov     cx, 127
 len_ok:
         mov     si, 81h
-        mov     di, OFFSET __argv_buf
+        mov     di, OFFSET DGROUP:__argv_buf
         jcxz    copy_done
 copy_loop:
         mov     al, es:[si]
@@ -115,12 +136,12 @@ copy_done:
         mov     BYTE PTR [di], 0
 
         ; Build argv[0..argc-1] in __argv_ptrs
-        mov     di, OFFSET __argv_ptrs
-        mov     ax, OFFSET __prog_name
+        mov     di, OFFSET DGROUP:__argv_ptrs
+        mov     ax, OFFSET DGROUP:__prog_name
         mov     [di], ax
         add     di, 2
         mov     dx, 1
-        mov     si, OFFSET __argv_buf
+        mov     si, OFFSET DGROUP:__argv_buf
 skip_ws:
         mov     al, [si]
         cmp     al, 0
@@ -164,12 +185,16 @@ args_done:
         mov     es, __psp
 
         ; Call _main(argc, argv, envp)
-        mov     ax, OFFSET __env_empty
+        mov     ax, OFFSET DGROUP:__env_empty
         push    ax
-        mov     ax, OFFSET __argv_ptrs
+        mov     ax, OFFSET DGROUP:__argv_ptrs
         push    ax
         push    dx
+IFDEF FARCODE
+        call    FAR PTR _main
+ELSE
         call    _main
+ENDIF
         add     sp, 6
 
         ; Exit with return code in AL
@@ -177,11 +202,22 @@ args_done:
         int     21h
 __start ENDP
 
+IFDEF FARCODE
+__chkstk PROC   FAR
+        pop     cx
+        pop     dx
+        sub     sp, ax
+        push    dx
+        push    cx
+        ret
+__chkstk ENDP
+CRT0_TEXT ENDS
+ELSE
 __chkstk PROC   NEAR
         pop     cx
         sub     sp, ax
         jmp     cx
 __chkstk ENDP
-
 _TEXT   ENDS
+ENDIF
         END     __start

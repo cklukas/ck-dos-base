@@ -1,8 +1,15 @@
 ; Clean-room 16-bit MS-DOS CRT low-level DOS & BIOS I/O (WP-5)
-; Small-model cdecl calling convention (args at [bp+4], [bp+6], ...).
+; Small-model cdecl calling convention (args at [bp+4+AP], [bp+6+AP], ...).
 
+IFDEF FARCODE
+DOS_IO_TEXT SEGMENT BYTE PUBLIC 'CODE'
+        ASSUME  CS:DOS_IO_TEXT
+AP      EQU     2
+ELSE
 _TEXT   SEGMENT BYTE PUBLIC 'CODE'
         ASSUME  CS:_TEXT
+AP      EQU     0
+ENDIF
 
         PUBLIC  _segread
         PUBLIC  _intdos
@@ -23,13 +30,22 @@ _TEXT   SEGMENT BYTE PUBLIC 'CODE'
         PUBLIC  _getch
         PUBLIC  _putch
         PUBLIC  _kbhit
+        PUBLIC  _creat
+        PUBLIC  _unlink
+        PUBLIC  _remove
+        PUBLIC  _rename
+        PUBLIC  __dos_exec
 
 ; void segread(struct SREGS *sregs)
 ; SREGS: +0=es, +2=cs, +4=ss, +6=ds
-_segread PROC   NEAR
+IFDEF FARCODE
+_segread PROC FAR
+ELSE
+_segread PROC NEAR
+ENDIF
         push    bp
         mov     bp, sp
-        mov     bx, [bp+4]
+        mov     bx, [bp+4+AP]
         mov     ax, es
         mov     [bx+0], ax
         mov     ax, cs
@@ -44,12 +60,16 @@ _segread ENDP
 
 ; int intdos(union REGS *inregs, union REGS *outregs)
 ; REGS: +0=ax, +2=bx, +4=cx, +6=dx, +8=si, +10=di, +12=cflag
-_intdos PROC    NEAR
+IFDEF FARCODE
+_intdos PROC FAR
+ELSE
+_intdos PROC NEAR
+ENDIF
         push    bp
         mov     bp, sp
         push    si
         push    di
-        mov     bx, [bp+4]
+        mov     bx, [bp+4+AP]
         mov     ax, [bx+0]
         mov     cx, [bx+4]
         mov     dx, [bx+6]
@@ -59,7 +79,7 @@ _intdos PROC    NEAR
         int     21h
         pushf
         push    bx
-        mov     bx, [bp+6]
+        mov     bx, [bp+6+AP]
         mov     [bx+0], ax
         pop     ax
         mov     [bx+2], ax
@@ -78,17 +98,21 @@ _intdos PROC    NEAR
 _intdos ENDP
 
 ; int intdosx(union REGS *inregs, union REGS *outregs, struct SREGS *sregs)
-_intdosx PROC   NEAR
+IFDEF FARCODE
+_intdosx PROC FAR
+ELSE
+_intdosx PROC NEAR
+ENDIF
         push    bp
         mov     bp, sp
         push    si
         push    di
         push    ds
         push    es
-        mov     bx, [bp+8]
+        mov     bx, [bp+8+AP]
         mov     es, [bx+0]
         mov     ax, [bx+6]
-        mov     bx, [bp+4]
+        mov     bx, [bp+4+AP]
         push    ax
         mov     ax, [bx+0]
         mov     cx, [bx+4]
@@ -103,7 +127,7 @@ _intdosx PROC   NEAR
         push    bx
         mov     bx, ss
         mov     ds, bx
-        mov     bx, [bp+6]
+        mov     bx, [bp+6+AP]
         mov     [bx+0], ax
         pop     ax
         mov     [bx+2], ax
@@ -112,7 +136,7 @@ _intdosx PROC   NEAR
         mov     [bx+8], si
         mov     [bx+10], di
         pop     cx
-        mov     si, [bp+8]
+        mov     si, [bp+8+AP]
         mov     [si+6], cx
         mov     cx, es
         mov     [si+0], cx
@@ -129,12 +153,16 @@ _intdosx PROC   NEAR
 _intdosx ENDP
 
 ; int int86(int intno, union REGS *inregs, union REGS *outregs)
-_int86  PROC    NEAR
+IFDEF FARCODE
+_int86 PROC FAR
+ELSE
+_int86 PROC NEAR
+ENDIF
         push    bp
         mov     bp, sp
         push    si
         push    di
-        mov     ax, [bp+4]
+        mov     ax, [bp+4+AP]
         cmp     al, 21h
         jne     chk_10
         jmp     i86_21
@@ -162,7 +190,7 @@ chk_67: cmp     al, 67h
 chk_def:
         jmp     i86_21
 i86_load MACRO
-        mov     bx, [bp+6]
+        mov     bx, [bp+6+AP]
         mov     ax, [bx+0]
         mov     cx, [bx+4]
         mov     dx, [bx+6]
@@ -196,7 +224,7 @@ i86_67: i86_load
 i86_store:
         pushf
         push    bx
-        mov     bx, [bp+8]
+        mov     bx, [bp+8+AP]
         mov     [bx+0], ax
         pop     ax
         mov     [bx+2], ax
@@ -215,16 +243,24 @@ i86_store:
 _int86  ENDP
 
 ; int int86x(int intno, union REGS *inregs, union REGS *outregs, struct SREGS *sregs)
-_int86x PROC    NEAR
+IFDEF FARCODE
+_int86x PROC FAR
+ELSE
+_int86x PROC NEAR
+ENDIF
         push    bp
         mov     bp, sp
-        mov     ax, [bp+4]
+        mov     ax, [bp+4+AP]
         cmp     al, 21h
         jne     x_chk15
-        push    [bp+10]
-        push    [bp+8]
-        push    [bp+6]
+        push    [bp+10+AP]
+        push    [bp+8+AP]
+        push    [bp+6+AP]
+IFDEF FARCODE
+        call    FAR PTR _intdosx
+ELSE
         call    _intdosx
+ENDIF
         add     sp, 6
         pop     bp
         ret
@@ -233,10 +269,10 @@ x_chk15:
         push    di
         push    ds
         push    es
-        mov     bx, [bp+10]
+        mov     bx, [bp+10+AP]
         mov     es, [bx+0]
         mov     ax, [bx+6]
-        mov     bx, [bp+6]
+        mov     bx, [bp+6+AP]
         push    ax
         mov     ax, [bx+0]
         mov     cx, [bx+4]
@@ -246,7 +282,7 @@ x_chk15:
         mov     bx, [bx+2]
         pop     ds
         push    bp
-        mov     bp, [bp+4]
+        mov     bp, [bp+4+AP]
         xchg    ax, bp
         cmp     al, 15h
         je      x_i15
@@ -287,7 +323,7 @@ x_done:
         push    bx
         mov     bx, ss
         mov     ds, bx
-        mov     bx, [bp+8]
+        mov     bx, [bp+8+AP]
         mov     [bx+0], ax
         pop     ax
         mov     [bx+2], ax
@@ -296,7 +332,7 @@ x_done:
         mov     [bx+8], si
         mov     [bx+10], di
         pop     cx
-        mov     si, [bp+10]
+        mov     si, [bp+10+AP]
         mov     [si+6], cx
         mov     cx, es
         mov     [si+0], cx
@@ -313,20 +349,28 @@ x_done:
 _int86x ENDP
 
 ; void exit(int status)
-_exit   PROC    NEAR
+IFDEF FARCODE
+_exit PROC FAR
+ELSE
+_exit PROC NEAR
+ENDIF
         push    bp
         mov     bp, sp
-        mov     ax, [bp+4]
+        mov     ax, [bp+4+AP]
         mov     ah, 4Ch
         int     21h
 _exit   ENDP
 
 ; int open(const char *path, int oflag, ...)
-_open   PROC    NEAR
+IFDEF FARCODE
+_open PROC FAR
+ELSE
+_open PROC NEAR
+ENDIF
         push    bp
         mov     bp, sp
-        mov     dx, [bp+4]
-        mov     ax, [bp+6]
+        mov     dx, [bp+4+AP]
+        mov     ax, [bp+6+AP]
         and     al, 3
         mov     ah, 3Dh
         int     21h
@@ -338,10 +382,14 @@ open_ok:
 _open   ENDP
 
 ; int close(int fd)
-_close  PROC    NEAR
+IFDEF FARCODE
+_close PROC FAR
+ELSE
+_close PROC NEAR
+ENDIF
         push    bp
         mov     bp, sp
-        mov     bx, [bp+4]
+        mov     bx, [bp+4+AP]
         mov     ah, 3Eh
         int     21h
         mov     ax, 0
@@ -353,12 +401,16 @@ close_ok:
 _close  ENDP
 
 ; int read(int fd, void *buf, unsigned count)
-_read   PROC    NEAR
+IFDEF FARCODE
+_read PROC FAR
+ELSE
+_read PROC NEAR
+ENDIF
         push    bp
         mov     bp, sp
-        mov     bx, [bp+4]
-        mov     dx, [bp+6]
-        mov     cx, [bp+8]
+        mov     bx, [bp+4+AP]
+        mov     dx, [bp+6+AP]
+        mov     cx, [bp+8+AP]
         mov     ah, 3Fh
         int     21h
         jnc     read_ok
@@ -369,12 +421,16 @@ read_ok:
 _read   ENDP
 
 ; int write(int fd, const void *buf, unsigned count)
-_write  PROC    NEAR
+IFDEF FARCODE
+_write PROC FAR
+ELSE
+_write PROC NEAR
+ENDIF
         push    bp
         mov     bp, sp
-        mov     bx, [bp+4]
-        mov     dx, [bp+6]
-        mov     cx, [bp+8]
+        mov     bx, [bp+4+AP]
+        mov     dx, [bp+6+AP]
+        mov     cx, [bp+8+AP]
         mov     ah, 40h
         int     21h
         jnc     write_ok
@@ -385,13 +441,17 @@ write_ok:
 _write  ENDP
 
 ; long lseek(int fd, long offset, int origin)
-_lseek  PROC    NEAR
+IFDEF FARCODE
+_lseek PROC FAR
+ELSE
+_lseek PROC NEAR
+ENDIF
         push    bp
         mov     bp, sp
-        mov     bx, [bp+4]
-        mov     dx, [bp+6]
-        mov     cx, [bp+8]
-        mov     al, [bp+10]
+        mov     bx, [bp+4+AP]
+        mov     dx, [bp+6+AP]
+        mov     cx, [bp+8+AP]
+        mov     al, [bp+10+AP]
         mov     ah, 42h
         int     21h
         jnc     lseek_ok
@@ -403,10 +463,14 @@ lseek_ok:
 _lseek  ENDP
 
 ; long filelength(int fd)
+IFDEF FARCODE
+_filelength PROC FAR
+ELSE
 _filelength PROC NEAR
+ENDIF
         push    bp
         mov     bp, sp
-        mov     bx, [bp+4]
+        mov     bx, [bp+4+AP]
         xor     cx, cx
         xor     dx, dx
         mov     ax, 4202h
@@ -420,10 +484,14 @@ flen_ok:
 _filelength ENDP
 
 ; int access(const char *path, int mode)
-_access PROC    NEAR
+IFDEF FARCODE
+_access PROC FAR
+ELSE
+_access PROC NEAR
+ENDIF
         push    bp
         mov     bp, sp
-        mov     dx, [bp+4]
+        mov     dx, [bp+4+AP]
         mov     ax, 4300h
         int     21h
         mov     ax, 0
@@ -435,10 +503,14 @@ acc_ok:
 _access ENDP
 
 ; int chdir(const char *path)
-_chdir  PROC    NEAR
+IFDEF FARCODE
+_chdir PROC FAR
+ELSE
+_chdir PROC NEAR
+ENDIF
         push    bp
         mov     bp, sp
-        mov     dx, [bp+4]
+        mov     dx, [bp+4+AP]
         mov     ah, 3Bh
         int     21h
         mov     ax, 0
@@ -450,10 +522,14 @@ chd_ok:
 _chdir  ENDP
 
 ; int mkdir(const char *path)
-_mkdir  PROC    NEAR
+IFDEF FARCODE
+_mkdir PROC FAR
+ELSE
+_mkdir PROC NEAR
+ENDIF
         push    bp
         mov     bp, sp
-        mov     dx, [bp+4]
+        mov     dx, [bp+4+AP]
         mov     ah, 39h
         int     21h
         mov     ax, 0
@@ -465,10 +541,14 @@ mkd_ok:
 _mkdir  ENDP
 
 ; int rmdir(const char *path)
-_rmdir  PROC    NEAR
+IFDEF FARCODE
+_rmdir PROC FAR
+ELSE
+_rmdir PROC NEAR
+ENDIF
         push    bp
         mov     bp, sp
-        mov     dx, [bp+4]
+        mov     dx, [bp+4+AP]
         mov     ah, 3Ah
         int     21h
         mov     ax, 0
@@ -480,7 +560,11 @@ rmd_ok:
 _rmdir  ENDP
 
 ; int getch(void)
-_getch  PROC    NEAR
+IFDEF FARCODE
+_getch PROC FAR
+ELSE
+_getch PROC NEAR
+ENDIF
         mov     ah, 07h
         int     21h
         xor     ah, ah
@@ -488,24 +572,186 @@ _getch  PROC    NEAR
 _getch  ENDP
 
 ; int putch(int c)
-_putch  PROC    NEAR
+IFDEF FARCODE
+_putch PROC FAR
+ELSE
+_putch PROC NEAR
+ENDIF
         push    bp
         mov     bp, sp
-        mov     dl, [bp+4]
+        mov     dl, [bp+4+AP]
         mov     ah, 02h
         int     21h
-        mov     ax, [bp+4]
+        mov     ax, [bp+4+AP]
         pop     bp
         ret
 _putch  ENDP
 
 ; int kbhit(void)
-_kbhit  PROC    NEAR
+IFDEF FARCODE
+_kbhit PROC FAR
+ELSE
+_kbhit PROC NEAR
+ENDIF
         mov     ah, 0Bh
         int     21h
         xor     ah, ah
         ret
 _kbhit  ENDP
 
+; int creat(const char *path, int mode)
+IFDEF FARCODE
+_creat PROC FAR
+ELSE
+_creat PROC NEAR
+ENDIF
+        push    bp
+        mov     bp, sp
+        mov     dx, [bp+4+AP]
+        xor     cx, cx
+        mov     ah, 3Ch
+        int     21h
+        jnc     creat_ok
+        mov     ax, -1
+creat_ok:
+        pop     bp
+        ret
+_creat  ENDP
+
+; int unlink(const char *path) / int remove(const char *path)
+IFDEF FARCODE
+_remove PROC FAR
+ELSE
+_remove PROC NEAR
+ENDIF
+_unlink:
+        push    bp
+        mov     bp, sp
+        mov     dx, [bp+4+AP]
+        mov     ah, 41h
+        int     21h
+        mov     ax, 0
+        jnc     unlink_ok
+        mov     ax, -1
+unlink_ok:
+        pop     bp
+        ret
+_remove ENDP
+
+; int rename(const char *oldpath, const char *newpath)
+IFDEF FARCODE
+_rename PROC FAR
+ELSE
+_rename PROC NEAR
+ENDIF
+        push    bp
+        mov     bp, sp
+        push    di
+        push    es
+        push    ds
+        pop     es
+        mov     dx, [bp+4+AP]
+        mov     di, [bp+6+AP]
+        mov     ah, 56h
+        int     21h
+        mov     ax, 0
+        jnc     ren_ok
+        mov     ax, -1
+ren_ok:
+        pop     es
+        pop     di
+        pop     bp
+        ret
+_rename ENDP
+
+_exec_ss DW     0
+_exec_sp DW     0
+
+; int _dos_exec(const char *prog, const char *tail)
+IFDEF FARCODE
+__dos_exec PROC FAR
+ELSE
+__dos_exec PROC NEAR
+ENDIF
+        push    bp
+        mov     bp, sp
+        push    si
+        push    di
+        push    es
+        push    ds
+
+        sub     sp, 148
+        ; [bp-154..bp-26] = tail buffer (128 bytes: len, chars..., 0Dh)
+        ; [bp-26..bp-12]  = EXEC param block (14 bytes)
+        lea     di, [bp-154]
+        mov     si, [bp+6+AP]
+        xor     cx, cx
+        inc     di
+        or      si, si
+        jz      exec_tail_done
+        mov     al, [si]
+        or      al, al
+        jz      exec_tail_done
+        mov     BYTE PTR [di], ' '
+        inc     di
+        inc     cx
+exec_tail_cp:
+        mov     al, [si]
+        or      al, al
+        jz      exec_tail_done
+        cmp     cx, 125
+        jae     exec_tail_done
+        mov     [di], al
+        inc     si
+        inc     di
+        inc     cx
+        jmp     exec_tail_cp
+exec_tail_done:
+        mov     BYTE PTR [di], 0Dh
+        lea     di, [bp-154]
+        mov     [di], cl
+
+        ; Build EXEC param block at [bp-26]
+        lea     bx, [bp-26]
+        xor     ax, ax
+        mov     [bx+0], ax
+        mov     [bx+2], di
+        mov     [bx+4], ds
+        mov     WORD PTR [bx+6], 5Ch
+        mov     ax, ds
+        mov     [bx+8], ax
+        mov     WORD PTR [bx+10], 6Ch
+        mov     [bx+12], ax
+
+        mov     ax, ss
+        mov     es, ax
+        mov     dx, [bp+4+AP]
+        mov     cs:_exec_ss, ss
+        mov     cs:_exec_sp, sp
+        mov     ax, 4B00h
+        int     21h
+        mov     ss, cs:_exec_ss
+        mov     sp, cs:_exec_sp
+        jc      exec_fail
+        mov     ah, 4Dh
+        int     21h
+        xor     ah, ah
+        jmp     exec_done
+exec_fail:
+        mov     ax, -1
+exec_done:
+        add     sp, 148
+        pop     ds
+        pop     es
+        pop     di
+        pop     si
+        pop     bp
+        ret
+__dos_exec ENDP
+
+IFDEF FARCODE
+DOS_IO_TEXT ENDS
+ELSE
 _TEXT   ENDS
+ENDIF
         END

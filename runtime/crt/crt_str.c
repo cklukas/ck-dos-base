@@ -158,3 +158,56 @@ char *strupr(char *s) {
     }
     return s;
 }
+
+char *strrchr(const char *s, int c) {
+    const char *last = (const char *)0;
+    char ch = (char)c;
+    while (*s != '\0') {
+        if (*s == ch) {
+            last = s;
+        }
+        ++s;
+    }
+    if (ch == '\0') {
+        return (char *)s;
+    }
+    return (char *)last;
+}
+
+char *strstr(const char *haystack, const char *needle) {
+    unsigned int nlen;
+    if (*needle == '\0') {
+        return (char *)haystack;
+    }
+    nlen = strlen(needle);
+    while (*haystack != '\0') {
+        if (*haystack == *needle && strncmp(haystack, needle, nlen) == 0) {
+            return (char *)haystack;
+        }
+        ++haystack;
+    }
+    return (char *)0;
+}
+
+long atol(const char *s) {
+    long val = 0;
+    int neg = 0;
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') {
+        ++s;
+    }
+    if (*s == '-') {
+        neg = 1;
+        ++s;
+    } else if (*s == '+') {
+        ++s;
+    }
+    while (isdigit((unsigned char)*s)) {
+        val = val * 10L + (long)(*s - '0');
+        ++s;
+    }
+    return neg ? -val : val;
+}
+
+int atoi(const char *s) {
+    return (int)atol(s);
+}
