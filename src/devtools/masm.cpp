@@ -1091,7 +1091,7 @@ class Assembler {
             op == ".286P" || op == ".286C" || op == ".287" || op == ".386" ||
             // (the 186+ selects below also unlock imm-count shifts)
             op == ".386P" || op == ".387" || op == ".SEQ" || op == ".DOSSEG" ||
-            op == ".ALPHA" || op == ".SFCOND" || op == ".LFCOND" ||
+            op == "DOSSEG" || op == ".ALPHA" || op == ".SFCOND" || op == ".LFCOND" ||
             op == ".TFCOND") {
             if (op == ".186" || op == ".286" || op == ".286P" || op == ".286C" ||
                 op == ".386" || op == ".386P") {
@@ -1099,6 +1099,9 @@ class Assembler {
             }
             if (op == ".386" || op == ".386P") {
                 cpu_386_ = true;  // near conditional jumps (0F 8x) exist
+            }
+            if (op == ".DOSSEG" || op == "DOSSEG") {
+                dosseg_ = true;
             }
             if (op == ".ALPHA") {
                 // Alphabetical segment ordering: SEGDEF records (and every
@@ -6939,6 +6942,9 @@ class Assembler {
             body.insert(body.end(), source_spelling_.begin(), source_spelling_.end());
             records.push_back(make(0x80, std::move(body)));
         }
+        if (dosseg_) {
+            records.push_back(make(0x88, {0x00, 0x9E}));
+        }
         // LNAMES: "" first, then every segment and class name in the name
         // table's iteration order.
         std::vector<std::string> named;
@@ -7540,6 +7546,7 @@ class Assembler {
     bool data_use_ = false;
     bool cpu_186_ = false;
     bool cpu_386_ = false;
+    bool dosseg_ = false;       // .DOSSEG / DOSSEG: emit OMF COMENT class 0x9E
     bool alpha_order_ = false;  // .ALPHA: SEGDEFs sort by name at emission
     bool atom_open_ = false;
     int atom_segment_ = -1;

@@ -145,9 +145,13 @@ DOSBASE_TEST(runtime_clean_room_libs_build_package_and_link) {
         "extern unsigned int strlen(const char *);\n"
         "extern void *malloc(unsigned int);\n"
         "extern int com_toupper(unsigned char);\n"
+        "static char big_bss[8192];\n"
+        "int comm_arr[2048];\n"
         "int main(void) {\n"
         "    char *p = (char *)malloc(16);\n"
-        "    if (p) printf(\"%u %c\\n\", strlen(\"DOS\"), com_toupper('a'));\n"
+        "    big_bss[8191] = 1;\n"
+        "    comm_arr[2047] = 2;\n"
+        "    if (p) printf(\"%u %c %d\\n\", strlen(\"DOS\"), com_toupper('a'), big_bss[0] + comm_arr[0]);\n"
         "    return 0;\n"
         "}\n");
     run_cc(d / "APP.C", "APP.OBJ");
@@ -158,7 +162,10 @@ DOSBASE_TEST(runtime_clean_room_libs_build_package_and_link) {
     DOSBASE_TEST_EXPECT_EQ(std::system(link_cmd.c_str()), 0);
     DOSBASE_TEST_EXPECT(fs::is_regular_file(d / "APP.EXE"));
 
-    const MzImage mz = MzImage::parse(read_binary_file(d / "APP.EXE"));
+    const auto exe_bytes = read_binary_file(d / "APP.EXE");
+    DOSBASE_TEST_EXPECT(exe_bytes.size() < 10000u);
+    const MzImage mz = MzImage::parse(exe_bytes);
     DOSBASE_TEST_EXPECT_EQ(mz.header().signature, std::uint16_t{0x5A4D});
+    DOSBASE_TEST_EXPECT(mz.header().minimum_extra_paragraphs >= 768u);
 }
 #endif

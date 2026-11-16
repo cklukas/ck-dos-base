@@ -1,5 +1,6 @@
 ; Clean-room 16-bit MS-DOS C Runtime startup (WP-5)
 ; Provides __acrtused, __chkstk, _osmajor, _osminor, _errno, and DOS entry point.
+        .DOSSEG
 
 IFDEF FARCODE
 CRT0_TEXT SEGMENT BYTE PUBLIC 'CODE'
@@ -30,20 +31,22 @@ __psp       DW  0
 _DOS_TopOfMemory DW 0A000h
 __heap_ptr  DW  0
 __heap_limit DW 0
-__argv_buf  DB  128 DUP (0)
-__argv_ptrs DW  32 DUP (0)
 __prog_name DB  'DOS', 0
 __env_empty DW  0
+        EXTRN   _edata:BYTE
+        EXTRN   _end:BYTE
 _DATA   ENDS
 
 CONST   SEGMENT WORD PUBLIC 'CONST'
 CONST   ENDS
 
 _BSS    SEGMENT WORD PUBLIC 'BSS'
+__argv_buf  DB  128 DUP (?)
+__argv_ptrs DW  32 DUP (?)
 _BSS    ENDS
 
 _STACK  SEGMENT PARA STACK 'STACK'
-        DB      128 DUP (0)
+        DB      128 DUP (?)
 _STACK  ENDS
 
 DGROUP  GROUP   NULL, _DATA, CONST, _BSS, _STACK
@@ -108,6 +111,20 @@ heap_chk:
         int     21h
         pop     es
 no_heap_expand:
+        ; Zero uninitialized BSS and communal segments ([DGROUP:_edata .. DGROUP:_end))
+        push    ds
+        pop     es
+        mov     di, OFFSET DGROUP:_edata
+        mov     cx, OFFSET DGROUP:_end
+        sub     cx, di
+        jbe     bss_done
+        xor     ax, ax
+        cld
+        shr     cx, 1
+        rep     stosw
+        adc     cx, cx
+        rep     stosb
+bss_done:
 
         ; Query DOS version (INT 21h AH=30h)
         mov     ah, 30h
