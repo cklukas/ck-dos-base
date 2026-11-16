@@ -248,3 +248,58 @@ DOSBASE_TEST(cl_and_link_end_to_end_c_program) {
     DOSBASE_TEST_EXPECT(fs::is_regular_file(exe_file));
 }
 #endif
+
+namespace {
+std::vector<std::uint8_t> extract_code_bytes(const std::vector<OmfRecord>& recs) {
+    std::vector<std::uint8_t> code;
+    for (const OmfRecord& r : recs) {
+        if ((r.type & 0xFEU) == static_cast<std::uint8_t>(OmfType::ledata) &&
+            r.body.size() >= 3 && r.body[0] == 1) {
+            code.insert(code.end(), r.body.begin() + 3, r.body.end());
+        }
+    }
+    return code;
+}
+
+bool contains_seq(const std::vector<std::uint8_t>& hay, const std::vector<std::uint8_t>& needle) {
+    if (needle.empty() || hay.size() < needle.size()) return false;
+    return std::search(hay.begin(), hay.end(), needle.begin(), needle.end()) != hay.end();
+}
+}  // namespace
+
+DOSBASE_TEST(cl_wp10_const_folding_and_strength_reduction) {
+    // 1. Constant folding reduces complex constant expressions to `mov ax, 50` (B8 32 00)
+    {
+        const char* src =
+            "int folded(void) {\n"
+            "    return ((1 << 4) + (200 / 5) - (0 ? 99 : 6));\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0xB8, 0x32, 0x00}));
+        DOSBASE_TEST_EXPECT(code.size() <= 8U);
+    }
+
+    // 2. Array indexing & strength reduction emit shifts/masks with zero MUL/DIV opcodes
+    {
+        const char* src =
+            "int idx_and_math(int *arr, int i, unsigned int u, unsigned long ul) {\n"
+            "    int a = arr[0] + arr[3] + arr[i] + (2 + arr)[1];\n"
+            "    int b = (i * 8) + (i * 10) + (int)(u / 16u) + (int)(u % 512u);\n"
+            "    unsigned long c = (ul * 16UL) + (ul / 512UL) + (ul % 512UL);\n"
+            "    return a + b + (int)c;\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        // shl cx, 1 (D1 E1) is used for int* indexing
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0xD1, 0xE1}));
+        // Zero mul cx (F7 E1), imul cx (F7 E9), div cx (F7 F1), idiv cx (F7 F9), or mul bx (F7 E3)
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0xF7, 0xE1}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0xF7, 0xE9}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0xF7, 0xF1}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0xF7, 0xF9}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0xF7, 0xE3}));
+        // Zero 32-iteration software division loop (`mov cx, 32` = B9 20 00)
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0xB9, 0x20, 0x00}));
+    }
+}

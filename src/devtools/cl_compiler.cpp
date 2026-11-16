@@ -1690,6 +1690,14 @@ private:
                               ? make_ptr(base, default_far_data())
                               : l->type;
             }
+        } else if (op == Tok::plus && r->type &&
+                   (r->type->kind == TypeKind::t_ptr || r->type->kind == TypeKind::t_array)) {
+            TypePtr base = r->type->base;
+            e->type = r->type->kind == TypeKind::t_array
+                          ? make_ptr(base, default_far_data())
+                          : r->type;
+        } else if (op == Tok::shl || op == Tok::shr) {
+            e->type = common_arith_type(l->type, make_prim(TypeKind::t_short));
         } else if (op == Tok::eq || op == Tok::ne || op == Tok::lt || op == Tok::le ||
                    op == Tok::gt || op == Tok::ge || op == Tok::land || op == Tok::lor) {
             e->type = make_prim(TypeKind::t_short);
@@ -2218,7 +2226,489 @@ private:
         }
     }
 
+    static int exact_log2_u32(std::uint32_t v) {
+        if (v == 0 || (v & (v - 1U)) != 0) return -1;
+        int k = 0;
+        while ((v >> k) > 1U) ++k;
+        return k;
+    }
+
+    static std::int64_t truncate_const_to_type(std::int64_t val, const TypePtr& t) {
+        if (!t) return static_cast<std::int16_t>(val & 0xFFFF);
+        switch (t->kind) {
+            case TypeKind::t_char:
+                return static_cast<std::int8_t>(val & 0xFF);
+            case TypeKind::t_uchar:
+                return static_cast<std::uint8_t>(val & 0xFF);
+            case TypeKind::t_short:
+                return static_cast<std::int16_t>(val & 0xFFFF);
+            case TypeKind::t_ushort:
+                return static_cast<std::uint16_t>(val & 0xFFFF);
+            case TypeKind::t_long:
+                return static_cast<std::int32_t>(static_cast<std::uint32_t>(val));
+            case TypeKind::t_ulong:
+                return static_cast<std::int64_t>(static_cast<std::uint32_t>(val));
+            case TypeKind::t_ptr:
+                if (t->is_far) return static_cast<std::int64_t>(static_cast<std::uint32_t>(val));
+                return static_cast<std::uint16_t>(val & 0xFFFF);
+            default:
+                return val;
+        }
+    }
+
+    static bool is_foldable_scalar_type(const TypePtr& t) {
+        if (!t) return false;
+        return t->kind == TypeKind::t_char || t->kind == TypeKind::t_uchar ||
+               t->kind == TypeKind::t_short || t->kind == TypeKind::t_ushort ||
+               t->kind == TypeKind::t_long ||
+               t->kind == TypeKind::t_ulong || t->kind == TypeKind::t_ptr;
+    }
+
+    ExprPtr make_folded_int(std::int64_t val, const TypePtr& t) {
+        auto lit = std::make_shared<Expr>();
+        lit->kind = ExprKind::int_lit;
+        lit->type = t;
+        lit->int_val = truncate_const_to_type(val, t);
+        return lit;
+    }
+
+    ExprPtr fold_expr(ExprPtr e) {
+        if (!e) return nullptr;
+        if (e->lhs) e->lhs = fold_expr(e->lhs);
+        if (e->rhs) e->rhs = fold_expr(e->rhs);
+        if (e->third) e->third = fold_expr(e->third);
+        for (ExprPtr& a : e->args) a = fold_expr(a);
+
+        if (e->kind == ExprKind::cast && e->lhs && e->lhs->kind == ExprKind::int_lit &&
+            is_foldable_scalar_type(e->type)) {
+            const bool near_to_far =
+                e->type && e->type->kind == TypeKind::t_ptr && e->type->is_far &&
+                e->lhs->type &&
+                (e->lhs->type->kind == TypeKind::t_ptr || e->lhs->type->kind == TypeKind::t_array) &&
+                !e->lhs->type->is_far;
+            if (!near_to_far) {
+                return make_folded_int(e->lhs->int_val, e->type);
+            }
+        }
+
+        if (e->kind == ExprKind::unary && e->lhs && e->lhs->kind == ExprKind::int_lit &&
+            is_foldable_scalar_type(e->type)) {
+            const std::int64_t v = e->lhs->int_val;
+            if (e->op == Tok::plus) return make_folded_int(v, e->type);
+            if (e->op == Tok::minus) return make_folded_int(-static_cast<std::uint64_t>(v), e->type);
+            if (e->op == Tok::tilde) return make_folded_int(~static_cast<std::uint64_t>(v), e->type);
+            if (e->op == Tok::bang) return make_folded_int(v == 0 ? 1 : 0, e->type);
+        }
+
+        if (e->kind == ExprKind::ternary && e->lhs && e->lhs->kind == ExprKind::int_lit &&
+            e->rhs && e->third) {
+            ExprPtr chosen = (e->lhs->int_val != 0) ? e->rhs : e->third;
+            if (chosen->type != e->type && is_foldable_scalar_type(e->type)) {
+                auto c = std::make_shared<Expr>();
+                c->kind = ExprKind::cast;
+                c->type = e->type;
+                c->lhs = chosen;
+                return fold_expr(c);
+            }
+            return chosen;
+        }
+
+        if (e->kind == ExprKind::binary && e->lhs && e->rhs) {
+            const bool lhs_ptr = e->lhs->type && (e->lhs->type->kind == TypeKind::t_ptr ||
+                                                  e->lhs->type->kind == TypeKind::t_array);
+            const bool rhs_ptr = e->rhs->type && (e->rhs->type->kind == TypeKind::t_ptr ||
+                                                  e->rhs->type->kind == TypeKind::t_array);
+
+            if (!lhs_ptr && !rhs_ptr &&
+                e->lhs->kind == ExprKind::int_lit && e->rhs->kind == ExprKind::int_lit &&
+                is_foldable_scalar_type(e->type)) {
+                if (e->op == Tok::land) {
+                    return make_folded_int((e->lhs->int_val != 0 && e->rhs->int_val != 0) ? 1 : 0, e->type);
+                }
+                if (e->op == Tok::lor) {
+                    return make_folded_int((e->lhs->int_val != 0 || e->rhs->int_val != 0) ? 1 : 0, e->type);
+                }
+                const bool op32 = is_32bit_scalar(e->lhs->type) || is_32bit_scalar(e->rhs->type);
+                if (e->op == Tok::shl || e->op == Tok::shr) {
+                    const std::int64_t cnt = e->rhs->int_val;
+                    const int width = op32 ? 32 : 16;
+                    if (cnt >= 0 && cnt < width) {
+                        if (is_32bit_scalar(e->type)) {
+                            if (e->op == Tok::shl) {
+                                return make_folded_int(
+                                    static_cast<std::uint32_t>(e->lhs->int_val) << cnt, e->type);
+                            }
+                            if (is_signed_type(e->lhs->type)) {
+                                return make_folded_int(
+                                    static_cast<std::int32_t>(e->lhs->int_val) >> cnt, e->type);
+                            }
+                            return make_folded_int(
+                                static_cast<std::uint32_t>(e->lhs->int_val) >> cnt, e->type);
+                        } else {
+                            if (e->op == Tok::shl) {
+                                return make_folded_int(
+                                    static_cast<std::uint16_t>(e->lhs->int_val) << cnt, e->type);
+                            }
+                            if (is_signed_type(e->lhs->type)) {
+                                return make_folded_int(
+                                    static_cast<std::int16_t>(e->lhs->int_val) >> cnt, e->type);
+                            }
+                            return make_folded_int(
+                                static_cast<std::uint16_t>(e->lhs->int_val) >> cnt, e->type);
+                        }
+                    }
+                } else {
+                    const bool is_signed = is_signed_type(e->lhs->type) && is_signed_type(e->rhs->type);
+                    if (op32) {
+                        const std::uint32_t ul = static_cast<std::uint32_t>(e->lhs->int_val);
+                        const std::uint32_t ur = static_cast<std::uint32_t>(e->rhs->int_val);
+                        const std::int32_t sl = static_cast<std::int32_t>(ul);
+                        const std::int32_t sr = static_cast<std::int32_t>(ur);
+                        if ((e->op == Tok::slash || e->op == Tok::percent) &&
+                            (ur == 0 || (is_signed && sl == (-2147483647 - 1) && sr == -1))) {
+                            return e;
+                        }
+                        std::int64_t r = 0;
+                        switch (e->op) {
+                            case Tok::plus: r = ul + ur; break;
+                            case Tok::minus: r = ul - ur; break;
+                            case Tok::star: r = ul * ur; break;
+                            case Tok::slash: r = is_signed ? static_cast<std::int64_t>(sl / sr) : static_cast<std::int64_t>(ul / ur); break;
+                            case Tok::percent: r = is_signed ? static_cast<std::int64_t>(sl % sr) : static_cast<std::int64_t>(ul % ur); break;
+                            case Tok::amp: r = ul & ur; break;
+                            case Tok::pipe: r = ul | ur; break;
+                            case Tok::caret: r = ul ^ ur; break;
+                            case Tok::eq: r = (ul == ur) ? 1 : 0; break;
+                            case Tok::ne: r = (ul != ur) ? 1 : 0; break;
+                            case Tok::lt: r = (is_signed ? (sl < sr) : (ul < ur)) ? 1 : 0; break;
+                            case Tok::le: r = (is_signed ? (sl <= sr) : (ul <= ur)) ? 1 : 0; break;
+                            case Tok::gt: r = (is_signed ? (sl > sr) : (ul > ur)) ? 1 : 0; break;
+                            case Tok::ge: r = (is_signed ? (sl >= sr) : (ul >= ur)) ? 1 : 0; break;
+                            default: return e;
+                        }
+                        return make_folded_int(r, e->type);
+                    } else {
+                        const std::uint16_t ul = static_cast<std::uint16_t>(e->lhs->int_val);
+                        const std::uint16_t ur = static_cast<std::uint16_t>(e->rhs->int_val);
+                        const std::int16_t sl = static_cast<std::int16_t>(ul);
+                        const std::int16_t sr = static_cast<std::int16_t>(ur);
+                        if ((e->op == Tok::slash || e->op == Tok::percent) &&
+                            (ur == 0 || (is_signed && sl == -32768 && sr == -1))) {
+                            return e;
+                        }
+                        std::int64_t r = 0;
+                        switch (e->op) {
+                            case Tok::plus: r = static_cast<std::uint16_t>(ul + ur); break;
+                            case Tok::minus: r = static_cast<std::uint16_t>(ul - ur); break;
+                            case Tok::star: r = static_cast<std::uint16_t>(ul * ur); break;
+                            case Tok::slash: r = is_signed ? (sl / sr) : (ul / ur); break;
+                            case Tok::percent: r = is_signed ? (sl % sr) : (ul % ur); break;
+                            case Tok::amp: r = static_cast<std::uint16_t>(ul & ur); break;
+                            case Tok::pipe: r = static_cast<std::uint16_t>(ul | ur); break;
+                            case Tok::caret: r = static_cast<std::uint16_t>(ul ^ ur); break;
+                            case Tok::eq: r = (ul == ur) ? 1 : 0; break;
+                            case Tok::ne: r = (ul != ur) ? 1 : 0; break;
+                            case Tok::lt: r = (is_signed ? (sl < sr) : (ul < ur)) ? 1 : 0; break;
+                            case Tok::le: r = (is_signed ? (sl <= sr) : (ul <= ur)) ? 1 : 0; break;
+                            case Tok::gt: r = (is_signed ? (sl > sr) : (ul > ur)) ? 1 : 0; break;
+                            case Tok::ge: r = (is_signed ? (sl >= sr) : (ul >= ur)) ? 1 : 0; break;
+                            default: return e;
+                        }
+                        return make_folded_int(r, e->type);
+                    }
+                }
+            }
+
+            // Normalize constant literal to RHS for commutative / relational ops
+            if (e->lhs->kind == ExprKind::int_lit && e->rhs->kind != ExprKind::int_lit) {
+                if (e->op == Tok::plus || e->op == Tok::star || e->op == Tok::amp ||
+                    e->op == Tok::pipe || e->op == Tok::caret || e->op == Tok::eq ||
+                    e->op == Tok::ne) {
+                    std::swap(e->lhs, e->rhs);
+                } else if (e->op == Tok::lt || e->op == Tok::le ||
+                           e->op == Tok::gt || e->op == Tok::ge) {
+                    std::swap(e->lhs, e->rhs);
+                    if (e->op == Tok::lt) e->op = Tok::gt;
+                    else if (e->op == Tok::le) e->op = Tok::ge;
+                    else if (e->op == Tok::gt) e->op = Tok::lt;
+                    else if (e->op == Tok::ge) e->op = Tok::le;
+                }
+            }
+        }
+        return e;
+    }
+
+    void fold_stmt(const StmtPtr& s) {
+        if (!s) return;
+        if (s->expr) s->expr = fold_expr(s->expr);
+        if (s->cond) s->cond = fold_expr(s->cond);
+        if (s->post) s->post = fold_expr(s->post);
+        for (LocalVar& lv : s->locals) {
+            if (lv.init) lv.init = fold_expr(lv.init);
+        }
+        for (StmtPtr& sub : s->stmts) fold_stmt(sub);
+        if (s->body) fold_stmt(s->body);
+        if (s->else_body) fold_stmt(s->else_body);
+    }
+
+    void emit_shl16_ax_const(unsigned k) {
+        if (k == 0) return;
+        if (k >= 16) {
+            emit_u8(0x33); emit_u8(0xC0);  // xor ax, ax
+            return;
+        }
+        if (k <= 3) {
+            for (unsigned i = 0; i < k; ++i) { emit_u8(0xD1); emit_u8(0xE0); }  // shl ax, 1
+            return;
+        }
+        if (k == 8) {
+            emit_u8(0x8A); emit_u8(0xE0);  // mov ah, al
+            emit_u8(0x32); emit_u8(0xC0);  // xor al, al
+            return;
+        }
+        emit_u8(0xB1); emit_u8(static_cast<std::uint8_t>(k));  // mov cl, k
+        emit_u8(0xD3); emit_u8(0xE0);                          // shl ax, cl
+    }
+
+    void emit_shr16_ax_const(unsigned k, bool is_signed) {
+        if (k == 0) return;
+        if (k >= 16) {
+            if (is_signed) {
+                emit_u8(0x99);                 // cwd
+                emit_u8(0x8B); emit_u8(0xC2);  // mov ax, dx
+            } else {
+                emit_u8(0x33); emit_u8(0xC0);  // xor ax, ax
+            }
+            return;
+        }
+        if (k <= 3) {
+            for (unsigned i = 0; i < k; ++i) {
+                emit_u8(0xD1);
+                emit_u8(is_signed ? 0xF8 : 0xE8);  // sar/shr ax, 1
+            }
+            return;
+        }
+        if (k == 8) {
+            emit_u8(0x8A); emit_u8(0xC4);  // mov al, ah
+            if (is_signed) {
+                emit_u8(0x98);             // cbw
+            } else {
+                emit_u8(0x32); emit_u8(0xE4);  // xor ah, ah
+            }
+            return;
+        }
+        emit_u8(0xB1); emit_u8(static_cast<std::uint8_t>(k));  // mov cl, k
+        emit_u8(0xD3); emit_u8(is_signed ? 0xF8 : 0xE8);      // sar/shr ax, cl
+    }
+
+    void emit_mul16_ax_const(std::uint16_t imm, bool is_signed) {
+        if (imm == 0) { emit_u8(0x33); emit_u8(0xC0); return; }  // xor ax, ax
+        if (imm == 1) return;
+        if (imm == 0xFFFF) { emit_u8(0xF7); emit_u8(0xD8); return; }  // neg ax
+        const int lg = exact_log2_u32(imm);
+        if (lg >= 1) {
+            emit_shl16_ax_const(static_cast<unsigned>(lg));
+            return;
+        }
+        if (imm == 3) {
+            emit_u8(0x8B); emit_u8(0xC8);  // mov cx, ax
+            emit_u8(0xD1); emit_u8(0xE0);  // shl ax, 1
+            emit_u8(0x03); emit_u8(0xC1);  // add ax, cx
+            return;
+        }
+        if (imm == 5) {
+            emit_u8(0x8B); emit_u8(0xC8);  // mov cx, ax
+            emit_u8(0xD1); emit_u8(0xE0);  // shl ax, 1
+            emit_u8(0xD1); emit_u8(0xE0);  // shl ax, 1
+            emit_u8(0x03); emit_u8(0xC1);  // add ax, cx
+            return;
+        }
+        if (imm == 6) {
+            emit_u8(0xD1); emit_u8(0xE0);  // shl ax, 1
+            emit_u8(0x8B); emit_u8(0xC8);  // mov cx, ax
+            emit_u8(0xD1); emit_u8(0xE0);  // shl ax, 1
+            emit_u8(0x03); emit_u8(0xC1);  // add ax, cx
+            return;
+        }
+        if (imm == 9) {
+            emit_u8(0x8B); emit_u8(0xC8);  // mov cx, ax
+            emit_u8(0xD1); emit_u8(0xE0);  // shl ax, 1
+            emit_u8(0xD1); emit_u8(0xE0);  // shl ax, 1
+            emit_u8(0xD1); emit_u8(0xE0);  // shl ax, 1
+            emit_u8(0x03); emit_u8(0xC1);  // add ax, cx
+            return;
+        }
+        if (imm == 10) {
+            emit_u8(0xD1); emit_u8(0xE0);  // shl ax, 1
+            emit_u8(0x8B); emit_u8(0xC8);  // mov cx, ax
+            emit_u8(0xD1); emit_u8(0xE0);  // shl ax, 1
+            emit_u8(0xD1); emit_u8(0xE0);  // shl ax, 1
+            emit_u8(0x03); emit_u8(0xC1);  // add ax, cx
+            return;
+        }
+        if (imm == 12) {
+            emit_u8(0xD1); emit_u8(0xE0);  // shl ax, 1
+            emit_u8(0xD1); emit_u8(0xE0);  // shl ax, 1
+            emit_u8(0x8B); emit_u8(0xC8);  // mov cx, ax
+            emit_u8(0xD1); emit_u8(0xE0);  // shl ax, 1
+            emit_u8(0x03); emit_u8(0xC1);  // add ax, cx
+            return;
+        }
+        emit_u8(0xB9); emit_u16(imm);                  // mov cx, imm
+        emit_u8(0xF7); emit_u8(is_signed ? 0xE9 : 0xE1);  // imul/mul cx
+    }
+
+    // Scale CX by elem_sz while preserving AX and DX
+    void emit_scale16_cx(std::uint16_t elem_sz) {
+        if (elem_sz <= 1) return;
+        const int lg = exact_log2_u32(elem_sz);
+        if (lg >= 1) {
+            if (lg <= 4) {
+                for (int i = 0; i < lg; ++i) { emit_u8(0xD1); emit_u8(0xE1); }  // shl cx, 1
+            } else if (lg == 8) {
+                emit_u8(0x8A); emit_u8(0xE9);  // mov ch, cl
+                emit_u8(0x32); emit_u8(0xC9);  // xor cl, cl
+            } else {
+                emit_u8(0x8B); emit_u8(0xD9);  // mov bx, cx
+                emit_u8(0xB1); emit_u8(static_cast<std::uint8_t>(lg));  // mov cl, lg
+                emit_u8(0xD3); emit_u8(0xE3);  // shl bx, cl
+                emit_u8(0x8B); emit_u8(0xCB);  // mov cx, bx
+            }
+            return;
+        }
+        if (elem_sz == 3) {
+            emit_u8(0x8B); emit_u8(0xD9);  // mov bx, cx
+            emit_u8(0xD1); emit_u8(0xE1);  // shl cx, 1
+            emit_u8(0x03); emit_u8(0xCB);  // add cx, bx
+            return;
+        }
+        if (elem_sz == 5) {
+            emit_u8(0x8B); emit_u8(0xD9);  // mov bx, cx
+            emit_u8(0xD1); emit_u8(0xE1);  // shl cx, 1
+            emit_u8(0xD1); emit_u8(0xE1);  // shl cx, 1
+            emit_u8(0x03); emit_u8(0xCB);  // add cx, bx
+            return;
+        }
+        if (elem_sz == 6) {
+            emit_u8(0xD1); emit_u8(0xE1);  // shl cx, 1
+            emit_u8(0x8B); emit_u8(0xD9);  // mov bx, cx
+            emit_u8(0xD1); emit_u8(0xE1);  // shl cx, 1
+            emit_u8(0x03); emit_u8(0xCB);  // add cx, bx
+            return;
+        }
+        if (elem_sz == 10) {
+            emit_u8(0xD1); emit_u8(0xE1);  // shl cx, 1
+            emit_u8(0x8B); emit_u8(0xD9);  // mov bx, cx
+            emit_u8(0xD1); emit_u8(0xE1);  // shl cx, 1
+            emit_u8(0xD1); emit_u8(0xE1);  // shl cx, 1
+            emit_u8(0x03); emit_u8(0xCB);  // add cx, bx
+            return;
+        }
+        if (elem_sz == 12) {
+            emit_u8(0xD1); emit_u8(0xE1);  // shl cx, 1
+            emit_u8(0xD1); emit_u8(0xE1);  // shl cx, 1
+            emit_u8(0x8B); emit_u8(0xD9);  // mov bx, cx
+            emit_u8(0xD1); emit_u8(0xE1);  // shl cx, 1
+            emit_u8(0x03); emit_u8(0xCB);  // add cx, bx
+            return;
+        }
+        emit_u8(0x50);                 // push ax
+        emit_u8(0x52);                 // push dx
+        emit_u8(0xB8); emit_u16(elem_sz);
+        emit_u8(0xF7); emit_u8(0xE1);  // mul cx
+        emit_u8(0x8B); emit_u8(0xC8);  // mov cx, ax
+        emit_u8(0x5A);                 // pop dx
+        emit_u8(0x58);                 // pop ax
+    }
+
+    void emit_shl32_dxax_const(unsigned k) {
+        if (k == 0) return;
+        if (k >= 32) {
+            emit_u8(0x33); emit_u8(0xC0);  // xor ax, ax
+            emit_u8(0x33); emit_u8(0xD2);  // xor dx, dx
+            return;
+        }
+        if (k >= 16) {
+            emit_u8(0x8B); emit_u8(0xD0);  // mov dx, ax
+            emit_u8(0x33); emit_u8(0xC0);  // xor ax, ax
+            const unsigned rem = k - 16;
+            if (rem == 0) return;
+            if (rem <= 3) {
+                for (unsigned i = 0; i < rem; ++i) { emit_u8(0xD1); emit_u8(0xE2); }  // shl dx, 1
+            } else if (rem == 8) {
+                emit_u8(0x8A); emit_u8(0xF2);  // mov dh, dl
+                emit_u8(0x32); emit_u8(0xD2);  // xor dl, dl
+            } else {
+                emit_u8(0xB1); emit_u8(static_cast<std::uint8_t>(rem));
+                emit_u8(0xD3); emit_u8(0xE2);  // shl dx, cl
+            }
+            return;
+        }
+        if (k == 8) {
+            emit_u8(0x8A); emit_u8(0xF2);  // mov dh, dl
+            emit_u8(0x8A); emit_u8(0xD4);  // mov dl, ah
+            emit_u8(0x8A); emit_u8(0xE0);  // mov ah, al
+            emit_u8(0x32); emit_u8(0xC0);  // xor al, al
+            return;
+        }
+        if (k <= 3) {
+            for (unsigned i = 0; i < k; ++i) {
+                emit_u8(0xD1); emit_u8(0xE0);  // shl ax, 1
+                emit_u8(0xD1); emit_u8(0xD2);  // rcl dx, 1
+            }
+            return;
+        }
+        emit_u8(0xB9); emit_u16(static_cast<std::uint16_t>(k));  // mov cx, k
+        emit_u8(0xD1); emit_u8(0xE0);                            // shl ax, 1
+        emit_u8(0xD1); emit_u8(0xD2);                            // rcl dx, 1
+        emit_u8(0xE2); emit_u8(0xFA);                            // loop -6
+    }
+
+    void emit_shr32_dxax_const(unsigned k, bool is_signed) {
+        if (k == 0) return;
+        if (k >= 32) {
+            if (is_signed) {
+                emit_u8(0x8B); emit_u8(0xC2);  // mov ax, dx
+                emit_u8(0x99);                 // cwd
+                emit_u8(0x8B); emit_u8(0xC2);  // mov ax, dx
+            } else {
+                emit_u8(0x33); emit_u8(0xC0);
+                emit_u8(0x33); emit_u8(0xD2);
+            }
+            return;
+        }
+        if (k >= 16) {
+            emit_u8(0x8B); emit_u8(0xC2);  // mov ax, dx
+            if (is_signed) {
+                emit_u8(0x99);  // cwd
+            } else {
+                emit_u8(0x33); emit_u8(0xD2);  // xor dx, dx
+            }
+            emit_shr16_ax_const(k - 16, is_signed);
+            return;
+        }
+        if (k == 8 && !is_signed) {
+            emit_u8(0x8A); emit_u8(0xC4);  // mov al, ah
+            emit_u8(0x8A); emit_u8(0xE2);  // mov ah, dl
+            emit_u8(0x8A); emit_u8(0xD6);  // mov dl, dh
+            emit_u8(0x32); emit_u8(0xF6);  // xor dh, dh
+            return;
+        }
+        if (k <= 3) {
+            for (unsigned i = 0; i < k; ++i) {
+                emit_u8(0xD1); emit_u8(is_signed ? 0xFA : 0xEA);  // sar/shr dx, 1
+                emit_u8(0xD1); emit_u8(0xD8);                     // rcr ax, 1
+            }
+            return;
+        }
+        emit_u8(0xB9); emit_u16(static_cast<std::uint16_t>(k));   // mov cx, k
+        emit_u8(0xD1); emit_u8(is_signed ? 0xFA : 0xEA);          // sar/shr dx, 1
+        emit_u8(0xD1); emit_u8(0xD8);                             // rcr ax, 1
+        emit_u8(0xE2); emit_u8(0xFA);                             // loop -6
+    }
+
     void emit_function(const FuncDef& fn) {
+        fold_stmt(fn.body);
         cur_func_ = &fn;
         return_jumps_.clear();
         break_stack_.clear();
@@ -2948,11 +3438,35 @@ private:
                     break;
                 }
 
+                const bool lhs_ptr = e->lhs->type && (e->lhs->type->kind == TypeKind::t_ptr ||
+                                                      e->lhs->type->kind == TypeKind::t_array);
+                const bool rhs_ptr = e->rhs->type && (e->rhs->type->kind == TypeKind::t_ptr ||
+                                                      e->rhs->type->kind == TypeKind::t_array);
+
+                // Pointer +/- constant index fast path (e.g. arr[0], arr[k], ptr + k)
+                if ((e->op == Tok::plus || e->op == Tok::minus) && lhs_ptr && !rhs_ptr &&
+                    e->rhs->kind == ExprKind::int_lit) {
+                    const std::size_t elem_sz = std::max<std::size_t>(1, type_size(e->lhs->type->base));
+                    const std::uint16_t byte_off = static_cast<std::uint16_t>(
+                        static_cast<std::uint16_t>(e->rhs->int_val) * static_cast<std::uint16_t>(elem_sz));
+                    emit_expr(e->lhs);
+                    if (byte_off == 0) break;
+                    if (e->op == Tok::plus) {
+                        if (byte_off == 1) emit_u8(0x40);
+                        else if (byte_off == 2) { emit_u8(0x40); emit_u8(0x40); }
+                        else { emit_u8(0x05); emit_u16(byte_off); }
+                    } else {
+                        if (byte_off == 1) emit_u8(0x48);
+                        else if (byte_off == 2) { emit_u8(0x48); emit_u8(0x48); }
+                        else { emit_u8(0x2D); emit_u16(byte_off); }
+                    }
+                    break;
+                }
+
                 if (e->rhs->kind == ExprKind::int_lit && !is_32bit_scalar(e->type) &&
-                    !is_32bit_scalar(e->lhs->type) &&
-                    !(e->lhs->type && (e->lhs->type->kind == TypeKind::t_ptr ||
-                                       e->lhs->type->kind == TypeKind::t_array))) {
+                    !is_32bit_scalar(e->lhs->type) && !lhs_ptr && !rhs_ptr) {
                     const std::uint16_t imm = static_cast<std::uint16_t>(e->rhs->int_val);
+                    const bool is_signed = is_signed_type(e->lhs->type) && is_signed_type(e->rhs->type);
                     if (e->op == Tok::plus && imm == 1) {
                         emit_expr(e->lhs);
                         emit_u8(0x40);  // inc ax
@@ -2963,25 +3477,48 @@ private:
                         emit_u8(0x48);  // dec ax
                         break;
                     }
-                    if (e->op == Tok::shl && imm == 1) {
+                    if (e->op == Tok::shl) {
                         emit_expr(e->lhs);
-                        emit_u8(0xD1); emit_u8(0xE0);  // shl ax, 1
+                        emit_shl16_ax_const(imm);
                         break;
                     }
-                    if (e->op == Tok::shr && imm == 1) {
+                    if (e->op == Tok::shr) {
                         emit_expr(e->lhs);
-                        emit_u8(0xD1);
-                        emit_u8(is_signed_type(e->lhs->type) ? 0xF8 : 0xE8);  // sar/shr ax, 1
+                        emit_shr16_ax_const(imm, is_signed_type(e->lhs->type));
+                        break;
+                    }
+                    if (e->op == Tok::star) {
+                        emit_expr(e->lhs);
+                        emit_mul16_ax_const(imm, is_signed_type(e->type));
+                        break;
+                    }
+                    if ((e->op == Tok::slash || e->op == Tok::percent) && imm != 0) {
+                        emit_expr(e->lhs);
+                        if (!is_signed) {
+                            if (imm == 1) {
+                                if (e->op == Tok::percent) { emit_u8(0x33); emit_u8(0xC0); }
+                                break;
+                            }
+                            const int lg = exact_log2_u32(imm);
+                            if (lg >= 1) {
+                                if (e->op == Tok::slash) {
+                                    emit_shr16_ax_const(static_cast<unsigned>(lg), false);
+                                } else {
+                                    emit_u8(0x25); emit_u16(static_cast<std::uint16_t>(imm - 1U));  // and ax, mask
+                                }
+                                break;
+                            }
+                        } else if (imm == 1) {
+                            if (e->op == Tok::percent) { emit_u8(0x33); emit_u8(0xC0); }
+                            break;
+                        }
+                        emit_u8(0xB9); emit_u16(imm);  // mov cx, imm
+                        emit_alu_ax_cx(e->op, e->type, is_signed);
                         break;
                     }
                     if (e->op == Tok::plus && imm == 2) {
                         emit_expr(e->lhs);
                         emit_u8(0x40); emit_u8(0x40);  // inc ax; inc ax
-                        break;
-                    }
-                    if (e->op == Tok::minus && imm == 1) {
-                        emit_expr(e->lhs);
-                        emit_u8(0x48);  // dec ax
                         break;
                     }
                     if (e->op == Tok::minus && imm == 2) {
@@ -2992,7 +3529,11 @@ private:
                     if (e->op == Tok::plus || e->op == Tok::minus ||
                         e->op == Tok::amp || e->op == Tok::pipe || e->op == Tok::caret) {
                         emit_expr(e->lhs);
-                        if (imm == 0 && e->op != Tok::amp) break;
+                        if (imm == 0) {
+                            if (e->op == Tok::amp) { emit_u8(0x33); emit_u8(0xC0); }
+                            break;
+                        }
+                        if (e->op == Tok::amp && imm == 0xFFFF) break;
                         const std::uint8_t opc = e->op == Tok::plus    ? 0x05
                                                  : e->op == Tok::minus ? 0x2D
                                                  : e->op == Tok::amp   ? 0x25
@@ -3011,42 +3552,61 @@ private:
                             emit_u8(0x3D);  // cmp ax, imm16
                             emit_u16(imm);
                         }
-                        emit_cmp_setcc(e->op, is_signed_type(e->lhs->type) && is_signed_type(e->rhs->type));
+                        emit_cmp_setcc(e->op, is_signed);
                         break;
                     }
                 }
 
-                {
-                    const bool lhs_ptr = e->lhs->type && (e->lhs->type->kind == TypeKind::t_ptr ||
-                                                          e->lhs->type->kind == TypeKind::t_array);
-                    const bool rhs_ptr = e->rhs->type && (e->rhs->type->kind == TypeKind::t_ptr ||
-                                                          e->rhs->type->kind == TypeKind::t_array);
-                    if (!lhs_ptr && !rhs_ptr &&
-                        (is_32bit_scalar(e->lhs->type) || is_32bit_scalar(e->rhs->type))) {
-                        emit_binary_32bit(e);
-                        break;
-                    }
+                if (!lhs_ptr && !rhs_ptr &&
+                    (is_32bit_scalar(e->lhs->type) || is_32bit_scalar(e->rhs->type))) {
+                    emit_binary_32bit(e);
+                    break;
                 }
 
                 emit_expr(e->lhs);
-                emit_u8(0x50);  // push ax
+                const bool lhs_far_ptr = lhs_ptr && e->lhs->type->is_far;
+                if (lhs_far_ptr) emit_u8(0x52);  // push dx (preserve far segment)
+                emit_u8(0x50);                   // push ax
                 emit_expr(e->rhs);
-                emit_u8(0x8B); emit_u8(0xC8);  // mov cx, ax (rhs)
-                emit_u8(0x58);                 // pop ax (lhs)
+                const bool rhs_far_ptr = rhs_ptr && e->rhs->type->is_far;
+                emit_u8(0x8B); emit_u8(0xC8);    // mov cx, ax (rhs)
+                emit_u8(0x58);                   // pop ax (lhs)
+                if (lhs_far_ptr) emit_u8(0x5A);  // pop dx
 
                 // Scale pointer arithmetic
-                if ((e->op == Tok::plus || e->op == Tok::minus) && e->lhs->type &&
-                    (e->lhs->type->kind == TypeKind::t_ptr || e->lhs->type->kind == TypeKind::t_array)) {
+                if ((e->op == Tok::plus || e->op == Tok::minus) && lhs_ptr && !rhs_ptr) {
                     std::size_t elem_sz = std::max<std::size_t>(1, type_size(e->lhs->type->base));
-                    if (elem_sz > 1 && !(e->rhs->type &&
-                                         (e->rhs->type->kind == TypeKind::t_ptr ||
-                                          e->rhs->type->kind == TypeKind::t_array))) {
-                        emit_u8(0x50);  // push ax
-                        emit_u8(0xB8); emit_u16(static_cast<std::uint16_t>(elem_sz));
-                        emit_u8(0xF7); emit_u8(0xE1);  // mul cx
-                        emit_u8(0x8B); emit_u8(0xC8);  // mov cx, ax
-                        emit_u8(0x58);                 // pop ax
+                    if (elem_sz > 1) {
+                        emit_scale16_cx(static_cast<std::uint16_t>(elem_sz));
                     }
+                    emit_alu_ax_cx(e->op, e->type, false);
+                    break;
+                }
+                if (e->op == Tok::plus && !lhs_ptr && rhs_ptr) {
+                    // idx (in AX) + ptr (in DX:CX or CX): swap AX and CX, scale CX, add
+                    emit_u8(0x91);  // xchg ax, cx
+                    std::size_t elem_sz = std::max<std::size_t>(1, type_size(e->rhs->type->base));
+                    if (elem_sz > 1) {
+                        emit_scale16_cx(static_cast<std::uint16_t>(elem_sz));
+                    }
+                    (void)rhs_far_ptr;
+                    emit_u8(0x03); emit_u8(0xC1);  // add ax, cx
+                    break;
+                }
+                if (e->op == Tok::minus && lhs_ptr && rhs_ptr) {
+                    emit_u8(0x2B); emit_u8(0xC1);  // sub ax, cx
+                    std::size_t elem_sz = std::max<std::size_t>(1, type_size(e->lhs->type->base));
+                    if (elem_sz > 1) {
+                        const int lg = exact_log2_u32(static_cast<std::uint32_t>(elem_sz));
+                        if (lg >= 1) {
+                            emit_shr16_ax_const(static_cast<unsigned>(lg), true);
+                        } else {
+                            emit_u8(0xB9); emit_u16(static_cast<std::uint16_t>(elem_sz));
+                            emit_u8(0x99);                 // cwd
+                            emit_u8(0xF7); emit_u8(0xF9);  // idiv cx
+                        }
+                    }
+                    break;
                 }
                 emit_alu_ax_cx(e->op, e->type,
                                is_signed_type(e->lhs->type) && is_signed_type(e->rhs->type));
@@ -3155,6 +3715,130 @@ private:
     }
 
     void emit_binary_32bit(const ExprPtr& e) {
+        const bool is_signed = is_signed_type(e->lhs->type) && is_signed_type(e->rhs->type);
+        if (e->rhs->kind == ExprKind::int_lit) {
+            std::uint32_t uval = 0;
+            if (is_32bit_scalar(e->rhs->type)) {
+                uval = static_cast<std::uint32_t>(e->rhs->int_val);
+            } else if (is_signed_type(e->rhs->type)) {
+                uval = static_cast<std::uint32_t>(
+                    static_cast<std::int32_t>(static_cast<std::int16_t>(e->rhs->int_val)));
+            } else {
+                uval = static_cast<std::uint16_t>(e->rhs->int_val);
+            }
+            const std::uint16_t lo = static_cast<std::uint16_t>(uval & 0xFFFFU);
+            const std::uint16_t hi = static_cast<std::uint16_t>((uval >> 16) & 0xFFFFU);
+
+            if (e->op == Tok::shl) {
+                emit_expr(e->lhs);
+                emit_widen_dxax(e->lhs->type);
+                emit_shl32_dxax_const(uval & 0xFFU);
+                return;
+            }
+            if (e->op == Tok::shr) {
+                emit_expr(e->lhs);
+                emit_widen_dxax(e->lhs->type);
+                emit_shr32_dxax_const(uval & 0xFFU, is_signed_type(e->lhs->type));
+                return;
+            }
+            if (e->op == Tok::plus) {
+                emit_expr(e->lhs);
+                emit_widen_dxax(e->lhs->type);
+                if (uval == 0) return;
+                if (lo == 0) {
+                    emit_u8(0x81); emit_u8(0xC2); emit_u16(hi);  // add dx, hi
+                } else {
+                    emit_u8(0x05); emit_u16(lo);                 // add ax, lo
+                    emit_u8(0x81); emit_u8(0xD2); emit_u16(hi);  // adc dx, hi
+                }
+                return;
+            }
+            if (e->op == Tok::minus) {
+                emit_expr(e->lhs);
+                emit_widen_dxax(e->lhs->type);
+                if (uval == 0) return;
+                if (lo == 0) {
+                    emit_u8(0x81); emit_u8(0xEA); emit_u16(hi);  // sub dx, hi
+                } else {
+                    emit_u8(0x2D); emit_u16(lo);                 // sub ax, lo
+                    emit_u8(0x81); emit_u8(0xDA); emit_u16(hi);  // sbb dx, hi
+                }
+                return;
+            }
+            if (e->op == Tok::amp) {
+                emit_expr(e->lhs);
+                emit_widen_dxax(e->lhs->type);
+                if (lo == 0) { emit_u8(0x33); emit_u8(0xC0); }
+                else if (lo != 0xFFFFU) { emit_u8(0x25); emit_u16(lo); }
+                if (hi == 0) { emit_u8(0x33); emit_u8(0xD2); }
+                else if (hi != 0xFFFFU) { emit_u8(0x81); emit_u8(0xE2); emit_u16(hi); }
+                return;
+            }
+            if (e->op == Tok::pipe) {
+                emit_expr(e->lhs);
+                emit_widen_dxax(e->lhs->type);
+                if (lo != 0) { emit_u8(0x0D); emit_u16(lo); }
+                if (hi != 0) { emit_u8(0x81); emit_u8(0xCA); emit_u16(hi); }
+                return;
+            }
+            if (e->op == Tok::caret) {
+                emit_expr(e->lhs);
+                emit_widen_dxax(e->lhs->type);
+                if (lo != 0) { emit_u8(0x35); emit_u16(lo); }
+                if (hi != 0) { emit_u8(0x81); emit_u8(0xF2); emit_u16(hi); }
+                return;
+            }
+            if (e->op == Tok::star) {
+                if (uval == 0) {
+                    emit_expr(e->lhs);
+                    emit_u8(0x33); emit_u8(0xC0);
+                    emit_u8(0x33); emit_u8(0xD2);
+                    return;
+                }
+                if (uval == 1) {
+                    emit_expr(e->lhs);
+                    emit_widen_dxax(e->lhs->type);
+                    return;
+                }
+                const int lg = exact_log2_u32(uval);
+                if (lg >= 1) {
+                    emit_expr(e->lhs);
+                    emit_widen_dxax(e->lhs->type);
+                    emit_shl32_dxax_const(static_cast<unsigned>(lg));
+                    return;
+                }
+            }
+            if ((e->op == Tok::slash || e->op == Tok::percent) && !is_signed && uval > 0) {
+                if (uval == 1) {
+                    emit_expr(e->lhs);
+                    if (e->op == Tok::slash) {
+                        emit_widen_dxax(e->lhs->type);
+                    } else {
+                        emit_u8(0x33); emit_u8(0xC0);
+                        emit_u8(0x33); emit_u8(0xD2);
+                    }
+                    return;
+                }
+                const int lg = exact_log2_u32(uval);
+                if (lg >= 1) {
+                    emit_expr(e->lhs);
+                    emit_widen_dxax(e->lhs->type);
+                    if (e->op == Tok::slash) {
+                        emit_shr32_dxax_const(static_cast<unsigned>(lg), false);
+                    } else {
+                        const std::uint32_t mask = uval - 1U;
+                        const std::uint16_t mlo = static_cast<std::uint16_t>(mask & 0xFFFFU);
+                        const std::uint16_t mhi = static_cast<std::uint16_t>((mask >> 16) & 0xFFFFU);
+                        if (mlo == 0) { emit_u8(0x33); emit_u8(0xC0); }
+                        else if (mlo != 0xFFFFU) { emit_u8(0x25); emit_u16(mlo); }
+                        if (mhi == 0) { emit_u8(0x33); emit_u8(0xD2); }
+                        else if (mhi != 0xFFFFU) { emit_u8(0x81); emit_u8(0xE2); emit_u16(mhi); }
+                    }
+                    return;
+                }
+            }
+        }
+
         emit_expr(e->lhs);
         emit_widen_dxax(e->lhs->type);
         emit_u8(0x52);  // push dx
@@ -3165,7 +3849,6 @@ private:
         emit_u8(0x8B); emit_u8(0xCA);  // mov cx, dx (rhs hi)
         emit_u8(0x58);                 // pop ax (lhs lo)
         emit_u8(0x5A);                 // pop dx (lhs hi)
-        const bool is_signed = is_signed_type(e->lhs->type) && is_signed_type(e->rhs->type);
         emit_alu_32bit(e->op, is_signed);
     }
 
