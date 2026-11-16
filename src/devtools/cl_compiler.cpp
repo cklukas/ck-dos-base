@@ -2190,6 +2190,9 @@ public:
             emit_function(fn);
         }
 
+        // 2b. Emit shared module-local 32-bit multiply/divide helpers if used
+        emit_local_32bit_helpers();
+
         // Patch any intra-module references to globals/functions defined later in the file
         resolve_local_fixups();
     }
@@ -2256,6 +2259,10 @@ private:
     bool ax_cache_active_ = false;
     int ax_cache_var_id_ = 0;
     std::size_t ax_cache_valid_pos_ = 0;
+    bool need_lmul_helper_ = false;
+    bool need_uldiv_helper_ = false;
+    bool need_ldiv_helper_ = false;
+    bool need_lrem_helper_ = false;
     bool use_si_ = false;
     bool use_di_ = false;
     bool has_hidden_sret_ = false;
@@ -4063,6 +4070,114 @@ private:
                     emit_u8(0x0B); emit_u8(0xC2);  // or ax, dx
                     emit_jcc(eff_op == Tok::ne ? 0x75 : 0x74, target);
                     return;
+                }
+                if (cond->rhs->kind == ExprKind::int_lit) {
+                    std::uint32_t uval = 0;
+                    if (is_32bit_scalar(cond->rhs->type)) {
+                        uval = static_cast<std::uint32_t>(cond->rhs->int_val);
+                    } else if (is_signed_type(cond->rhs->type)) {
+                        uval = static_cast<std::uint32_t>(
+                            static_cast<std::int32_t>(static_cast<std::int16_t>(cond->rhs->int_val)));
+                    } else {
+                        uval = static_cast<std::uint16_t>(cond->rhs->int_val);
+                    }
+                    const auto lo = static_cast<std::uint16_t>(uval & 0xFFFFU);
+                    const auto hi = static_cast<std::uint16_t>((uval >> 16) & 0xFFFFU);
+                    const auto shi = static_cast<std::int16_t>(hi);
+                    emit_expr(cond->lhs);
+                    emit_widen_dxax(cond->lhs->type);
+                    auto cmp_dx_hi = [&]() {
+                        if (shi >= -128 && shi <= 127) {
+                            emit_u8(0x83); emit_u8(0xFA);
+                            emit_u8(static_cast<std::uint8_t>(shi & 0xFF));  // cmp dx, imm8
+                        } else {
+                            emit_u8(0x81); emit_u8(0xFA); emit_u16(hi);      // cmp dx, imm16
+                        }
+                    };
+                    auto cmp_ax_lo = [&]() {
+                        emit_u8(0x3D); emit_u16(lo);  // cmp ax, imm16
+                    };
+                    if (eff_op == Tok::eq) {
+                        const LabelId skip = new_label();
+                        cmp_dx_hi();
+                        emit_jcc(0x75, skip);
+                        cmp_ax_lo();
+                        emit_jcc(0x74, target);
+                        bind_label(skip);
+                    } else if (eff_op == Tok::ne) {
+                        cmp_dx_hi();
+                        emit_jcc(0x75, target);
+                        cmp_ax_lo();
+                        emit_jcc(0x75, target);
+                    } else {
+                        const LabelId skip = new_label();
+                        const std::uint8_t hi_jcc =
+                            (eff_op == Tok::lt || eff_op == Tok::le)
+                                ? (is_signed ? 0x7C : 0x72)
+                                : (is_signed ? 0x7F : 0x77);
+                        const std::uint8_t lo_jcc = eff_op == Tok::lt   ? 0x72
+                                                    : eff_op == Tok::le ? 0x76
+                                                    : eff_op == Tok::gt ? 0x77
+                                                                        : 0x73;
+                        cmp_dx_hi();
+                        emit_jcc(hi_jcc, target);
+                        emit_jcc(0x75, skip);
+                        cmp_ax_lo();
+                        emit_jcc(lo_jcc, target);
+                        bind_label(skip);
+                    }
+                    return;
+                }
+                {
+                    DirectMem rdm;
+                    if (cond->rhs->type && is_32bit_scalar(cond->rhs->type) &&
+                        cond->rhs->type->kind != TypeKind::t_float &&
+                        try_resolve_direct_mem(cond->rhs, rdm)) {
+                        emit_expr(cond->lhs);
+                        emit_widen_dxax(cond->lhs->type);
+                        auto cmp_dx_mem = [&]() {
+                            emit_u8(0x3B);
+                            if (rdm.kind == DirectMem::bp_rel) {
+                                emit_bp_rm(2, rdm.disp + 2);
+                            } else {
+                                emit_u8(0x16);
+                                emit_dgroup_disp(rdm.sym, rdm.disp + 2);
+                            }
+                        };
+                        auto cmp_ax_mem = [&]() {
+                            emit_op_ax_direct_mem(0x3B, rdm);
+                        };
+                        if (eff_op == Tok::eq) {
+                            const LabelId skip = new_label();
+                            cmp_dx_mem();
+                            emit_jcc(0x75, skip);
+                            cmp_ax_mem();
+                            emit_jcc(0x74, target);
+                            bind_label(skip);
+                        } else if (eff_op == Tok::ne) {
+                            cmp_dx_mem();
+                            emit_jcc(0x75, target);
+                            cmp_ax_mem();
+                            emit_jcc(0x75, target);
+                        } else {
+                            const LabelId skip = new_label();
+                            const std::uint8_t hi_jcc =
+                                (eff_op == Tok::lt || eff_op == Tok::le)
+                                    ? (is_signed ? 0x7C : 0x72)
+                                    : (is_signed ? 0x7F : 0x77);
+                            const std::uint8_t lo_jcc = eff_op == Tok::lt   ? 0x72
+                                                        : eff_op == Tok::le ? 0x76
+                                                        : eff_op == Tok::gt ? 0x77
+                                                                            : 0x73;
+                            cmp_dx_mem();
+                            emit_jcc(hi_jcc, target);
+                            emit_jcc(0x75, skip);
+                            cmp_ax_mem();
+                            emit_jcc(lo_jcc, target);
+                            bind_label(skip);
+                        }
+                        return;
+                    }
                 }
                 emit_expr(cond->lhs);
                 emit_widen_dxax(cond->lhs->type);
@@ -6368,6 +6483,37 @@ private:
             }
         }
 
+        // Direct 32-bit memory RHS fast path (eliminates push dx; push ax; ... pop ax; pop dx)
+        if ((e->op == Tok::plus || e->op == Tok::minus || e->op == Tok::amp ||
+             e->op == Tok::pipe || e->op == Tok::caret) &&
+            e->rhs && e->rhs->type && is_32bit_scalar(e->rhs->type) &&
+            e->rhs->type->kind != TypeKind::t_float) {
+            DirectMem rdm;
+            if (try_resolve_direct_mem(e->rhs, rdm)) {
+                emit_expr(e->lhs);
+                emit_widen_dxax(e->lhs->type);
+                const std::uint8_t lo_opc = e->op == Tok::plus    ? 0x03
+                                            : e->op == Tok::minus ? 0x2B
+                                            : e->op == Tok::amp   ? 0x23
+                                            : e->op == Tok::pipe  ? 0x0B
+                                                                  : 0x33;
+                const std::uint8_t hi_opc = e->op == Tok::plus    ? 0x13
+                                            : e->op == Tok::minus ? 0x1B
+                                            : e->op == Tok::amp   ? 0x23
+                                            : e->op == Tok::pipe  ? 0x0B
+                                                                  : 0x33;
+                emit_op_ax_direct_mem(lo_opc, rdm);
+                emit_u8(hi_opc);
+                if (rdm.kind == DirectMem::bp_rel) {
+                    emit_bp_rm(2, rdm.disp + 2);
+                } else {
+                    emit_u8(0x16);
+                    emit_dgroup_disp(rdm.sym, rdm.disp + 2);
+                }
+                return;
+            }
+        }
+
         emit_expr(e->lhs);
         emit_widen_dxax(e->lhs->type);
         emit_u8(0x52);  // push dx
@@ -6379,6 +6525,68 @@ private:
         emit_u8(0x58);                 // pop ax (lhs lo)
         emit_u8(0x5A);                 // pop dx (lhs hi)
         emit_alu_32bit(e->op, is_signed);
+    }
+
+    void emit_local_helper_call(const char* sym) {
+        invalidate_reg_caches();
+        emit_u8(0xE8);
+        pending_fixups_.push_back({omf_.code.data.size(), FixupKind::near_call_rel, sym});
+        emit_u16(0);
+    }
+
+    void emit_local_32bit_helpers() {
+        if (need_lmul_helper_) {
+            global_locs_["$L_lmul"] = {1, static_cast<std::uint16_t>(omf_.code.data.size())};
+            for (std::uint8_t b : {0x56, 0x50, 0x52, 0xF7, 0xE1, 0x8B, 0xF0, 0x58, 0xF7, 0xE3,
+                                   0x03, 0xF0, 0x58, 0xF7, 0xE3, 0x03, 0xD6, 0x5E, 0xC3}) {
+                emit_u8(b);
+            }
+        }
+        if (need_ldiv_helper_ || need_lrem_helper_) need_uldiv_helper_ = true;
+        if (need_uldiv_helper_) {
+            global_locs_["$L_uldiv"] = {1, static_cast<std::uint16_t>(omf_.code.data.size())};
+            for (std::uint8_t b : {0x56, 0x57, 0x55, 0x51, 0x53, 0x8B, 0xEC, 0x33, 0xF6, 0x33, 0xFF,
+                                   0xB9, 0x20, 0x00}) {
+                emit_u8(b);
+            }
+            const std::size_t div_loop = omf_.code.data.size();
+            for (std::uint8_t b : {0xD1, 0xE0, 0xD1, 0xD2, 0xD1, 0xD7, 0xD1, 0xD6,
+                                   0x3B, 0x76, 0x02, 0x72, 0x0E, 0x77, 0x05,
+                                   0x3B, 0x7E, 0x00, 0x72, 0x07,
+                                   0x2B, 0x7E, 0x00, 0x1B, 0x76, 0x02, 0x40}) {
+                emit_u8(b);
+            }
+            const auto rel = static_cast<std::int8_t>(
+                static_cast<std::ptrdiff_t>(div_loop) -
+                static_cast<std::ptrdiff_t>(omf_.code.data.size() + 2));
+            emit_u8(0xE2); emit_u8(static_cast<std::uint8_t>(rel));
+            for (std::uint8_t b : {0x83, 0xC4, 0x04, 0x8B, 0xDF, 0x8B, 0xCE, 0x5D, 0x5F, 0x5E, 0xC3}) {
+                emit_u8(b);
+            }
+        }
+        auto emit_signed_divrem = [&](const char* sym, bool is_rem) {
+            global_locs_[sym] = {1, static_cast<std::uint16_t>(omf_.code.data.size())};
+            emit_u8(0x56);                 // push si
+            emit_u8(0x8B); emit_u8(0xF2);  // mov si, dx
+            if (!is_rem) {
+                emit_u8(0x33); emit_u8(0xF1);  // xor si, cx
+            }
+            for (std::uint8_t b : {0x85, 0xD2, 0x79, 0x07, 0xF7, 0xDA, 0xF7, 0xD8, 0x83, 0xDA, 0x00,
+                                   0x85, 0xC9, 0x79, 0x07, 0xF7, 0xD9, 0xF7, 0xDB, 0x83, 0xD9, 0x00}) {
+                emit_u8(b);
+            }
+            emit_local_helper_call("$L_uldiv");
+            if (is_rem) {
+                emit_u8(0x8B); emit_u8(0xC3);  // mov ax, bx
+                emit_u8(0x8B); emit_u8(0xD1);  // mov dx, cx
+            }
+            for (std::uint8_t b : {0x85, 0xF6, 0x79, 0x07, 0xF7, 0xDA, 0xF7, 0xD8, 0x83, 0xDA, 0x00,
+                                   0x5E, 0xC3}) {
+                emit_u8(b);
+            }
+        };
+        if (need_ldiv_helper_) emit_signed_divrem("$L_ldiv", false);
+        if (need_lrem_helper_) emit_signed_divrem("$L_lrem", true);
     }
 
     void emit_alu_32bit(Tok op, bool is_signed) {
@@ -6404,18 +6612,8 @@ private:
                 emit_u8(0x33); emit_u8(0xD1);  // xor dx, cx
                 break;
             case Tok::star:
-                emit_u8(0x56);                 // push si
-                emit_u8(0x50);                 // push ax
-                emit_u8(0x52);                 // push dx
-                emit_u8(0xF7); emit_u8(0xE1);  // mul cx
-                emit_u8(0x8B); emit_u8(0xF0);  // mov si, ax
-                emit_u8(0x58);                 // pop ax (lhs hi)
-                emit_u8(0xF7); emit_u8(0xE3);  // mul bx
-                emit_u8(0x03); emit_u8(0xF0);  // add si, ax
-                emit_u8(0x58);                 // pop ax (lhs lo)
-                emit_u8(0xF7); emit_u8(0xE3);  // mul bx
-                emit_u8(0x03); emit_u8(0xD6);  // add dx, si
-                emit_u8(0x5E);                 // pop si
+                need_lmul_helper_ = true;
+                emit_local_helper_call("$L_lmul");
                 break;
             case Tok::shl:
             case Tok::shr:
@@ -6450,67 +6648,22 @@ private:
                 break;
             case Tok::slash:
             case Tok::percent: {
-                emit_u8(0x56);  // push si
-                emit_u8(0x57);  // push di
-                emit_u8(0x55);  // push bp
                 if (is_signed) {
-                    emit_u8(0x8B); emit_u8(0xF2);  // mov si, dx
                     if (op == Tok::slash) {
-                        emit_u8(0x33); emit_u8(0xF1);  // xor si, cx
+                        need_ldiv_helper_ = true;
+                        emit_local_helper_call("$L_ldiv");
+                    } else {
+                        need_lrem_helper_ = true;
+                        emit_local_helper_call("$L_lrem");
                     }
-                    emit_u8(0x56);  // push si
-                    emit_u8(0x85); emit_u8(0xD2);  // test dx, dx
-                    emit_u8(0x79); emit_u8(0x07);  // jns +7
-                    emit_u8(0xF7); emit_u8(0xDA);  // neg dx
-                    emit_u8(0xF7); emit_u8(0xD8);  // neg ax
-                    emit_u8(0x83); emit_u8(0xDA); emit_u8(0x00);  // sbb dx, 0
-                    emit_u8(0x85); emit_u8(0xC9);  // test cx, cx
-                    emit_u8(0x79); emit_u8(0x07);  // jns +7
-                    emit_u8(0xF7); emit_u8(0xD9);  // neg cx
-                    emit_u8(0xF7); emit_u8(0xDB);  // neg bx
-                    emit_u8(0x83); emit_u8(0xD9); emit_u8(0x00);  // sbb cx, 0
+                } else {
+                    need_uldiv_helper_ = true;
+                    emit_local_helper_call("$L_uldiv");
+                    if (op == Tok::percent) {
+                        emit_u8(0x8B); emit_u8(0xC3);  // mov ax, bx
+                        emit_u8(0x8B); emit_u8(0xD1);  // mov dx, cx
+                    }
                 }
-                emit_u8(0x51);                 // push cx ([bp+2] = divisor_hi)
-                emit_u8(0x53);                 // push bx ([bp+0] = divisor_lo)
-                emit_u8(0x8B); emit_u8(0xEC);  // mov bp, sp
-                emit_u8(0x33); emit_u8(0xF6);  // xor si, si
-                emit_u8(0x33); emit_u8(0xFF);  // xor di, di
-                emit_u8(0xB9); emit_u16(32);   // mov cx, 32
-                const std::size_t div_loop = omf_.code.data.size();
-                emit_u8(0xD1); emit_u8(0xE0);  // shl ax, 1
-                emit_u8(0xD1); emit_u8(0xD2);  // rcl dx, 1
-                emit_u8(0xD1); emit_u8(0xD7);  // rcl di, 1
-                emit_u8(0xD1); emit_u8(0xD6);  // rcl si, 1
-                emit_u8(0x3B); emit_u8(0x76); emit_u8(0x02);  // cmp si, [bp+2]
-                emit_u8(0x72); emit_u8(0x0E);  // jb no_sub (+14)
-                emit_u8(0x77); emit_u8(0x05);  // ja do_sub (+5)
-                emit_u8(0x3B); emit_u8(0x7E); emit_u8(0x00);  // cmp di, [bp+0]
-                emit_u8(0x72); emit_u8(0x07);  // jb no_sub (+7)
-                // do_sub:
-                emit_u8(0x2B); emit_u8(0x7E); emit_u8(0x00);  // sub di, [bp+0]
-                emit_u8(0x1B); emit_u8(0x76); emit_u8(0x02);  // sbb si, [bp+2]
-                emit_u8(0x40);                 // inc ax
-                // no_sub:
-                const std::int8_t rel = static_cast<std::int8_t>(
-                    static_cast<std::ptrdiff_t>(div_loop) -
-                    static_cast<std::ptrdiff_t>(omf_.code.data.size() + 2));
-                emit_u8(0xE2); emit_u8(static_cast<std::uint8_t>(rel));  // loop div_loop
-                emit_u8(0x83); emit_u8(0xC4); emit_u8(0x04);  // add sp, 4
-                if (op == Tok::percent) {
-                    emit_u8(0x8B); emit_u8(0xC7);  // mov ax, di
-                    emit_u8(0x8B); emit_u8(0xD6);  // mov dx, si
-                }
-                if (is_signed) {
-                    emit_u8(0x5E);                 // pop si
-                    emit_u8(0x85); emit_u8(0xF6);  // test si, si
-                    emit_u8(0x79); emit_u8(0x07);  // jns +7
-                    emit_u8(0xF7); emit_u8(0xDA);  // neg dx
-                    emit_u8(0xF7); emit_u8(0xD8);  // neg ax
-                    emit_u8(0x83); emit_u8(0xDA); emit_u8(0x00);  // sbb dx, 0
-                }
-                emit_u8(0x5D);  // pop bp
-                emit_u8(0x5F);  // pop di
-                emit_u8(0x5E);  // pop si
                 break;
             }
             default:

@@ -820,3 +820,38 @@ DOSBASE_TEST(cl_odd_struct_index_and_bx_reload_cache) {
         DOSBASE_TEST_EXPECT_EQ(bx_loads, 1);
     }
 }
+
+DOSBASE_TEST(cl_32bit_direct_mem_and_shared_helpers) {
+    // 1. 32-bit direct memory ALU and comparisons emit zero `push dx; push ax` (52 50)
+    {
+        const char* src =
+            "unsigned long u32_fast(unsigned long a, unsigned long b) {\n"
+            "    if (a < b) return a + b;\n"
+            "    return a - 100UL;\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        // add ax, [bp+8] (03 46 08); adc dx, [bp+10] (13 56 0A)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x03, 0x46, 0x08, 0x13, 0x56, 0x0A}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x52, 0x50}));
+    }
+
+    // 2. Multiple 32-bit divisions/modulos share a single `$L_uldiv` loop in `_TEXT`
+    {
+        const char* src =
+            "long div_many(long a, long b, unsigned long ua, unsigned long ub) {\n"
+            "    long q1 = a / b;\n"
+            "    long r1 = a % b;\n"
+            "    unsigned long q2 = ua / ub;\n"
+            "    unsigned long r2 = ua % ub;\n"
+            "    return q1 + r1 + (long)(q2 + r2);\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        int loop_headers = 0;
+        for (std::size_t i = 0; i + 2 < code.size(); ++i) {
+            if (code[i] == 0xB9 && code[i + 1] == 0x20 && code[i + 2] == 0x00) ++loop_headers;
+        }
+        DOSBASE_TEST_EXPECT_EQ(loop_headers, 1);
+    }
+}
