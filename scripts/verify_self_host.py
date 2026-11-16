@@ -287,6 +287,26 @@ def main() -> int:
         shutil.copy2(host_out / "TEST.LIB", host_out / "MK.LIB")
         shutil.copy2(host_out / "LINKED.EXE", host_out / "MK.EXE")
 
+        msboot_bin = vqb.find_ci(stage / "BOOT", "MSBOOT.BIN")
+        io_sys_bin = vqb.find_ci(stage / "BIOS", "IO.SYS")
+        msdos_sys_bin = vqb.find_ci(stage / "DOS", "MSDOS.SYS")
+        cmd_com_bin = vqb.find_ci(stage / "CMD" / "COMMAND", "command.com")
+        subprocess.run(
+            [
+                str(tool_dir / "ckmkimg"),
+                "floppy",
+                "-s", "360k",
+                "-l", "SELFDOS",
+                "-b", str(msboot_bin),
+                "-o", str(host_out / "SELF360.IMG"),
+                f"{io_sys_bin}=IO.SYS",
+                f"{msdos_sys_bin}=MSDOS.SYS",
+                f"{cmd_com_bin}=COMMAND.COM",
+                f"{raw_sample}=DOS/SAMPLE.DAT",
+            ],
+            check=True,
+        )
+
         makefile_txt = (
             "# Self-hosting NMAKE test\r\n"
             "OBJS = C:\\IN\\HI.OBJ\r\n"
@@ -323,6 +343,17 @@ def main() -> int:
         subprocess.run(["mcopy", "-o", "-i", spec, str(obj2), "::IN/CRT_MEM.OBJ"], check=True)
         subprocess.run(["mcopy", "-o", "-i", spec, str(hi_obj), "::IN/HI.OBJ"], check=True)
         subprocess.run(["mcopy", "-o", "-i", spec, str(makefile_path), "::IN/MAKEFILE"], check=True)
+        mkimg_rsp = tmp_path / "MKIMG.RSP"
+        mkimg_rsp.write_bytes(
+            b"C:\\IN\\IO.SYS=IO.SYS\r\n"
+            b"C:\\IN\\MSDOS.SYS=MSDOS.SYS\r\n"
+            b"C:\\COMMAND.COM=COMMAND.COM\r\n"
+            b"C:\\IN\\SAMPLE.DAT=DOS/SAMPLE.DAT\r\n"
+        )
+        subprocess.run(["mcopy", "-o", "-i", spec, str(msboot_bin), "::IN/MSBOOT.BIN"], check=True)
+        subprocess.run(["mcopy", "-o", "-i", spec, str(io_sys_bin), "::IN/IO.SYS"], check=True)
+        subprocess.run(["mcopy", "-o", "-i", spec, str(msdos_sys_bin), "::IN/MSDOS.SYS"], check=True)
+        subprocess.run(["mcopy", "-o", "-i", spec, str(mkimg_rsp), "::IN/MKIMG.RSP"], check=True)
 
         bat = (
             "@ECHO OFF\r\n"
@@ -339,6 +370,7 @@ def main() -> int:
             "CKLIB C:\\OUT\\TEST.LIB +C:\\IN\\CRT0.OBJ +C:\\IN\\CRT_MEM.OBJ\r\n"
             "CKLINK C:\\IN\\HI.OBJ,C:\\OUT\\LINKED.EXE,NUL,C:\\OUT\\TEST.LIB;\r\n"
             "CKNMAKE -f C:\\IN\\MAKEFILE\r\n"
+            "CKMKIMG floppy -s 360k -l SELFDOS -b C:\\IN\\MSBOOT.BIN -o C:\\OUT\\SELF360.IMG @C:\\IN\\MKIMG.RSP\r\n"
             "HEAPSTR\r\n"
             "ECHO ==QEMU_SMOKE_DONE==\r\n"
         )

@@ -30,6 +30,7 @@ endfunction()
 add_library(dosbase_devtools
     src/devtools/core/compress_core.c
     src/devtools/core/convert_core.c
+    src/devtools/core/diskimg_core.c
     src/devtools/core/exe2bin_core.c
     src/devtools/core/exefix_core.c
     src/devtools/core/lib_core.c
@@ -87,7 +88,9 @@ set(DOSBASE_TOOLS
     ckmasm
     ckcl
     cklink
-    cknmake)
+    cknmake
+    ckmkimg
+    ckdist)
 
 if(DOSBASE_BUILD_TOOLS)
     foreach(tool IN LISTS DOSBASE_TOOLS)
@@ -105,6 +108,7 @@ if(DOSBASE_BUILD_TESTS)
         tests/test_compress.cpp
         tests/test_convert.cpp
         tests/test_dbof.cpp
+        tests/test_diskimg.cpp
         tests/test_exe2bin.cpp
         tests/test_exefix.cpp
         tests/test_lib_dictionary.cpp

@@ -99,6 +99,7 @@ def build_all_dos_tools(repo_root: pathlib.Path, tool_dir: pathlib.Path, out_dir
         ("CKLIB.EXE", [core_dir / "omf_core.c", core_dir / "lib_core.c", dos_dir / "cklib.c"], "S"),
         ("CKLINK.EXE", [core_dir / "omf_core.c", core_dir / "link_core.c", dos_dir / "cklink.c"], "S"),
         ("CKNMAKE.EXE", [core_dir / "nmake_core.c", dos_dir / "cknmake.c"], "S"),
+        ("CKMKIMG.EXE", [core_dir / "diskimg_core.c", dos_dir / "ckmkimg.c"], "S"),
     ]
 
     slibc = build_slibc(repo_root, tool_dir, obj_dir, "S")
