@@ -124,6 +124,11 @@ int main(int argc, char** argv) {
                     opt_lower == "wx") {
                     continue;
                 }
+                if (opt_lower == "fpa" || opt_lower == "fpi" || opt_lower == "fpc" ||
+                    opt_lower == "fpi87" || opt_lower == "fpc87") {
+                    cc_opts.float_mode = dosbase::devtools::FloatMode::soft_float;
+                    continue;
+                }
                 if (opt_lower == "x") {
                     ignore_env_include = true;
                     continue;

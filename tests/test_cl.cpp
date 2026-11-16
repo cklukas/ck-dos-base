@@ -906,3 +906,82 @@ DOSBASE_TEST(cl_medium_model_far_interrupt_and_brace_init) {
         DOSBASE_TEST_EXPECT(contains_seq(code, {0xCB}));
     }
 }
+
+DOSBASE_TEST(cl_ieee754_soft_float_and_math_runtime) {
+    // 1. Float/double literals (.5, 1e-5, -0.0, 0x1.8p3), IEEE-754 LE _DATA initializers,
+    //    constant folding, sret double return, and soft-float runtime helper emission
+    {
+        const char* src =
+            "double g_half = .5;\n"
+            "double g_neg_zero = -0.0;\n"
+            "float g_hex = 0x1.8p3f;\n"
+            "double compute(double a, float b, int n) {\n"
+            "    double c = 1.25 + 2.75;\n"
+            "    if (a < (double)b || n > 0) {\n"
+            "        a += (double)n * 1e-5;\n"
+            "    }\n"
+            "    return a - c;\n"
+            "}\n";
+        CompileOptions opts;
+        opts.model = MemoryModel::medium_model;
+        opts.module_name = "fptest";
+        const auto obj = compile_c_to_omf(src, opts);
+        const auto recs = parse_omf_records(obj, 0, true);
+        const std::string dump = dump_all_omf(recs);
+
+        DOSBASE_TEST_EXPECT(dump.find("FPTEST_TEXT") != std::string::npos);
+        DOSBASE_TEST_EXPECT(dump.find("___dcmp") != std::string::npos);
+        DOSBASE_TEST_EXPECT(dump.find("___dmul") != std::string::npos);
+        DOSBASE_TEST_EXPECT(dump.find("___dadd") != std::string::npos);
+        DOSBASE_TEST_EXPECT(dump.find("___dsub") != std::string::npos);
+        DOSBASE_TEST_EXPECT(dump.find("___stod") != std::string::npos);
+        DOSBASE_TEST_EXPECT(dump.find("___itod") != std::string::npos);
+    }
+
+#ifdef DOSBASE_SOURCE_DIR
+    // 2. Compile clean-room runtime/crt/crt_fp.c and runtime/crt/crt_math.c in medium model
+    {
+        auto read_src = [](const fs::path& p) {
+            std::ifstream in(p, std::ios::binary);
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            return ss.str();
+        };
+        const fs::path rt_crt = fs::path(DOSBASE_SOURCE_DIR) / "runtime" / "crt";
+        PreprocOptions pp_opts;
+        pp_opts.defines["__CKCL__"] = "1";
+
+        CompileOptions fp_opts;
+        fp_opts.model = MemoryModel::medium_model;
+        fp_opts.omit_default_lib = true;
+        fp_opts.module_name = "CRT_FP";
+        const std::string fp_pp =
+            preprocess_c_source(read_src(rt_crt / "crt_fp.c"), rt_crt / "crt_fp.c", pp_opts);
+        const auto fp_obj = compile_c_to_omf(fp_pp, fp_opts);
+        const auto fp_recs = parse_omf_records(fp_obj, 0, true);
+        const std::string fp_dump = dump_all_omf(fp_recs);
+        // Self-contained integer IEEE-754 implementation: zero EXTDEFs!
+        DOSBASE_TEST_EXPECT(!has_record_type(fp_recs, OmfType::extdef));
+        DOSBASE_TEST_EXPECT(fp_dump.find("___dadd") != std::string::npos);
+        DOSBASE_TEST_EXPECT(fp_dump.find("___dmul") != std::string::npos);
+        DOSBASE_TEST_EXPECT(fp_dump.find("___ddiv") != std::string::npos);
+        DOSBASE_TEST_EXPECT(fp_dump.find("___dcmp") != std::string::npos);
+        DOSBASE_TEST_EXPECT(fp_dump.find("___dtos") != std::string::npos);
+        DOSBASE_TEST_EXPECT(fp_dump.find("___stod") != std::string::npos);
+
+        CompileOptions math_opts = fp_opts;
+        math_opts.module_name = "CRT_MATH";
+        const std::string math_pp =
+            preprocess_c_source(read_src(rt_crt / "crt_math.c"), rt_crt / "crt_math.c", pp_opts);
+        const auto math_obj = compile_c_to_omf(math_pp, math_opts);
+        const auto math_recs = parse_omf_records(math_obj, 0, true);
+        const std::string math_dump = dump_all_omf(math_recs);
+        DOSBASE_TEST_EXPECT(math_dump.find("_sin") != std::string::npos);
+        DOSBASE_TEST_EXPECT(math_dump.find("_cos") != std::string::npos);
+        DOSBASE_TEST_EXPECT(math_dump.find("_sqrt") != std::string::npos);
+        DOSBASE_TEST_EXPECT(math_dump.find("_pow") != std::string::npos);
+        DOSBASE_TEST_EXPECT(math_dump.find("_frexp") != std::string::npos);
+        DOSBASE_TEST_EXPECT(math_dump.find("_ldexp") != std::string::npos);
+    }
+#endif
+}

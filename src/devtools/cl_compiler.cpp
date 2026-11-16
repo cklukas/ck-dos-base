@@ -8,7 +8,10 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -30,6 +33,7 @@ enum class Tok {
     eof,
     ident,
     int_lit,
+    float_lit,
     str_lit,
     // Keywords
     kw_void, kw_char, kw_short, kw_int, kw_long, kw_float, kw_double,
@@ -59,6 +63,8 @@ struct Token {
     bool is_unsigned = false;
     bool is_long = false;
     std::size_t line = 1;
+    double fval = 0.0;
+    bool is_float_suf = false;
 };
 
 bool is_id_start(char c) {
@@ -138,7 +144,7 @@ Tok lookup_keyword(std::string_view s) {
     return it != kw.end() ? it->second : Tok::ident;
 }
 
-std::vector<Token> tokenize(std::string_view src) {
+std::vector<Token> tokenize(std::string_view src, bool enable_fp = false) {
     std::vector<Token> tokens;
     std::size_t i = 0;
     std::size_t line = 1;
@@ -198,8 +204,88 @@ std::vector<Token> tokenize(std::string_view src) {
             continue;
         }
 
+        if (enable_fp && c == '.' && i + 1 < src.size() &&
+            std::isdigit(static_cast<unsigned char>(src[i + 1]))) {
+            const std::size_t start = i++;
+            while (i < src.size() && std::isdigit(static_cast<unsigned char>(src[i]))) ++i;
+            if (i < src.size() && (src[i] == 'e' || src[i] == 'E')) {
+                ++i;
+                if (i < src.size() && (src[i] == '+' || src[i] == '-')) ++i;
+                while (i < src.size() && std::isdigit(static_cast<unsigned char>(src[i]))) ++i;
+            }
+            bool is_f = false;
+            while (i < src.size() &&
+                   (src[i] == 'f' || src[i] == 'F' || src[i] == 'l' || src[i] == 'L')) {
+                if (src[i] == 'f' || src[i] == 'F') is_f = true;
+                ++i;
+            }
+            std::string raw(src.substr(start, i - start));
+            const double fv = std::strtod(raw.c_str(), nullptr);
+            tokens.push_back({Tok::float_lit, std::move(raw), 0, false, false, line, fv, is_f});
+            continue;
+        }
+
         if (std::isdigit(static_cast<unsigned char>(c))) {
             std::size_t start = i;
+            if (enable_fp) {
+                const bool is_hex_pre =
+                    (c == '0' && i + 1 < src.size() && (src[i + 1] == 'x' || src[i + 1] == 'X'));
+                if (is_hex_pre) {
+                    std::size_t j = i + 2;
+                    while (j < src.size() && std::isxdigit(static_cast<unsigned char>(src[j]))) ++j;
+                    if (j < src.size() && (src[j] == '.' || src[j] == 'p' || src[j] == 'P')) {
+                        if (src[j] == '.') {
+                            ++j;
+                            while (j < src.size() && std::isxdigit(static_cast<unsigned char>(src[j]))) ++j;
+                        }
+                        if (j < src.size() && (src[j] == 'p' || src[j] == 'P')) {
+                            ++j;
+                            if (j < src.size() && (src[j] == '+' || src[j] == '-')) ++j;
+                            while (j < src.size() && std::isdigit(static_cast<unsigned char>(src[j]))) ++j;
+                        }
+                        bool is_f = false;
+                        while (j < src.size() &&
+                               (src[j] == 'f' || src[j] == 'F' || src[j] == 'l' || src[j] == 'L')) {
+                            if (src[j] == 'f' || src[j] == 'F') is_f = true;
+                            ++j;
+                        }
+                        i = j;
+                        std::string raw(src.substr(start, i - start));
+                        const double fv = std::strtod(raw.c_str(), nullptr);
+                        tokens.push_back(
+                            {Tok::float_lit, std::move(raw), 0, false, false, line, fv, is_f});
+                        continue;
+                    }
+                } else {
+                    std::size_t j = i;
+                    while (j < src.size() && std::isdigit(static_cast<unsigned char>(src[j]))) ++j;
+                    if (j < src.size() &&
+                        (src[j] == '.' || src[j] == 'e' || src[j] == 'E' ||
+                         src[j] == 'f' || src[j] == 'F')) {
+                        if (src[j] == '.') {
+                            ++j;
+                            while (j < src.size() && std::isdigit(static_cast<unsigned char>(src[j]))) ++j;
+                        }
+                        if (j < src.size() && (src[j] == 'e' || src[j] == 'E')) {
+                            ++j;
+                            if (j < src.size() && (src[j] == '+' || src[j] == '-')) ++j;
+                            while (j < src.size() && std::isdigit(static_cast<unsigned char>(src[j]))) ++j;
+                        }
+                        bool is_f = false;
+                        while (j < src.size() &&
+                               (src[j] == 'f' || src[j] == 'F' || src[j] == 'l' || src[j] == 'L')) {
+                            if (src[j] == 'f' || src[j] == 'F') is_f = true;
+                            ++j;
+                        }
+                        i = j;
+                        std::string raw(src.substr(start, i - start));
+                        const double fv = std::strtod(raw.c_str(), nullptr);
+                        tokens.push_back(
+                            {Tok::float_lit, std::move(raw), 0, false, false, line, fv, is_f});
+                        continue;
+                    }
+                }
+            }
             int base = 10;
             if (c == '0' && i + 1 < src.size() && (src[i + 1] == 'x' || src[i + 1] == 'X')) {
                 base = 16;
@@ -459,12 +545,25 @@ bool is_aggregate_type(const TypePtr& t) {
     return t && (t->kind == TypeKind::t_struct || t->kind == TypeKind::t_union);
 }
 
+bool is_float_type(const TypePtr& t) {
+    return t && t->kind == TypeKind::t_float;
+}
+
+bool is_double_type(const TypePtr& t) {
+    return t && t->kind == TypeKind::t_double;
+}
+
+bool is_fp_type(const TypePtr& t) {
+    return t && (t->kind == TypeKind::t_float || t->kind == TypeKind::t_double);
+}
+
 // ---------------------------------------------------------------------------
 // 3. AST
 // ---------------------------------------------------------------------------
 
 enum class ExprKind {
     int_lit,
+    float_lit,
     str_lit,
     var,
     unary,
@@ -482,6 +581,7 @@ struct Expr {
     ExprKind kind = ExprKind::int_lit;
     TypePtr type;
     std::int64_t int_val = 0;
+    double fval = 0.0;
     std::string name;
     std::string resolved_asm_name;
     Tok op = Tok::eof;
@@ -496,6 +596,78 @@ struct Expr {
 };
 
 using ExprPtr = std::shared_ptr<Expr>;
+
+std::size_t expr_temp_bytes(const ExprPtr& e, bool enable_fp) {
+    if (!e) return 0;
+    if (e->kind == ExprKind::call) {
+        std::size_t bytes = 0;
+        if (is_aggregate_type(e->type)) {
+            std::size_t rsz = std::max<std::size_t>(2, type_size(e->type));
+            if (rsz % 2 != 0) ++rsz;
+            bytes += rsz;
+        } else if (enable_fp && is_double_type(e->type)) {
+            bytes += 8;
+        }
+        if (enable_fp && !e->args.empty()) {
+            TypePtr fn_type = e->lhs ? e->lhs->type : nullptr;
+            if (fn_type && fn_type->kind == TypeKind::t_ptr && fn_type->base) {
+                fn_type = fn_type->base;
+            }
+            bool need_arg_conv = false;
+            for (std::size_t i = 0; i < e->args.size(); ++i) {
+                const TypePtr at = e->args[i] ? e->args[i]->type : nullptr;
+                if (fn_type && i < fn_type->params.size() && fn_type->params[i].type) {
+                    const TypePtr pt = fn_type->params[i].type;
+                    if (is_double_type(pt) && !is_double_type(at)) need_arg_conv = true;
+                    if (is_float_type(pt) && !is_float_type(at) && !is_double_type(at)) {
+                        need_arg_conv = true;
+                    }
+                    if (!is_fp_type(pt) && is_float_type(at)) need_arg_conv = true;
+                } else if (is_float_type(at)) {
+                    need_arg_conv = true;  // C89 variadic/unprototyped float -> double promotion
+                }
+            }
+            if (need_arg_conv) bytes += 8;
+        }
+        return bytes;
+    }
+    if (!enable_fp) return 0;
+    switch (e->kind) {
+        case ExprKind::cast:
+            if (is_double_type(e->type) && e->lhs && !is_double_type(e->lhs->type)) return 8;
+            if (!is_fp_type(e->type) && e->lhs && is_float_type(e->lhs->type)) return 8;
+            if (is_float_type(e->type) && e->lhs && !is_fp_type(e->lhs->type)) return 8;
+            return 0;
+        case ExprKind::unary:
+            if (e->op == Tok::minus && is_double_type(e->type)) return 8;
+            if (e->op == Tok::star && is_double_type(e->type)) return 8;
+            if ((e->op == Tok::inc || e->op == Tok::dec) && is_fp_type(e->type)) return 16;
+            return 0;
+        case ExprKind::member:
+            if (is_double_type(e->type)) return 8;
+            return 0;
+        case ExprKind::binary:
+            if (e->op != Tok::land && e->op != Tok::lor &&
+                ((e->lhs && is_fp_type(e->lhs->type)) || (e->rhs && is_fp_type(e->rhs->type)))) {
+                return 24;
+            }
+            return 0;
+        case ExprKind::compound_assign:
+            if (is_fp_type(e->type) || (e->rhs && is_fp_type(e->rhs->type))) return 24;
+            return 0;
+        case ExprKind::assign:
+            if (is_fp_type(e->type) && e->rhs && e->rhs->type &&
+                e->rhs->type->kind != e->type->kind) {
+                return 8;
+            }
+            return 0;
+        case ExprKind::ternary:
+            if (is_fp_type(e->type)) return 8;
+            return 0;
+        default:
+            return 0;
+    }
+}
 
 enum class StmtKind {
     empty,
@@ -554,6 +726,8 @@ struct InitItem {
     std::size_t offset = 0;
     TypePtr type;
     std::int64_t int_val = 0;
+    double fp_val = 0.0;
+    bool is_fp_init = false;
     std::string sym_ref;  // non-empty if address of global/string
     std::int64_t sym_addend = 0;
     bool is_string_bytes = false;
@@ -576,6 +750,7 @@ struct FuncDef {
     std::vector<ParamDecl> params;
     StmtPtr body;
     std::size_t frame_size = 0;
+    int fp_scratch_off = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -892,7 +1067,7 @@ struct VarSymbol {
 class Parser {
 public:
     Parser(std::vector<Token> tokens, const CompileOptions& opts)
-        : tokens_(std::move(tokens)), opts_(opts) {}
+        : tokens_(std::move(tokens)), opts_(opts), enable_fp_(use_soft_float(opts)) {}
 
     void parse_translation_unit() {
         while (!at(Tok::eof)) {
@@ -908,6 +1083,7 @@ private:
     std::vector<Token> tokens_;
     std::size_t pos_ = 0;
     CompileOptions opts_;
+    bool enable_fp_ = false;
     int anon_id_ = 0;
 
     std::unordered_map<std::string, TypePtr> typedefs_;
@@ -1427,7 +1603,8 @@ private:
                 // Bind parameters at positive BP offsets
                 int arg_off = type->is_far ? 6 : 4;
                 if (type->is_interrupt) arg_off = 4;
-                if (is_aggregate_type(type->base) && type_size(type->base) > 4) {
+                if ((is_aggregate_type(type->base) && type_size(type->base) > 4) ||
+                    (enable_fp_ && is_double_type(type->base))) {
                     arg_off += 2;  // hidden caller-allocated return buffer pointer
                 }
                 if (type->is_pascal) {
@@ -1456,6 +1633,41 @@ private:
                 }
 
                 fn.body = parse_compound_stmt();
+                if (enable_fp_) {
+                    bool uses_fp = is_fp_type(type->base);
+                    std::function<void(const ExprPtr&)> assign_fp_expr = [&](const ExprPtr& ex) {
+                        if (!ex) return;
+                        if (is_fp_type(ex->type)) uses_fp = true;
+                        assign_fp_expr(ex->lhs);
+                        assign_fp_expr(ex->rhs);
+                        assign_fp_expr(ex->third);
+                        for (const ExprPtr& a : ex->args) assign_fp_expr(a);
+                        const std::size_t tb = expr_temp_bytes(ex, true);
+                        if (tb > 0 && ex->temp_bp_offset == 0) {
+                            min_local_offset_ -= static_cast<int>(tb);
+                            ex->temp_bp_offset = min_local_offset_;
+                        }
+                    };
+                    std::function<void(const StmtPtr&)> assign_fp_stmt = [&](const StmtPtr& st) {
+                        if (!st) return;
+                        for (const LocalVar& lv : st->locals) {
+                            if (is_fp_type(lv.type)) uses_fp = true;
+                            assign_fp_expr(lv.init);
+                            for (const LocalBraceItem& bi : lv.brace_inits) assign_fp_expr(bi.expr);
+                        }
+                        assign_fp_expr(st->expr);
+                        assign_fp_expr(st->cond);
+                        assign_fp_expr(st->post);
+                        for (const StmtPtr& sub : st->stmts) assign_fp_stmt(sub);
+                        assign_fp_stmt(st->body);
+                        assign_fp_stmt(st->else_body);
+                    };
+                    assign_fp_stmt(fn.body);
+                    if (uses_fp) {
+                        min_local_offset_ -= 8;
+                        fn.fp_scratch_off = min_local_offset_;
+                    }
+                }
                 fn.frame_size = static_cast<std::size_t>(-min_local_offset_);
                 local_scopes_.clear();
                 funcs.push_back(std::move(fn));
@@ -1569,6 +1781,9 @@ private:
                    (e->type->kind == TypeKind::t_array || e->type->kind == TypeKind::t_func)) {
             auto it = global_syms.find(e->name);
             if (it != global_syms.end()) item.sym_ref = it->second.asm_name;
+        } else if (enable_fp_ && is_fp_type(type)) {
+            item.is_fp_init = true;
+            item.fp_val = eval_const_fp(e);
         } else {
             item.int_val = eval_const_expr(e);
         }
@@ -1953,7 +2168,11 @@ private:
             ExprPtr f = parse_expr_cond();
             auto e = std::make_shared<Expr>();
             e->kind = ExprKind::ternary;
-            e->type = t->type;
+            if (enable_fp_ && (is_fp_type(t->type) || is_fp_type(f->type))) {
+                e->type = common_arith_type(t->type, f->type);
+            } else {
+                e->type = t->type;
+            }
             e->lhs = std::move(c);
             e->rhs = std::move(t);
             e->third = std::move(f);
@@ -2126,10 +2345,9 @@ private:
                 }
                 consume(Tok::rparen, "expected ')'");
                 if (!local_scopes_.empty()) {
-                    if (is_aggregate_type(call->type)) {
-                        std::size_t rsz = std::max<std::size_t>(2, type_size(call->type));
-                        if (rsz % 2 != 0) ++rsz;
-                        next_local_offset_ -= static_cast<int>(rsz);
+                    const std::size_t tb = expr_temp_bytes(call, enable_fp_);
+                    if (tb > 0) {
+                        next_local_offset_ -= static_cast<int>(tb);
                         min_local_offset_ = std::min(min_local_offset_, next_local_offset_);
                         call->temp_bp_offset = next_local_offset_;
                     }
@@ -2203,6 +2421,14 @@ private:
             }
             return e;
         }
+        if (at(Tok::float_lit)) {
+            Token t = consume(Tok::float_lit, "");
+            auto e = std::make_shared<Expr>();
+            e->kind = ExprKind::float_lit;
+            e->fval = t.is_float_suf ? static_cast<double>(static_cast<float>(t.fval)) : t.fval;
+            e->type = make_prim(t.is_float_suf ? TypeKind::t_float : TypeKind::t_double);
+            return e;
+        }
         if (at(Tok::str_lit)) {
             Token t = consume(Tok::str_lit, "");
             auto e = std::make_shared<Expr>();
@@ -2245,12 +2471,78 @@ private:
         throw FormatError(peek().line, "expected expression");
     }
 
+    double eval_const_fp(const ExprPtr& e) const {
+        if (!e) return 0.0;
+        switch (e->kind) {
+            case ExprKind::float_lit:
+                return e->fval;
+            case ExprKind::int_lit:
+                if (e->type && !is_signed_type(e->type)) {
+                    return static_cast<double>(static_cast<std::uint64_t>(e->int_val));
+                }
+                return static_cast<double>(e->int_val);
+            case ExprKind::cast: {
+                const double v = eval_const_fp(e->lhs);
+                if (is_float_type(e->type)) return static_cast<double>(static_cast<float>(v));
+                if (is_double_type(e->type)) return v;
+                return static_cast<double>(eval_const_expr(e));
+            }
+            case ExprKind::unary: {
+                const double v = eval_const_fp(e->lhs);
+                if (e->op == Tok::minus) return -v;
+                if (e->op == Tok::plus) return v;
+                if (e->op == Tok::bang) return v == 0.0 ? 1.0 : 0.0;
+                return v;
+            }
+            case ExprKind::binary: {
+                const double l = eval_const_fp(e->lhs);
+                const double r = eval_const_fp(e->rhs);
+                switch (e->op) {
+                    case Tok::plus: return l + r;
+                    case Tok::minus: return l - r;
+                    case Tok::star: return l * r;
+                    case Tok::slash: return r != 0.0 ? l / r : 0.0;
+                    case Tok::eq: return l == r ? 1.0 : 0.0;
+                    case Tok::ne: return l != r ? 1.0 : 0.0;
+                    case Tok::lt: return l < r ? 1.0 : 0.0;
+                    case Tok::le: return l <= r ? 1.0 : 0.0;
+                    case Tok::gt: return l > r ? 1.0 : 0.0;
+                    case Tok::ge: return l >= r ? 1.0 : 0.0;
+                    case Tok::land: return (l != 0.0 && r != 0.0) ? 1.0 : 0.0;
+                    case Tok::lor: return (l != 0.0 || r != 0.0) ? 1.0 : 0.0;
+                    default: return 0.0;
+                }
+            }
+            case ExprKind::ternary:
+                return eval_const_fp(e->lhs) != 0.0 ? eval_const_fp(e->rhs)
+                                                    : eval_const_fp(e->third);
+            default:
+                return 0.0;
+        }
+    }
+
     std::int64_t eval_const_expr(const ExprPtr& e) const {
         if (!e) return 0;
+        if (enable_fp_ && e->kind == ExprKind::float_lit) {
+            return static_cast<std::int64_t>(e->fval);
+        }
         switch (e->kind) {
             case ExprKind::int_lit: return e->int_val;
-            case ExprKind::cast: return eval_const_expr(e->lhs);
+            case ExprKind::cast:
+                if (enable_fp_ && e->lhs && is_fp_type(e->lhs->type)) {
+                    const double fv = eval_const_fp(e->lhs);
+                    if (e->type && !is_signed_type(e->type)) {
+                        return static_cast<std::int64_t>(static_cast<std::uint64_t>(fv));
+                    }
+                    return static_cast<std::int64_t>(fv);
+                }
+                return eval_const_expr(e->lhs);
             case ExprKind::unary: {
+                if (enable_fp_ && e->lhs && is_fp_type(e->lhs->type)) {
+                    const double fv = eval_const_fp(e->lhs);
+                    if (e->op == Tok::bang) return fv == 0.0 ? 1 : 0;
+                    return static_cast<std::int64_t>(eval_const_fp(e));
+                }
                 std::int64_t v = eval_const_expr(e->lhs);
                 if (e->op == Tok::minus) return -v;
                 if (e->op == Tok::plus) return v;
@@ -2259,6 +2551,10 @@ private:
                 return v;
             }
             case ExprKind::binary: {
+                if (enable_fp_ && ((e->lhs && is_fp_type(e->lhs->type)) ||
+                                   (e->rhs && is_fp_type(e->rhs->type)))) {
+                    return static_cast<std::int64_t>(eval_const_fp(e));
+                }
                 std::int64_t l = eval_const_expr(e->lhs);
                 std::int64_t r = eval_const_expr(e->rhs);
                 switch (e->op) {
@@ -2299,7 +2595,7 @@ private:
 class Codegen {
 public:
     Codegen(OmfBuilder& omf, const Parser& parser, const CompileOptions& opts)
-        : omf_(omf), parser_(parser), opts_(opts) {}
+        : omf_(omf), parser_(parser), opts_(opts), enable_fp_(use_soft_float(opts)) {}
 
     void emit_all() {
         // 1. Emit globals into _DATA / _BSS / CONST / <MOD>_FAR_BSS
@@ -2365,6 +2661,24 @@ public:
                     continue;
                 }
                 std::size_t isz = type_size(item.type);
+                if (item.is_fp_init) {
+                    if (is_float_type(item.type)) {
+                        const float fv = static_cast<float>(item.fp_val);
+                        std::uint32_t bits = 0;
+                        std::memcpy(&bits, &fv, 4);
+                        write_u16(omf_.data.data, at, static_cast<std::uint16_t>(bits & 0xFFFFU));
+                        write_u16(omf_.data.data, at + 2,
+                                  static_cast<std::uint16_t>((bits >> 16) & 0xFFFFU));
+                    } else {
+                        std::uint64_t bits = 0;
+                        std::memcpy(&bits, &item.fp_val, 8);
+                        for (int w = 0; w < 4; ++w) {
+                            write_u16(omf_.data.data, at + static_cast<std::size_t>(w * 2),
+                                      static_cast<std::uint16_t>((bits >> (w * 16)) & 0xFFFFU));
+                        }
+                    }
+                    continue;
+                }
                 if (isz == 1) omf_.data.data[at] = static_cast<std::uint8_t>(item.int_val & 0xFF);
                 else if (isz == 2) write_u16(omf_.data.data, at, static_cast<std::uint16_t>(item.int_val));
                 else if (isz >= 4) {
@@ -2390,6 +2704,7 @@ private:
     OmfBuilder& omf_;
     const Parser& parser_;
     CompileOptions opts_;
+    bool enable_fp_ = false;
 
     struct Loc {
         int seg = 0;
@@ -2398,6 +2713,7 @@ private:
     std::unordered_map<std::string, Loc> global_locs_;
     std::unordered_set<std::string> far_global_syms_;
     std::unordered_map<std::string, std::uint16_t> string_pool_;
+    std::unordered_map<std::uint64_t, std::uint16_t> double_pool_;
 
     // Deferred fixups for symbols that might be defined later in the same module
     struct PendingCodeFixup {
@@ -2458,6 +2774,7 @@ private:
     bool use_di_ = false;
     bool has_hidden_sret_ = false;
     int sret_bp_off_ = 4;
+    int fn_fp_scratch_off_ = 0;
     std::size_t effective_frame_size_ = 0;
     std::vector<LabelId> break_stack_;
     std::vector<LabelId> continue_stack_;
@@ -2648,6 +2965,20 @@ private:
         return off;
     }
 
+    std::uint16_t intern_double(double v) {
+        std::uint64_t bits = 0;
+        std::memcpy(&bits, &v, 8);
+        auto it = double_pool_.find(bits);
+        if (it != double_pool_.end()) return it->second;
+        if ((omf_.cnst.data.size() & 1U) != 0U) omf_.cnst.data.push_back(0);
+        const auto off = static_cast<std::uint16_t>(omf_.cnst.data.size());
+        for (int b = 0; b < 8; ++b) {
+            omf_.cnst.data.push_back(static_cast<std::uint8_t>((bits >> (b * 8)) & 0xFFU));
+        }
+        double_pool_[bits] = off;
+        return off;
+    }
+
     // Emit mod/rm + disp for [bp + disp]
     void emit_bp_rm(std::uint8_t reg_field, int disp) {
         if (disp >= -128 && disp <= 127) {
@@ -2705,12 +3036,80 @@ private:
         return lit;
     }
 
+    ExprPtr make_folded_float(double val, const TypePtr& t) {
+        auto lit = std::make_shared<Expr>();
+        lit->kind = ExprKind::float_lit;
+        lit->type = t;
+        lit->fval = is_float_type(t) ? static_cast<double>(static_cast<float>(val)) : val;
+        return lit;
+    }
+
+    static bool is_const_num_lit(const ExprPtr& e, double& out_d) {
+        if (!e) return false;
+        if (e->kind == ExprKind::float_lit) {
+            out_d = e->fval;
+            return true;
+        }
+        if (e->kind == ExprKind::int_lit) {
+            if (e->type && !is_signed_type(e->type)) {
+                out_d = static_cast<double>(static_cast<std::uint64_t>(e->int_val));
+            } else {
+                out_d = static_cast<double>(e->int_val);
+            }
+            return true;
+        }
+        return false;
+    }
+
     ExprPtr fold_expr(ExprPtr e) {
         if (!e) return nullptr;
         if (e->lhs) e->lhs = fold_expr(e->lhs);
         if (e->rhs) e->rhs = fold_expr(e->rhs);
         if (e->third) e->third = fold_expr(e->third);
         for (ExprPtr& a : e->args) a = fold_expr(a);
+
+        if (enable_fp_) {
+            double lv = 0.0;
+            if (e->kind == ExprKind::cast && e->lhs && is_const_num_lit(e->lhs, lv)) {
+                if (is_fp_type(e->type)) {
+                    return make_folded_float(lv, e->type);
+                }
+                if (e->lhs->kind == ExprKind::float_lit && is_foldable_scalar_type(e->type) &&
+                    std::isfinite(lv)) {
+                    const std::int64_t iv = !is_signed_type(e->type)
+                                                ? static_cast<std::int64_t>(static_cast<std::uint64_t>(lv))
+                                                : static_cast<std::int64_t>(lv);
+                    return make_folded_int(iv, e->type);
+                }
+            }
+            if (e->kind == ExprKind::unary && e->lhs && e->lhs->kind == ExprKind::float_lit) {
+                if (e->op == Tok::plus) return make_folded_float(e->lhs->fval, e->type);
+                if (e->op == Tok::minus) return make_folded_float(-e->lhs->fval, e->type);
+                if (e->op == Tok::bang) return make_folded_int(e->lhs->fval == 0.0 ? 1 : 0, e->type);
+            }
+            double rv = 0.0;
+            if (e->kind == ExprKind::binary && e->lhs && e->rhs &&
+                (is_fp_type(e->lhs->type) || is_fp_type(e->rhs->type)) &&
+                is_const_num_lit(e->lhs, lv) && is_const_num_lit(e->rhs, rv)) {
+                if (is_fp_type(e->type)) {
+                    if (e->op == Tok::plus) return make_folded_float(lv + rv, e->type);
+                    if (e->op == Tok::minus) return make_folded_float(lv - rv, e->type);
+                    if (e->op == Tok::star) return make_folded_float(lv * rv, e->type);
+                    if (e->op == Tok::slash && rv != 0.0) return make_folded_float(lv / rv, e->type);
+                } else {
+                    if (e->op == Tok::eq) return make_folded_int(lv == rv ? 1 : 0, e->type);
+                    if (e->op == Tok::ne) return make_folded_int(lv != rv ? 1 : 0, e->type);
+                    if (e->op == Tok::lt) return make_folded_int(lv < rv ? 1 : 0, e->type);
+                    if (e->op == Tok::le) return make_folded_int(lv <= rv ? 1 : 0, e->type);
+                    if (e->op == Tok::gt) return make_folded_int(lv > rv ? 1 : 0, e->type);
+                    if (e->op == Tok::ge) return make_folded_int(lv >= rv ? 1 : 0, e->type);
+                }
+            }
+            if (is_fp_type(e->type) || (e->lhs && is_fp_type(e->lhs->type)) ||
+                (e->rhs && is_fp_type(e->rhs->type))) {
+                return e;
+            }
+        }
 
         if (e->kind == ExprKind::cast && e->lhs && e->lhs->kind == ExprKind::int_lit &&
             is_foldable_scalar_type(e->type)) {
@@ -3211,6 +3610,7 @@ private:
         invalidate_reg_caches();
         use_si_ = false;
         use_di_ = false;
+        fn_fp_scratch_off_ = fn.fp_scratch_off;
         effective_frame_size_ = fn.frame_size;
         if (fn.type->is_interrupt || !fn.body) {
             unsafe_cache_var_ids_.insert(-1);
@@ -3632,8 +4032,12 @@ private:
         // Two-tier stack frame layout:
         // Tier 1: unpromoted scalars/pointers (sorted by use count in large blocks) closest to BP (disp8!)
         // Tier 2: arrays, structs/unions, and aggregate call temporaries below Tier 1
-        auto is_tier1_scalar = [](const LocalVar& lv) {
-            return lv.type && lv.type->kind != TypeKind::t_array && !is_aggregate_type(lv.type);
+        auto is_tier1_scalar = [&](const LocalVar& lv) {
+            if (!lv.type || lv.type->kind == TypeKind::t_array || is_aggregate_type(lv.type)) {
+                return false;
+            }
+            if (enable_fp_ && is_double_type(lv.type)) return false;
+            return true;
         };
 
         int cur_scalar_off = 0;
@@ -3693,7 +4097,14 @@ private:
             layout_tier2_expr(e->rhs);
             layout_tier2_expr(e->third);
             for (const ExprPtr& a : e->args) layout_tier2_expr(a);
-            if (e->kind == ExprKind::call && e->temp_bp_offset != 0) {
+            if (enable_fp_) {
+                const std::size_t tb = expr_temp_bytes(e, true);
+                if (tb > 0) {
+                    cur_agg_off -= static_cast<int>(tb);
+                    e->temp_bp_offset = cur_agg_off;
+                    min_total_off = std::min(min_total_off, cur_agg_off);
+                }
+            } else if (e->kind == ExprKind::call && e->temp_bp_offset != 0) {
                 std::size_t rsz = std::max<std::size_t>(2, type_size(e->type));
                 if (rsz % 2 != 0) ++rsz;
                 cur_agg_off -= static_cast<int>(rsz);
@@ -3734,6 +4145,10 @@ private:
             layout_tier2(s->else_body);
         };
         layout_tier2(fn.body);
+        if (enable_fp_ && fn.fp_scratch_off != 0) {
+            min_total_off -= 8;
+            fn_fp_scratch_off_ = min_total_off;
+        }
 
         (void)all_locals;
         (void)min_temp_bp_off;
@@ -3827,6 +4242,149 @@ private:
         emit_widen_dxax(src->type);
     }
 
+    void emit_rt_call(const char* sym, std::size_t arg_bytes) {
+        invalidate_reg_caches();
+        if (opts_.model == MemoryModel::medium_model || opts_.model == MemoryModel::large_model) {
+            emit_u8(0x9A);  // call far seg:off
+            pending_fixups_.push_back({omf_.code.data.size(), FixupKind::far_ptr, sym});
+            emit_u16(0);
+            emit_u16(0);
+        } else {
+            emit_u8(0xE8);  // call near rel16
+            pending_fixups_.push_back({omf_.code.data.size(), FixupKind::near_call_rel, sym});
+            emit_u16(0);
+        }
+        if (arg_bytes == 2) {
+            emit_u8(0x59);  // pop cx
+        } else if (arg_bytes == 4) {
+            emit_u8(0x59); emit_u8(0x59);  // pop cx; pop cx
+        } else if (arg_bytes > 0) {
+            emit_u8(0x83); emit_u8(0xC4); emit_u8(static_cast<std::uint8_t>(arg_bytes));
+        }
+    }
+
+    // Copies 8 bytes from DS:AX into [bp + dst_bp_off] and leaves AX = &[bp + dst_bp_off].
+    void emit_copy_near8_to_bp(int dst_bp_off) {
+        invalidate_reg_caches();
+        emit_u8(0x8B); emit_u8(0xD8);  // mov bx, ax
+        for (int w = 0; w < 4; ++w) {
+            emit_u8(0x8B); emit_bx_rm(0, w * 2);           // mov ax, [bx + 2*w]
+            emit_u8(0x89); emit_bp_rm(0, dst_bp_off + w * 2);  // mov [bp + dst + 2*w], ax
+        }
+        emit_u8(0x8D); emit_bp_rm(0, dst_bp_off);  // lea ax, [bp + dst]
+    }
+
+    // Evaluates `src` and leaves AX = near DGROUP pointer to an 8-byte IEEE-754 double.
+    void emit_expr_as_double_ptr(const ExprPtr& src, int scratch_bp_off) {
+        if (!src) return;
+        if (is_double_type(src->type)) {
+            emit_expr(src, true);
+            return;
+        }
+        if (is_float_type(src->type)) {
+            emit_expr(src, true);
+            emit_u8(0x52);  // push dx
+            emit_u8(0x50);  // push ax
+            emit_u8(0x8D); emit_bp_rm(0, scratch_bp_off);  // lea ax, [bp+scratch]
+            emit_u8(0x50);                                 // push ax
+            emit_rt_call("___stod", 6);
+            emit_u8(0x8D); emit_bp_rm(0, scratch_bp_off);
+            return;
+        }
+        if (produces_dxax(src->type)) {
+            emit_expr(src, true);
+            emit_u8(0x52);  // push dx
+            emit_u8(0x50);  // push ax
+            emit_u8(0x8D); emit_bp_rm(0, scratch_bp_off);
+            emit_u8(0x50);
+            emit_rt_call(is_signed_type(src->type) ? "___ltod" : "___ultod", 6);
+            emit_u8(0x8D); emit_bp_rm(0, scratch_bp_off);
+            return;
+        }
+        emit_expr(src, true);
+        emit_u8(0x50);  // push ax
+        emit_u8(0x8D); emit_bp_rm(0, scratch_bp_off);
+        emit_u8(0x50);
+        emit_rt_call(is_signed_type(src->type) ? "___itod" : "___utod", 4);
+        emit_u8(0x8D); emit_bp_rm(0, scratch_bp_off);
+    }
+
+    // Converts AX (near DGROUP pointer to 8-byte double) to `dst_type`.
+    void emit_double_ptr_to_type(const TypePtr& dst_type) {
+        if (!dst_type || is_double_type(dst_type)) return;
+        if (is_float_type(dst_type)) {
+            emit_u8(0x50);
+            emit_rt_call("___dtos", 2);
+            return;
+        }
+        if (dst_type->kind == TypeKind::t_long) {
+            emit_u8(0x50);
+            emit_rt_call("___dtol", 2);
+            return;
+        }
+        if (dst_type->kind == TypeKind::t_ulong ||
+            (dst_type->kind == TypeKind::t_ptr && dst_type->is_far)) {
+            emit_u8(0x50);
+            emit_rt_call("___dtoul", 2);
+            return;
+        }
+        emit_u8(0x50);
+        emit_rt_call(is_signed_type(dst_type) ? "___dtoi" : "___dtou", 2);
+        if (is_byte_scalar(dst_type)) {
+            if (is_signed_type(dst_type)) emit_u8(0x98);
+            else { emit_u8(0x32); emit_u8(0xE4); }
+        }
+    }
+
+    // Evaluates `src` and leaves 32-bit IEEE-754 float in DX:AX.
+    void emit_expr_as_float_dxax(const ExprPtr& src, int scratch_bp_off) {
+        if (!src) return;
+        if (is_float_type(src->type)) {
+            emit_expr(src, true);
+            return;
+        }
+        emit_expr_as_double_ptr(src, scratch_bp_off);
+        emit_u8(0x50);
+        emit_rt_call("___dtos", 2);
+    }
+
+    // Evaluates ___dcmp(lhs, rhs) using 16 bytes at [bp + scratch_bp_off], leaving result in AX:
+    // -1 (<), 0 (==), +1 (>), +2 (NaN unordered).
+    void emit_fp_dcmp_call(const ExprPtr& lhs, const ExprPtr& rhs, int scratch_bp_off) {
+        emit_expr_as_double_ptr(lhs, scratch_bp_off);
+        emit_u8(0x50);  // save lhs double ptr across rhs evaluation
+        emit_expr_as_double_ptr(rhs, scratch_bp_off + 8);
+        emit_u8(0x59);  // pop cx (lhs double ptr)
+        emit_u8(0x50);  // push ax (rhs double ptr)
+        emit_u8(0x51);  // push cx (lhs double ptr)
+        emit_rt_call("___dcmp", 4);
+    }
+
+    // Emits test/cmp on AX after ___dcmp and returns the Jcc opcode for `op` being TRUE.
+    std::uint8_t emit_fp_cmp_flags(Tok op) {
+        switch (op) {
+            case Tok::eq:
+                emit_u8(0x85); emit_u8(0xC0);  // test ax, ax
+                return 0x74;                   // je
+            case Tok::ne:
+                emit_u8(0x85); emit_u8(0xC0);  // test ax, ax
+                return 0x75;                   // jne (true on NaN +2!)
+            case Tok::lt:
+                emit_u8(0x85); emit_u8(0xC0);  // test ax, ax
+                return 0x7C;                   // jl (only -1 is negative!)
+            case Tok::le:
+                emit_u8(0x85); emit_u8(0xC0);  // test ax, ax
+                return 0x7E;                   // jle (-1 or 0; false on +1 and NaN +2!)
+            case Tok::gt:
+                emit_u8(0x3D); emit_u16(1);    // cmp ax, 1
+                return 0x74;                   // je (only +1; false on -1, 0, NaN +2!)
+            case Tok::ge:
+            default:
+                emit_u8(0x3D); emit_u16(1);    // cmp ax, 1
+                return 0x76;                   // jbe (unsigned <= 1: 0 or +1; false on 0xFFFF and +2!)
+        }
+    }
+
     void emit_local_init(const LocalVar& lv, bool& ax_is_zero) {
         if (lv.has_brace_init) {
             const std::size_t sz = type_size(lv.type);
@@ -3863,10 +4421,18 @@ private:
             }
             for (const LocalBraceItem& bi : lv.brace_inits) {
                 if (!bi.expr) continue;
-                if (bi.expr->kind == ExprKind::int_lit && bi.expr->int_val == 0) continue;
+                if (!enable_fp_ || !is_fp_type(bi.type)) {
+                    if (bi.expr->kind == ExprKind::int_lit && bi.expr->int_val == 0) continue;
+                }
                 const int slot = lv.bp_offset + static_cast<int>(bi.offset);
                 ax_is_zero = false;
-                if (is_aggregate_type(bi.type)) {
+                if (enable_fp_ && is_double_type(bi.type)) {
+                    emit_expr_as_double_ptr(bi.expr, slot);
+                    emit_copy_near8_to_bp(slot);
+                } else if (enable_fp_ && is_float_type(bi.type)) {
+                    emit_expr_as_float_dxax(bi.expr, fn_fp_scratch_off_);
+                    store_local(bi.type, slot);
+                } else if (is_aggregate_type(bi.type)) {
                     bool src_far = false;
                     emit_agg_addr_to_bx(bi.expr, src_far);
                     if (src_far) { emit_u8(0x8C); emit_u8(0xC1); }
@@ -3888,6 +4454,18 @@ private:
             return;
         }
         if (!lv.init) return;
+        if (enable_fp_ && is_double_type(lv.type)) {
+            ax_is_zero = false;
+            emit_expr_as_double_ptr(lv.init, lv.bp_offset);
+            emit_copy_near8_to_bp(lv.bp_offset);
+            return;
+        }
+        if (enable_fp_ && is_float_type(lv.type)) {
+            ax_is_zero = false;
+            emit_expr_as_float_dxax(lv.init, fn_fp_scratch_off_);
+            store_local(lv.type, lv.bp_offset);
+            return;
+        }
         if (is_aggregate_type(lv.type)) {
             ax_is_zero = false;
             bool src_far = false;
@@ -3954,7 +4532,8 @@ private:
         analyze_and_allocate_reg_vars(fn);
         cur_func_ = &fn;
         has_hidden_sret_ =
-            fn.type && is_aggregate_type(fn.type->base) && type_size(fn.type->base) > 4;
+            fn.type && ((is_aggregate_type(fn.type->base) && type_size(fn.type->base) > 4) ||
+                        (enable_fp_ && is_double_type(fn.type->base)));
         sret_bp_off_ = (fn.type && fn.type->is_far) ? 6 : 4;
         fn_code_start_ = omf_.code.data.size();
         const std::size_t pf_start = pending_fixups_.size();
@@ -4088,6 +4667,11 @@ private:
             if (truthy == jump_on_true) emit_jmp(target);
             return;
         }
+        if (enable_fp_ && cond->kind == ExprKind::float_lit) {
+            const bool truthy = (cond->fval != 0.0);
+            if (truthy == jump_on_true) emit_jmp(target);
+            return;
+        }
         if (cond->kind == ExprKind::unary && cond->op == Tok::bang) {
             emit_branch(cond->lhs, target, !jump_on_true);
             return;
@@ -4124,6 +4708,12 @@ private:
         if (cond->kind == ExprKind::binary &&
             (cond->op == Tok::eq || cond->op == Tok::ne || cond->op == Tok::lt ||
              cond->op == Tok::le || cond->op == Tok::gt || cond->op == Tok::ge)) {
+            if (enable_fp_ && (is_fp_type(cond->lhs->type) || is_fp_type(cond->rhs->type))) {
+                emit_fp_dcmp_call(cond->lhs, cond->rhs, cond->temp_bp_offset);
+                const std::uint8_t jcc = emit_fp_cmp_flags(cond->op);
+                emit_jcc(jump_on_true ? jcc : static_cast<std::uint8_t>(jcc ^ 0x01), target);
+                return;
+            }
             const bool lhs_ptr = cond->lhs->type && (cond->lhs->type->kind == TypeKind::t_ptr ||
                                                      cond->lhs->type->kind == TypeKind::t_array);
             const bool rhs_ptr = cond->rhs->type && (cond->rhs->type->kind == TypeKind::t_ptr ||
@@ -4590,7 +5180,8 @@ private:
             emit_jcc(jump_on_true ? 0x75 : 0x74, target);
             return;
         }
-        if (cond->type && !is_32bit_scalar(cond->type) && !is_aggregate_type(cond->type) &&
+        if (cond->type && !(enable_fp_ && is_fp_type(cond->type)) &&
+            !is_32bit_scalar(cond->type) && !is_aggregate_type(cond->type) &&
             cond->type->kind != TypeKind::t_array && cond->type->kind != TypeKind::t_func) {
             DirectMem dm;
             if (try_resolve_direct_mem(cond, dm) && dm.kind == DirectMem::bp_rel) {
@@ -4616,7 +5207,17 @@ private:
             }
         }
         emit_expr(cond);
-        if (is_32bit_scalar(cond->type)) {
+        if (enable_fp_ && is_double_type(cond->type)) {
+            emit_u8(0x8B); emit_u8(0xD8);                  // mov bx, ax
+            emit_u8(0x8B); emit_u8(0x47); emit_u8(0x06);   // mov ax, [bx+6]
+            emit_u8(0x80); emit_u8(0xE4); emit_u8(0x7F);   // and ah, 0x7F
+            emit_u8(0x0B); emit_u8(0x47); emit_u8(0x04);   // or ax, [bx+4]
+            emit_u8(0x0B); emit_u8(0x47); emit_u8(0x02);   // or ax, [bx+2]
+            emit_u8(0x0B); emit_u8(0x07);                  // or ax, [bx]
+        } else if (enable_fp_ && is_float_type(cond->type)) {
+            emit_u8(0x80); emit_u8(0xE6); emit_u8(0x7F);   // and dh, 0x7F
+            emit_u8(0x0B); emit_u8(0xC2);                  // or ax, dx
+        } else if (is_32bit_scalar(cond->type)) {
             emit_u8(0x0B); emit_u8(0xC2);  // or ax, dx
         } else {
             emit_u8(0x85); emit_u8(0xC0);  // test ax, ax
@@ -4749,7 +5350,37 @@ private:
                 if (s->expr) {
                     const TypePtr ret_type =
                         (cur_func_ && cur_func_->type) ? cur_func_->type->base : nullptr;
-                    if (is_aggregate_type(ret_type)) {
+                    if (enable_fp_ && is_double_type(ret_type)) {
+                        if (is_double_type(s->expr->type)) {
+                            emit_expr(s->expr, true);
+                            emit_u8(0x8B); emit_u8(0xD8);               // mov bx, ax (src)
+                            emit_u8(0x8B); emit_bp_rm(0, sret_bp_off_); // mov ax, [bp+sret] (dst)
+                            emit_copy_agg(8, false, false);
+                        } else if (is_float_type(s->expr->type)) {
+                            emit_expr(s->expr, true);
+                            emit_u8(0x52); emit_u8(0x50);
+                            emit_u8(0x8B); emit_bp_rm(0, sret_bp_off_);
+                            emit_u8(0x50);
+                            emit_rt_call("___stod", 6);
+                            emit_u8(0x8B); emit_bp_rm(0, sret_bp_off_);
+                        } else if (produces_dxax(s->expr->type)) {
+                            emit_expr(s->expr, true);
+                            emit_u8(0x52); emit_u8(0x50);
+                            emit_u8(0x8B); emit_bp_rm(0, sret_bp_off_);
+                            emit_u8(0x50);
+                            emit_rt_call(is_signed_type(s->expr->type) ? "___ltod" : "___ultod", 6);
+                            emit_u8(0x8B); emit_bp_rm(0, sret_bp_off_);
+                        } else {
+                            emit_expr(s->expr, true);
+                            emit_u8(0x50);
+                            emit_u8(0x8B); emit_bp_rm(0, sret_bp_off_);
+                            emit_u8(0x50);
+                            emit_rt_call(is_signed_type(s->expr->type) ? "___itod" : "___utod", 4);
+                            emit_u8(0x8B); emit_bp_rm(0, sret_bp_off_);
+                        }
+                    } else if (enable_fp_ && is_float_type(ret_type)) {
+                        emit_expr_as_float_dxax(s->expr, fn_fp_scratch_off_);
+                    } else if (is_aggregate_type(ret_type)) {
                         const std::size_t rsz = type_size(ret_type);
                         bool src_far = false;
                         emit_agg_addr_to_bx(s->expr, src_far);
@@ -4829,7 +5460,18 @@ private:
     }
 
     void test_ax_or_dxax(const TypePtr& t) {
-        if (is_32bit_scalar(t)) {
+        if (enable_fp_ && is_double_type(t)) {
+            emit_u8(0x8B); emit_u8(0xD8);                  // mov bx, ax
+            emit_u8(0x8B); emit_u8(0x47); emit_u8(0x06);   // mov ax, [bx+6]
+            emit_u8(0x80); emit_u8(0xE4); emit_u8(0x7F);   // and ah, 0x7F
+            emit_u8(0x0B); emit_u8(0x47); emit_u8(0x04);   // or ax, [bx+4]
+            emit_u8(0x0B); emit_u8(0x47); emit_u8(0x02);   // or ax, [bx+2]
+            emit_u8(0x0B); emit_u8(0x07);                  // or ax, [bx]
+        } else if (enable_fp_ && is_float_type(t)) {
+            emit_u8(0x8B); emit_u8(0xDA);                  // mov bx, dx
+            emit_u8(0x80); emit_u8(0xE7); emit_u8(0x7F);   // and bh, 0x7F
+            emit_u8(0x0B); emit_u8(0xD8);                  // or bx, ax
+        } else if (is_32bit_scalar(t)) {
             emit_u8(0x8B); emit_u8(0xD8);  // mov bx, ax
             emit_u8(0x0B); emit_u8(0xDA);  // or bx, dx
         } else {
@@ -5488,12 +6130,36 @@ private:
 
     void emit_expr(const ExprPtr& e, bool need_value = true) {
         if (!e) return;
-        if (!need_value && (e->kind == ExprKind::int_lit || e->kind == ExprKind::str_lit ||
-                            e->kind == ExprKind::var || e->kind == ExprKind::member)) {
+        if (!need_value && (e->kind == ExprKind::int_lit || e->kind == ExprKind::float_lit ||
+                            e->kind == ExprKind::str_lit || e->kind == ExprKind::var ||
+                            e->kind == ExprKind::member)) {
             if (e->kind == ExprKind::member && e->lhs) emit_expr(e->lhs, false);
             return;
         }
         switch (e->kind) {
+            case ExprKind::float_lit: {
+                const std::size_t prev_pos = omf_.code.data.size();
+                if (is_float_type(e->type)) {
+                    const float fv = static_cast<float>(e->fval);
+                    std::uint32_t bits = 0;
+                    std::memcpy(&bits, &fv, 4);
+                    const auto lo = static_cast<std::uint16_t>(bits & 0xFFFFU);
+                    const auto hi = static_cast<std::uint16_t>((bits >> 16) & 0xFFFFU);
+                    if (lo == 0) { emit_u8(0x33); emit_u8(0xC0); }
+                    else { emit_u8(0xB8); emit_u16(lo); }
+                    if (hi == 0) { emit_u8(0x33); emit_u8(0xD2); }
+                    else { emit_u8(0xBA); emit_u16(hi); }
+                } else {
+                    const std::uint16_t off = intern_double(e->fval);
+                    emit_u8(0xB8);  // mov ax, offset CONST:dbl
+                    omf_.code.fixups.push_back(
+                        {omf_.code.data.size(), FixupKind::near_offset_dgroup, 3, 0});
+                    emit_u16(off);
+                }
+                preserve_bx_cache_since(prev_pos);
+                break;
+            }
+
             case ExprKind::int_lit: {
                 const std::size_t prev_pos = omf_.code.data.size();
                 const std::uint16_t lo = static_cast<std::uint16_t>(e->int_val & 0xFFFF);
@@ -5564,6 +6230,21 @@ private:
                         break;
                     }
                 }
+                if (enable_fp_ && is_double_type(e->type)) {
+                    DirectMem dm;
+                    if (try_resolve_direct_mem(e, dm)) {
+                        if (dm.kind == DirectMem::bp_rel) {
+                            emit_u8(0x8D); emit_bp_rm(0, dm.disp);
+                        } else {
+                            emit_u8(0xB8); emit_dgroup_disp(dm.sym, dm.disp);
+                        }
+                        break;
+                    }
+                    bool is_far = false;
+                    emit_lvalue_addr(e, is_far);
+                    emit_u8(0x8B); emit_u8(0xC3);  // mov ax, bx
+                    break;
+                }
                 if (is_aggregate_type(e->type)) {
                     DirectMem dm;
                     if (try_resolve_direct_mem(e, dm)) {
@@ -5609,6 +6290,27 @@ private:
             }
 
             case ExprKind::member: {
+                if (enable_fp_ && is_double_type(e->type)) {
+                    DirectMem dm;
+                    if (try_resolve_direct_mem(e, dm)) {
+                        if (dm.kind == DirectMem::bp_rel) {
+                            emit_u8(0x8D); emit_bp_rm(0, dm.disp);
+                        } else {
+                            emit_u8(0xB8); emit_dgroup_disp(dm.sym, dm.disp);
+                        }
+                        break;
+                    }
+                    bool is_far = false;
+                    emit_lvalue_addr(e, is_far);
+                    if (is_far) {
+                        emit_u8(0x8C); emit_u8(0xC1);                 // mov cx, es
+                        emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset);
+                        emit_copy_agg(8, false, true);
+                    } else {
+                        emit_u8(0x8B); emit_u8(0xC3);
+                    }
+                    break;
+                }
                 if (is_aggregate_type(e->type) || (e->type && e->type->kind == TypeKind::t_array)) {
                     DirectMem dm;
                     if (try_resolve_direct_mem(e, dm)) {
@@ -5642,6 +6344,19 @@ private:
             case ExprKind::cast:
                 if (!need_value) {
                     emit_expr(e->lhs, false);
+                    break;
+                }
+                if (enable_fp_ && (is_fp_type(e->type) || is_fp_type(e->lhs->type))) {
+                    if (is_double_type(e->type)) {
+                        emit_expr_as_double_ptr(e->lhs, e->temp_bp_offset);
+                    } else if (is_float_type(e->type)) {
+                        emit_expr_as_float_dxax(e->lhs, e->temp_bp_offset);
+                    } else if (e->type && e->type->kind == TypeKind::t_void) {
+                        emit_expr(e->lhs, false);
+                    } else {
+                        emit_expr_as_double_ptr(e->lhs, e->temp_bp_offset);
+                        emit_double_ptr_to_type(e->type);
+                    }
                     break;
                 }
                 emit_expr(e->lhs);
@@ -5684,6 +6399,24 @@ private:
             case ExprKind::ternary: {
                 const LabelId l_false = new_label();
                 const LabelId l_end = new_label();
+                if (enable_fp_ && need_value && is_double_type(e->type)) {
+                    emit_branch(e->lhs, l_false, false);
+                    emit_expr_as_double_ptr(e->rhs, e->temp_bp_offset);
+                    emit_jmp(l_end);
+                    bind_label(l_false);
+                    emit_expr_as_double_ptr(e->third, e->temp_bp_offset);
+                    bind_label(l_end);
+                    break;
+                }
+                if (enable_fp_ && need_value && is_float_type(e->type)) {
+                    emit_branch(e->lhs, l_false, false);
+                    emit_expr_as_float_dxax(e->rhs, e->temp_bp_offset);
+                    emit_jmp(l_end);
+                    bind_label(l_false);
+                    emit_expr_as_float_dxax(e->third, e->temp_bp_offset);
+                    bind_label(l_end);
+                    break;
+                }
                 emit_branch(e->lhs, l_false, false);
                 emit_expr(e->rhs, need_value);
                 if (need_value && is_32bit_scalar(e->type)) emit_widen_to_32(e->rhs, e->type);
@@ -5696,6 +6429,63 @@ private:
             }
 
             case ExprKind::assign: {
+                if (enable_fp_ && is_double_type(e->type)) {
+                    emit_expr_as_double_ptr(e->rhs, e->temp_bp_offset);
+                    DirectMem dm;
+                    if (try_resolve_direct_mem(e->lhs, dm) && dm.kind == DirectMem::bp_rel) {
+                        emit_copy_near8_to_bp(dm.disp);
+                        break;
+                    }
+                    emit_u8(0x50);  // push src near ptr
+                    bool dst_far = false;
+                    emit_lvalue_addr(e->lhs, dst_far);
+                    emit_u8(0x8B); emit_u8(0xC3);                   // mov ax, bx (dst off)
+                    if (dst_far) { emit_u8(0x8C); emit_u8(0xC2); }  // mov dx, es (dst seg)
+                    emit_u8(0x5B);                                  // pop bx (src off)
+                    if (need_value && dst_far) emit_u8(0x53);       // keep src near ptr
+                    emit_copy_agg(8, dst_far, false);
+                    if (need_value && dst_far) emit_u8(0x58);       // pop ax = src near ptr
+                    break;
+                }
+                if (enable_fp_ && is_float_type(e->type)) {
+                    emit_expr_as_float_dxax(e->rhs, e->temp_bp_offset);
+                    DirectMem dm;
+                    if (try_resolve_direct_mem(e->lhs, dm)) {
+                        store_direct_mem(e->type, dm);
+                        break;
+                    }
+                    emit_u8(0x50);
+                    emit_u8(0x52);
+                    PtrBase base = PtrBase::bx;
+                    bool is_far = false;
+                    int disp = 0;
+                    emit_lvalue_idx_disp(e->lhs, base, is_far, disp);
+                    emit_u8(0x5A);
+                    emit_u8(0x58);
+                    store_to_bx(e->type, is_far, disp, base);
+                    break;
+                }
+                if (enable_fp_ && e->rhs && is_fp_type(e->rhs->type)) {
+                    // Integer LHS assigned from float/double RHS (e.g. i = d)
+                    const int sc = fn_fp_scratch_off_;
+                    emit_expr_as_double_ptr(e->rhs, sc);
+                    emit_double_ptr_to_type(e->type);
+                    DirectMem dm;
+                    if (try_resolve_direct_mem(e->lhs, dm)) {
+                        store_direct_mem(e->type, dm);
+                        break;
+                    }
+                    emit_u8(0x50);
+                    if (is_32bit_scalar(e->type)) emit_u8(0x52);
+                    PtrBase base = PtrBase::bx;
+                    bool is_far = false;
+                    int disp = 0;
+                    emit_lvalue_idx_disp(e->lhs, base, is_far, disp);
+                    if (is_32bit_scalar(e->type)) emit_u8(0x5A);
+                    emit_u8(0x58);
+                    store_to_bx(e->type, is_far, disp, base);
+                    break;
+                }
                 if (is_aggregate_type(e->type)) {
                     bool src_far = false;
                     emit_agg_addr_to_bx(e->rhs, src_far);
@@ -5844,6 +6634,68 @@ private:
                 else if (e->op == Tok::shr_eq) bin_op = Tok::shr;
 
                 const bool lhs_is_ptr = e->type && e->type->kind == TypeKind::t_ptr;
+                if (enable_fp_ && !lhs_is_ptr &&
+                    (is_fp_type(e->type) || (e->rhs && is_fp_type(e->rhs->type)))) {
+                    const char* helper = bin_op == Tok::plus    ? "___dadd"
+                                         : bin_op == Tok::minus ? "___dsub"
+                                         : bin_op == Tok::star  ? "___dmul"
+                                                                : "___ddiv";
+                    bool dst_far = false;
+                    emit_lvalue_addr(e->lhs, dst_far);
+                    if (dst_far) emit_u8(0x06);  // push es
+                    emit_u8(0x53);               // push bx
+                    if (is_double_type(e->type)) {
+                        if (dst_far) {
+                            emit_u8(0x8C); emit_u8(0xC1);                 // mov cx, es
+                            emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset);
+                            emit_copy_agg(8, false, true);
+                        } else {
+                            emit_u8(0x8B); emit_u8(0xC3);  // mov ax, bx
+                            emit_copy_near8_to_bp(e->temp_bp_offset);
+                        }
+                    } else {
+                        load_from_bx(e->type, dst_far, 0, PtrBase::bx);
+                        if (is_float_type(e->type)) {
+                            emit_u8(0x52); emit_u8(0x50);
+                            emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset);
+                            emit_u8(0x50);
+                            emit_rt_call("___stod", 6);
+                        } else if (produces_dxax(e->type)) {
+                            emit_u8(0x52); emit_u8(0x50);
+                            emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset);
+                            emit_u8(0x50);
+                            emit_rt_call(is_signed_type(e->type) ? "___ltod" : "___ultod", 6);
+                        } else {
+                            emit_u8(0x50);
+                            emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset);
+                            emit_u8(0x50);
+                            emit_rt_call(is_signed_type(e->type) ? "___itod" : "___utod", 4);
+                        }
+                    }
+                    emit_expr_as_double_ptr(e->rhs, e->temp_bp_offset + 8);
+                    emit_u8(0x50);                                      // push rhs ptr
+                    emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset);    // lea ax, [bp+temp]
+                    emit_u8(0x50);                                      // push lhs ptr
+                    emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset + 16);
+                    emit_u8(0x50);                                      // push out ptr
+                    emit_rt_call(helper, 6);
+                    if (is_double_type(e->type)) {
+                        emit_u8(0x58);                 // pop ax (dst off)
+                        if (dst_far) emit_u8(0x5A);    // pop dx (dst seg)
+                        emit_u8(0x8D); emit_bp_rm(3, e->temp_bp_offset + 16);  // lea bx, [bp+res]
+                        emit_copy_agg(8, dst_far, false);
+                        if (need_value && dst_far) {
+                            emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset + 16);
+                        }
+                    } else {
+                        emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset + 16);
+                        emit_double_ptr_to_type(e->type);
+                        emit_u8(0x5B);               // pop bx
+                        if (dst_far) emit_u8(0x07);  // pop es
+                        store_to_bx(e->type, dst_far, 0, PtrBase::bx);
+                    }
+                    break;
+                }
                 const std::uint16_t ptr_scale =
                     (lhs_is_ptr && (bin_op == Tok::plus || bin_op == Tok::minus) && e->type->base)
                         ? static_cast<std::uint16_t>(std::max<std::size_t>(1, type_size(e->type->base)))
@@ -6097,6 +6949,27 @@ private:
                 }
                 if (e->op == Tok::star) {
                     if (!need_value) { emit_expr(e->lhs, false); break; }
+                    if (enable_fp_ && is_double_type(e->type)) {
+                        DirectMem dm;
+                        if (try_resolve_direct_mem(e, dm)) {
+                            if (dm.kind == DirectMem::bp_rel) {
+                                emit_u8(0x8D); emit_bp_rm(0, dm.disp);
+                            } else {
+                                emit_u8(0xB8); emit_dgroup_disp(dm.sym, dm.disp);
+                            }
+                            break;
+                        }
+                        bool is_far = false;
+                        emit_lvalue_addr(e, is_far);
+                        if (is_far) {
+                            emit_u8(0x8C); emit_u8(0xC1);  // mov cx, es
+                            emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset);
+                            emit_copy_agg(8, false, true);
+                        } else {
+                            emit_u8(0x8B); emit_u8(0xC3);  // mov ax, bx
+                        }
+                        break;
+                    }
                     if ((e->type && (e->type->kind == TypeKind::t_array ||
                                      e->type->kind == TypeKind::t_func)) ||
                         is_aggregate_type(e->type)) {
@@ -6117,6 +6990,63 @@ private:
                 }
                 if (e->op == Tok::inc || e->op == Tok::dec) {
                     const bool is_inc = (e->op == Tok::inc);
+                    if (enable_fp_ && is_fp_type(e->type)) {
+                        bool dst_far = false;
+                        emit_lvalue_addr(e->lhs, dst_far);
+                        if (dst_far) emit_u8(0x06);  // push es
+                        emit_u8(0x53);               // push bx
+                        if (is_double_type(e->type)) {
+                            if (dst_far) {
+                                emit_u8(0x8C); emit_u8(0xC1);
+                                emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset);
+                                emit_copy_agg(8, false, true);
+                            } else {
+                                emit_u8(0x8B); emit_u8(0xC3);
+                                emit_copy_near8_to_bp(e->temp_bp_offset);
+                            }
+                        } else {
+                            load_from_bx(e->type, dst_far, 0, PtrBase::bx);
+                            emit_u8(0x52); emit_u8(0x50);
+                            emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset);
+                            emit_u8(0x50);
+                            emit_rt_call("___stod", 6);
+                        }
+                        const std::uint16_t one_off = intern_double(1.0);
+                        emit_u8(0xB8);
+                        omf_.code.fixups.push_back(
+                            {omf_.code.data.size(), FixupKind::near_offset_dgroup, 3, 0});
+                        emit_u16(one_off);
+                        emit_u8(0x50);                                      // push &1.0
+                        emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset);
+                        emit_u8(0x50);                                      // push &old
+                        emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset + 8);
+                        emit_u8(0x50);                                      // push &new
+                        emit_rt_call(is_inc ? "___dadd" : "___dsub", 6);
+                        if (is_double_type(e->type)) {
+                            emit_u8(0x58);               // pop ax (dst off)
+                            if (dst_far) emit_u8(0x5A);  // pop dx (dst seg)
+                            emit_u8(0x8D); emit_bp_rm(3, e->temp_bp_offset + 8);
+                            emit_copy_agg(8, dst_far, false);
+                            if (need_value) {
+                                emit_u8(0x8D);
+                                emit_bp_rm(0, e->is_postfix ? e->temp_bp_offset
+                                                            : (e->temp_bp_offset + 8));
+                            }
+                        } else {
+                            emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset + 8);
+                            emit_u8(0x50);
+                            emit_rt_call("___dtos", 2);
+                            emit_u8(0x5B);               // pop bx
+                            if (dst_far) emit_u8(0x07);  // pop es
+                            store_to_bx(e->type, dst_far, 0, PtrBase::bx);
+                            if (need_value && e->is_postfix) {
+                                emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset);
+                                emit_u8(0x50);
+                                emit_rt_call("___dtos", 2);
+                            }
+                        }
+                        break;
+                    }
                     std::uint16_t step = 1;
                     if (e->type && e->type->kind == TypeKind::t_ptr && e->type->base) {
                         step = static_cast<std::uint16_t>(std::max<std::size_t>(1, type_size(e->type->base)));
@@ -6285,6 +7215,25 @@ private:
                     break;
                 }
                 emit_expr(e->lhs);
+                if (enable_fp_ && is_fp_type(e->lhs->type)) {
+                    if (e->op == Tok::minus) {
+                        if (is_float_type(e->type)) {
+                            emit_u8(0x80); emit_u8(0xF6); emit_u8(0x80);  // xor dh, 0x80
+                        } else {
+                            emit_u8(0x50);                                   // push lhs ptr
+                            emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset); // lea ax, [bp+temp]
+                            emit_u8(0x50);                                   // push out ptr
+                            emit_rt_call("___dneg", 4);
+                            emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset);
+                        }
+                    } else if (e->op == Tok::bang) {
+                        test_ax_or_dxax(e->lhs->type);
+                        emit_u8(0xB8); emit_u16(1);   // mov ax, 1
+                        emit_u8(0x74); emit_u8(2);    // jz +2
+                        emit_u8(0x33); emit_u8(0xC0); // xor ax, ax
+                    }
+                    break;
+                }
                 if (e->op == Tok::minus) {
                     emit_u8(0xF7); emit_u8(0xD8);  // neg ax
                 } else if (e->op == Tok::tilde) {
@@ -6345,6 +7294,38 @@ private:
                                                       e->lhs->type->kind == TypeKind::t_array);
                 const bool rhs_ptr = e->rhs->type && (e->rhs->type->kind == TypeKind::t_ptr ||
                                                       e->rhs->type->kind == TypeKind::t_array);
+
+                if (enable_fp_ && !lhs_ptr && !rhs_ptr &&
+                    (is_fp_type(e->lhs->type) || is_fp_type(e->rhs->type))) {
+                    if (e->op == Tok::eq || e->op == Tok::ne || e->op == Tok::lt ||
+                        e->op == Tok::le || e->op == Tok::gt || e->op == Tok::ge) {
+                        emit_fp_dcmp_call(e->lhs, e->rhs, e->temp_bp_offset);
+                        const std::uint8_t jcc = emit_fp_cmp_flags(e->op);
+                        emit_u8(0xB8); emit_u16(1);    // mov ax, 1
+                        emit_u8(jcc);  emit_u8(2);     // jcc +2
+                        emit_u8(0x33); emit_u8(0xC0);  // xor ax, ax
+                        break;
+                    }
+                    const char* helper = e->op == Tok::plus    ? "___dadd"
+                                         : e->op == Tok::minus ? "___dsub"
+                                         : e->op == Tok::star  ? "___dmul"
+                                                               : "___ddiv";
+                    emit_expr_as_double_ptr(e->lhs, e->temp_bp_offset);
+                    emit_u8(0x50);  // save lhs double ptr
+                    emit_expr_as_double_ptr(e->rhs, e->temp_bp_offset + 8);
+                    emit_u8(0x59);  // pop cx (lhs ptr)
+                    emit_u8(0x50);  // push ax (rhs ptr)
+                    emit_u8(0x51);  // push cx (lhs ptr)
+                    emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset + 16);
+                    emit_u8(0x50);  // push out ptr
+                    emit_rt_call(helper, 6);
+                    emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset + 16);
+                    if (is_float_type(e->type)) {
+                        emit_u8(0x50);
+                        emit_rt_call("___dtos", 2);
+                    }
+                    break;
+                }
 
                 // Pointer +/- constant index fast path (e.g. arr[0], arr[k], ptr + k)
                 if ((e->op == Tok::plus || e->op == Tok::minus) && lhs_ptr && !rhs_ptr &&
@@ -6675,7 +7656,10 @@ private:
                 const bool is_pascal = fn_type && fn_type->is_pascal;
                 const bool ret_agg = is_aggregate_type(e->type);
                 const std::size_t ret_sz = ret_agg ? type_size(e->type) : 0;
-                const bool call_hidden_sret = ret_agg && ret_sz > 4;
+                const bool ret_dbl = enable_fp_ && is_double_type(e->type);
+                const bool call_hidden_sret = (ret_agg && ret_sz > 4) || ret_dbl;
+                const int arg_conv_off =
+                    e->temp_bp_offset + (ret_dbl ? 8 : static_cast<int>((ret_sz + 1U) & ~std::size_t(1U)));
 
                 std::size_t arg_bytes = 0;
                 auto push_sret_ptr = [&]() {
@@ -6683,6 +7667,14 @@ private:
                     emit_bp_rm(0, e->temp_bp_offset);  // lea ax, [bp+temp]
                     emit_u8(0x50);                     // push ax
                     arg_bytes += 2;
+                };
+                auto push_double_at_ax = [&]() {
+                    emit_u8(0x8B); emit_u8(0xD8);                  // mov bx, ax
+                    emit_u8(0xFF); emit_u8(0x77); emit_u8(0x06);   // push word ptr [bx+6]
+                    emit_u8(0xFF); emit_u8(0x77); emit_u8(0x04);   // push word ptr [bx+4]
+                    emit_u8(0xFF); emit_u8(0x77); emit_u8(0x02);   // push word ptr [bx+2]
+                    emit_u8(0xFF); emit_u8(0x37);                  // push word ptr [bx]
+                    arg_bytes += 8;
                 };
                 auto push_arg = [&](std::size_t idx, const ExprPtr& arg) {
                     if (is_aggregate_type(arg->type)) {
@@ -6704,6 +7696,42 @@ private:
                         emit_copy_agg(sz, true, src_far);
                         arg_bytes += aligned_sz;
                         return;
+                    }
+                    if (enable_fp_) {
+                        const TypePtr param_t =
+                            (fn_type && idx < fn_type->params.size()) ? fn_type->params[idx].type : nullptr;
+                        if (param_t) {
+                            if (is_double_type(param_t)) {
+                                emit_expr_as_double_ptr(arg, arg_conv_off);
+                                push_double_at_ax();
+                                return;
+                            }
+                            if (is_float_type(param_t)) {
+                                emit_expr_as_float_dxax(arg, arg_conv_off);
+                                emit_u8(0x52);
+                                emit_u8(0x50);
+                                arg_bytes += 4;
+                                return;
+                            }
+                            if (is_fp_type(arg->type)) {
+                                emit_expr_as_double_ptr(arg, arg_conv_off);
+                                emit_double_ptr_to_type(param_t);
+                                if (is_32bit_scalar(param_t)) {
+                                    emit_u8(0x52);
+                                    emit_u8(0x50);
+                                    arg_bytes += 4;
+                                } else {
+                                    emit_u8(0x50);
+                                    arg_bytes += 2;
+                                }
+                                return;
+                            }
+                        } else if (is_fp_type(arg->type)) {
+                            // Unprototyped or variadic (...): promote float -> double (8 bytes)
+                            emit_expr_as_double_ptr(arg, arg_conv_off);
+                            push_double_at_ax();
+                            return;
+                        }
                     }
                     emit_expr(arg);
                     bool want32 = produces_dxax(arg->type);
@@ -7216,7 +8244,7 @@ private:
 
 std::vector<std::uint8_t> compile_c_to_omf(std::string_view preprocessed_source,
                                            const CompileOptions& options) {
-    std::vector<Token> tokens = tokenize(preprocessed_source);
+    std::vector<Token> tokens = tokenize(preprocessed_source, use_soft_float(options));
     Parser parser(std::move(tokens), options);
     parser.parse_translation_unit();
 
