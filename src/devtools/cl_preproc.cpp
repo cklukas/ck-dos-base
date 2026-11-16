@@ -98,6 +98,58 @@ std::string_view trim_ws(std::string_view sv) {
     return sv;
 }
 
+bool has_unclosed_func_macro(std::string_view text, const MacroTable& macros) {
+    std::size_t i = 0;
+    while (i < text.size()) {
+        if (text[i] == '"' || text[i] == '\'') {
+            const char q = text[i++];
+            while (i < text.size()) {
+                if (text[i] == '\\' && i + 1 < text.size()) i += 2;
+                else if (text[i] == q) { ++i; break; }
+                else ++i;
+            }
+            continue;
+        }
+        if (is_ident_start(text[i])) {
+            std::size_t j = i + 1;
+            while (j < text.size() && is_ident_char(text[j])) ++j;
+            std::string ident(text.substr(i, j - i));
+            auto it = macros.find(ident);
+            if (it != macros.end() && it->second.is_function) {
+                std::size_t k = j;
+                while (k < text.size() &&
+                       (text[k] == ' ' || text[k] == '\t' || text[k] == '\n' || text[k] == '\r')) {
+                    ++k;
+                }
+                if (k == text.size()) return true;
+                if (text[k] == '(') {
+                    ++k;
+                    int depth = 1;
+                    while (k < text.size() && depth > 0) {
+                        if (text[k] == '"' || text[k] == '\'') {
+                            const char q = text[k++];
+                            while (k < text.size()) {
+                                if (text[k] == '\\' && k + 1 < text.size()) k += 2;
+                                else if (text[k] == q) { ++k; break; }
+                                else ++k;
+                            }
+                            continue;
+                        }
+                        if (text[k] == '(') ++depth;
+                        else if (text[k] == ')') --depth;
+                        ++k;
+                    }
+                    if (depth > 0) return true;
+                }
+            }
+            i = j;
+            continue;
+        }
+        ++i;
+    }
+    return false;
+}
+
 std::string expand_macros(std::string_view text,
                           const MacroTable& macros,
                           std::unordered_set<std::string>& active,
@@ -691,8 +743,28 @@ void process_file(std::string_view raw_source,
         }
 
         std::unordered_set<std::string> active;
-        out += expand_macros(line, macros, active, file_path.string(), line_no);
-        out.push_back('\n');
+        if (has_unclosed_func_macro(line, macros)) {
+            const std::size_t start_line = line_no;
+            std::size_t extra_nl = 0;
+            std::string merged(line);
+            while (pos < cleaned.size() && has_unclosed_func_macro(merged, macros)) {
+                std::size_t next_eol = cleaned.find('\n', pos);
+                if (next_eol == std::string::npos) next_eol = cleaned.size();
+                std::string_view next_line(cleaned.data() + pos, next_eol - pos);
+                std::string_view next_trim = trim_ws(next_line);
+                if (!next_trim.empty() && next_trim.front() == '#') break;
+                pos = next_eol < cleaned.size() ? next_eol + 1 : cleaned.size();
+                ++line_no;
+                ++extra_nl;
+                merged.push_back(' ');
+                merged.append(next_line.data(), next_line.size());
+            }
+            out += expand_macros(merged, macros, active, file_path.string(), start_line);
+            for (std::size_t n = 0; n <= extra_nl; ++n) out.push_back('\n');
+        } else {
+            out += expand_macros(line, macros, active, file_path.string(), line_no);
+            out.push_back('\n');
+        }
     }
 
     if (!cond_stack.empty()) {

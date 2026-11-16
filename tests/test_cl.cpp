@@ -985,3 +985,36 @@ DOSBASE_TEST(cl_ieee754_soft_float_and_math_runtime) {
     }
 #endif
 }
+
+DOSBASE_TEST(cl_c89_multiline_macro_static_fwd_and_32bit_unary) {
+    TemporaryDirectory temp;
+    const fs::path src_path = temp.path() / "MOD.C";
+    const std::string raw =
+        "#define POS(r, c) (((unsigned)(r) << 8) | (unsigned)(c))\n"
+        "static int helper(int a, int b);\n"
+        "long check_ops(unsigned long mask, long val, int r, int c) {\n"
+        "    int p = POS(r + 1,\n"
+        "                c + 2);\n"
+        "    if (val < -32768) return -val;\n"
+        "    return (long)(~mask) + (long)helper(p, c);\n"
+        "}\n"
+        "static int helper(int a, int b) {\n"
+        "    return a - b;\n"
+        "}\n";
+    PreprocOptions pp_opts;
+    const std::string pp = preprocess_c_source(raw, src_path, pp_opts);
+    CompileOptions opts;
+    opts.model = MemoryModel::medium_model;
+    opts.omit_default_lib = true;
+    opts.module_name = "MOD";
+    const auto obj = compile_c_to_omf(pp, opts);
+    const auto recs = parse_omf_records(obj, 0, true);
+    const auto code = extract_code_bytes(recs);
+
+    // Forward-declared static function must resolve internally with zero EXTDEFs!
+    DOSBASE_TEST_EXPECT(!has_record_type(recs, OmfType::extdef));
+    // 32-bit unary minus emits neg dx; neg ax; sbb dx, 0 (F7 DA F7 D8 83 DA 00)
+    DOSBASE_TEST_EXPECT(contains_seq(code, {0xF7, 0xDA, 0xF7, 0xD8, 0x83, 0xDA, 0x00}));
+    // 32-bit bitwise ~ emits not ax; not dx (F7 D0 F7 D2)
+    DOSBASE_TEST_EXPECT(contains_seq(code, {0xF7, 0xD0, 0xF7, 0xD2}));
+}

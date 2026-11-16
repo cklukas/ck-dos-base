@@ -559,8 +559,8 @@ fp_i32 __dtol(const double *a)
 int __dtoi(const double *a)
 {
     fp_i32 v = __dtol(a);
-    if (v > (fp_i32)32767) return 32767;
-    if (v < (fp_i32)-32768) return -32768;
+    if (v > (fp_i32)32767L) return 32767;
+    if (v < (fp_i32)(-32767L - 1L)) return -32767 - 1;
     return (int)v;
 }
 

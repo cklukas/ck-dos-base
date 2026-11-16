@@ -1000,7 +1000,8 @@ static void format_float_item(fmt_sink *sk, double val, char spec,
     }
 
     if (eff_mode == 'e') {
-        int i, aexp;
+        int i;
+        unsigned int aexp;
         tmp[tlen++] = dig[0];
         if (eff_prec > 0 || fl_alt) {
             tmp[tlen++] = '.';
@@ -1014,12 +1015,12 @@ static void format_float_item(fmt_sink *sk, double val, char spec,
         }
         tmp[tlen++] = upper ? 'E' : 'e';
         tmp[tlen++] = (exp10 < 0) ? '-' : '+';
-        aexp = exp10 < 0 ? -exp10 : exp10;
-        if (aexp >= 100) {
-            tmp[tlen++] = (char)('0' + (aexp / 100));
+        aexp = (exp10 < 0) ? (0U - (unsigned int)exp10) : (unsigned int)exp10;
+        if (aexp >= 100U) {
+            tmp[tlen++] = (char)('0' + (aexp / 100U));
         }
-        tmp[tlen++] = (char)('0' + ((aexp / 10) % 10));
-        tmp[tlen++] = (char)('0' + (aexp % 10));
+        tmp[tlen++] = (char)('0' + ((aexp / 10U) % 10U));
+        tmp[tlen++] = (char)('0' + (aexp % 10U));
     } else {
         int i;
         if (is_zero || exp10 < 0) {

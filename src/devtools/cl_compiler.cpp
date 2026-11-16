@@ -65,6 +65,7 @@ struct Token {
     std::size_t line = 1;
     double fval = 0.0;
     bool is_float_suf = false;
+    bool is_decimal = false;
 };
 
 bool is_id_start(char c) {
@@ -318,7 +319,7 @@ std::vector<Token> tokenize(std::string_view src, bool enable_fp = false) {
                 ++i;
             }
             tokens.push_back({Tok::int_lit, std::string(src.substr(start, i - start)),
-                              val, is_u, is_l, line});
+                              val, is_u, is_l, line, 0.0, false, base == 10});
             continue;
         }
 
@@ -1585,13 +1586,19 @@ private:
                     }
                 }
 
-                std::string asm_name = mangle_name(name, type->is_pascal, ds.is_static);
-                global_syms[name] = {name, type, true, ds.is_static, false, 0, asm_name};
+                auto prev_gs = global_syms.find(name);
+                const bool eff_static =
+                    ds.is_static || (prev_gs != global_syms.end() && prev_gs->second.is_static);
+                std::string asm_name =
+                    (prev_gs != global_syms.end() && prev_gs->second.is_static)
+                        ? prev_gs->second.asm_name
+                        : mangle_name(name, type->is_pascal, eff_static);
+                global_syms[name] = {name, type, true, eff_static, false, 0, asm_name};
 
                 FuncDef fn;
                 fn.name = asm_name;
                 fn.type = type;
-                fn.is_static = ds.is_static;
+                fn.is_static = eff_static;
                 fn.params = type->params;
 
                 local_scopes_.clear();
@@ -1676,16 +1683,22 @@ private:
 
             // Global variable or function prototype
             const bool is_pascal = (type->kind == TypeKind::t_func) ? type->is_pascal : ds.is_pascal;
-            std::string asm_name = mangle_name(name, is_pascal, ds.is_static);
-            if (!global_syms.count(name) || !ds.is_extern) {
-                global_syms[name] = {name, type, true, ds.is_static, ds.is_extern, 0, asm_name};
+            auto prev_gs = global_syms.find(name);
+            const bool eff_static =
+                ds.is_static || (prev_gs != global_syms.end() && prev_gs->second.is_static);
+            std::string asm_name =
+                (prev_gs != global_syms.end() && prev_gs->second.is_static)
+                    ? prev_gs->second.asm_name
+                    : mangle_name(name, is_pascal, eff_static);
+            if (prev_gs == global_syms.end() || !ds.is_extern) {
+                global_syms[name] = {name, type, true, eff_static, ds.is_extern, 0, asm_name};
             }
 
             if (type->kind != TypeKind::t_func && !ds.is_extern) {
                 GlobalVar gv;
                 gv.name = asm_name;
                 gv.type = type;
-                gv.is_static = ds.is_static;
+                gv.is_static = eff_static;
                 if (match(Tok::assign)) {
                     gv.has_init = true;
                     parse_and_size_initializer(type, gv.inits);
@@ -2412,7 +2425,15 @@ private:
             auto e = std::make_shared<Expr>();
             e->kind = ExprKind::int_lit;
             e->int_val = static_cast<std::int64_t>(t.int_val);
-            if (t.is_long || t.int_val > 0xFFFF) {
+            if (opts_.model != MemoryModel::small_model && t.is_decimal && !t.is_unsigned) {
+                if (!t.is_long && t.int_val <= 0x7FFFU) {
+                    e->type = make_prim(TypeKind::t_short);
+                } else if (t.int_val <= 0x7FFFFFFFUL) {
+                    e->type = make_prim(TypeKind::t_long);
+                } else {
+                    e->type = make_prim(TypeKind::t_ulong);
+                }
+            } else if (t.is_long || t.int_val > 0xFFFF) {
                 e->type = make_prim(t.is_unsigned ? TypeKind::t_ulong : TypeKind::t_long);
             } else if (t.is_unsigned || t.int_val > 0x7FFF) {
                 e->type = make_prim(TypeKind::t_ushort);
@@ -7235,9 +7256,20 @@ private:
                     break;
                 }
                 if (e->op == Tok::minus) {
-                    emit_u8(0xF7); emit_u8(0xD8);  // neg ax
+                    if ((opts_.model != MemoryModel::small_model || enable_fp_) &&
+                        is_32bit_scalar(e->type)) {
+                        emit_u8(0xF7); emit_u8(0xDA);                    // neg dx
+                        emit_u8(0xF7); emit_u8(0xD8);                    // neg ax
+                        emit_u8(0x83); emit_u8(0xDA); emit_u8(0x00);     // sbb dx, 0
+                    } else {
+                        emit_u8(0xF7); emit_u8(0xD8);  // neg ax
+                    }
                 } else if (e->op == Tok::tilde) {
                     emit_u8(0xF7); emit_u8(0xD0);  // not ax
+                    if ((opts_.model != MemoryModel::small_model || enable_fp_) &&
+                        is_32bit_scalar(e->type)) {
+                        emit_u8(0xF7); emit_u8(0xD2);  // not dx
+                    }
                 } else if (e->op == Tok::bang) {
                     test_ax_or_dxax(e->lhs->type);
                     emit_u8(0xB8); emit_u16(1);  // mov ax, 1
