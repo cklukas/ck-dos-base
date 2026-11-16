@@ -710,3 +710,25 @@ DOSBASE_TEST(cl_far_ptr_les_and_inplace_arith) {
     // Uses 4-byte `add word ptr [bp+4], 2` (83 46 04 02) for `ptr += 2`
     DOSBASE_TEST_EXPECT(contains_seq(code, {0x83, 0x46, 0x04, 0x02}));
 }
+
+DOSBASE_TEST(cl_direct_byte_and_mem_comparisons) {
+    const char* src =
+        "int count_digits(const char *s, char target) {\n"
+        "    int n = 0;\n"
+        "    while (*s) {\n"
+        "        if (*s >= '0' && *s <= '9') n++;\n"
+        "        if (*s == target) n += 10;\n"
+        "        s++;\n"
+        "    }\n"
+        "    return n;\n"
+        "}\n";
+    const auto obj = compile_c_to_omf(src, CompileOptions{});
+    const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+    // `while (*s)` emits 3-byte `cmp byte ptr [si], 0` (80 3C 00) without loading AL or cbw!
+    DOSBASE_TEST_EXPECT(contains_seq(code, {0x80, 0x3C, 0x00}));
+    // `*s >= '0'` emits 3-byte `cmp byte ptr [si], 0x30` (80 3C 30)
+    DOSBASE_TEST_EXPECT(contains_seq(code, {0x80, 0x3C, 0x30}));
+    // `*s == target` emits 8-bit `cmp al, [bp+6]` (3A 46 06) or `cmp [si], al` (38 04) without push ax
+    DOSBASE_TEST_EXPECT(contains_seq(code, {0x3A, 0x46, 0x06}) || contains_seq(code, {0x38, 0x04}));
+    DOSBASE_TEST_EXPECT(!contains_seq(code, {0x50}));  // zero push ax!
+}

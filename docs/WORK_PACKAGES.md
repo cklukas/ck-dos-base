@@ -252,31 +252,31 @@ Close the remaining C89 struct-value limitation in `ckcl` and upgrade the 16-bit
   - Measure before/after binary sizes across MS-DOS 4 C utilities (`ATTRIB.EXE`, `MEM.EXE`, `FC.EXE`, `FDISK.EXE`, `BACKUP.COM`, `RESTORE.COM`) and `build_dos_tools.py` outputs (check if `CKLINK.EXE` now fits in `-AS` small model!).
   - Add a DOS heap churn stress test to `scripts/verify_self_host.py` (allocating and freeing > 200 KB total across many iterations inside a 64 KB `DGROUP` process), update `docs/build-manifest.json`, and run all verification gates.
 
-### Phase 2 Binary Size Audit (MS `CL` 5.10 vs. `ckcl` WP-9 vs. `ckcl` Post-WP-15)
+### Phase 2 Binary Size Audit (MS `CL` 5.10 vs. `ckcl` WP-9 vs. `ckcl` Final)
 
 #### MS-DOS 4.00 C Utilities (Same Source Tree, Built with MS `CL` 5.10 vs. `ckcl`)
 
-| Target | MS `CL` 5.10 | `ckcl` WP-9 | `ckcl` Post-WP-15 | `ckcl` Change | Overhead vs. MS `CL` (WP-9 → WP-15) |
-|---|---:|---:|---:|---:|---:|
-| `CMD/FC/FC.EXE` | 15,807 B | 21,568 B | 15,792 B | -26.8% | +36.4% → **-0.1%** |
-| `CMD/BACKUP/BACKUP.COM` | 36,880 B | 50,555 B | 37,611 B | -25.6% | +37.1% → **+2.0%** |
-| `CMD/MEM/MEM.EXE` | 20,005 B | 33,808 B | 21,600 B | -36.1% | +69.0% → **+8.0%** |
-| `CMD/REPLACE/REPLACE.EXE` | 19,415 B | 30,160 B | 21,744 B | -27.9% | +55.3% → **+12.0%** |
-| `CMD/FDISK/FDISK.EXE` | 60,935 B | 105,312 B | 71,779 B | -31.8% | +72.8% → **+17.8%** |
-| `CMD/ATTRIB/ATTRIB.EXE` | 18,263 B | 28,859 B | 21,882 B | -24.2% | +58.0% → **+19.8%** |
-| `CMD/RESTORE/RESTORE.COM` | 36,946 B | 65,355 B | 45,115 B | -31.0% | +76.9% → **+22.1%** |
+| Target | MS `CL` 5.10 | `ckcl` WP-9 | `ckcl` WP-15 | `ckcl` Final | Total `ckcl` Reduction | Overhead vs. MS `CL` (WP-9 → Final) |
+|---|---:|---:|---:|---:|---:|---:|
+| `CMD/FC/FC.EXE` | 15,807 B | 21,568 B | 15,792 B | **14,944 B** | -30.7% | +36.4% → **-5.5%** |
+| `CMD/BACKUP/BACKUP.COM` | 36,880 B | 50,555 B | 37,611 B | **35,515 B** | -29.8% | +37.1% → **-3.7%** |
+| `CMD/MEM/MEM.EXE` | 20,005 B | 33,808 B | 21,600 B | **20,096 B** | -40.6% | +69.0% → **+0.5%** |
+| `CMD/REPLACE/REPLACE.EXE` | 19,415 B | 30,160 B | 21,744 B | **20,608 B** | -31.7% | +55.3% → **+6.1%** |
+| `CMD/FDISK/FDISK.EXE` | 60,935 B | 105,312 B | 71,779 B | **68,579 B** | -34.9% | +72.8% → **+12.5%** |
+| `CMD/ATTRIB/ATTRIB.EXE` | 18,263 B | 28,859 B | 21,882 B | **20,602 B** | -28.6% | +58.0% → **+12.8%** |
+| `CMD/RESTORE/RESTORE.COM` | 36,946 B | 65,355 B | 45,115 B | **42,187 B** | -35.4% | +76.9% → **+14.2%** |
 
 #### Self-Hosting 16-Bit `CK*.EXE` Tools (Same C Sources Compiled with MS `CL` 5.10 `-AS -Os -Zp` vs. `ckcl`)
 
-| Target | Shipped MS Tool (`TOOLS/`) | Same C Src via MS `CL` 5.10 | `ckcl` WP-9 | `ckcl` Post-WP-15 | Overhead vs. MS `CL` (WP-9 → WP-15) |
-|---|---:|---:|---:|---:|---:|
-| `CKNMAKE.EXE` | 70,795 B (`NMAKE.EXE`) | 17,289 B | 29,664 B | 19,392 B | +71.6% → **+12.2%** |
-| `CKEXE2BN.EXE` | 3,050 B (`EXE2BIN.EXE`, ASM) | 12,779 B | 21,184 B | 14,720 B | +65.8% → **+15.2%** |
-| `CKCMPRSS.EXE` | 1,368 B (`COMPRESS.COM`, ASM) | 11,847 B | 19,024 B | 13,664 B | +60.6% → **+15.3%** |
-| `CKCONV.EXE` | 16,340 B (`CONVERT.EXE`) | 11,457 B | 18,624 B | 13,248 B | +62.6% → **+15.6%** |
-| `CKEXEFIX.EXE` | 11,776 B (`EXEFIX.EXE`) | 12,503 B | 21,328 B | 14,528 B | +70.6% → **+16.2%** |
-| `CKBLDMSG.EXE` | 23,181 B (`BUILDMSG.EXE`) | 22,149 B | 37,648 B | 25,808 B | +70.0% → **+16.5%** |
-| `CKNOSRV.EXE` | 15,607 B (`NOSRVBLD.EXE`) | 22,097 B | 37,600 B | 25,760 B | +70.2% → **+16.6%** |
-| `CKLIB.EXE` | 49,661 B (`LIB.EXE`) | 21,795 B | 38,592 B | 25,424 B | +77.1% → **+16.7%** |
-| `CKLINK.EXE` | 65,539 B (`LINK.EXE`) | 42,521 B | 84,368 B (`-AM`) | 54,096 B (`-AS`) | +98.4% → **+27.2%** |
+| Target | Shipped MS Tool (`TOOLS/`) | Same C Src via MS `CL` 5.10 | `ckcl` WP-9 | `ckcl` WP-15 | `ckcl` Final | Overhead vs. MS `CL` (WP-9 → Final) |
+|---|---:|---:|---:|---:|---:|---:|
+| `CKNMAKE.EXE` | 70,795 B (`NMAKE.EXE`) | 17,289 B | 29,664 B | 19,392 B | **18,032 B** | +71.6% → **+4.3%** |
+| `CKLIB.EXE` | 49,661 B (`LIB.EXE`) | 21,795 B | 38,592 B | 25,424 B | **23,280 B** | +77.1% → **+6.8%** |
+| `CKCMPRSS.EXE` | 1,368 B (`COMPRESS.COM`, ASM) | 11,847 B | 19,024 B | 13,664 B | **12,896 B** | +60.6% → **+8.9%** |
+| `CKBLDMSG.EXE` | 23,181 B (`BUILDMSG.EXE`) | 22,149 B | 37,648 B | 25,808 B | **24,320 B** | +70.0% → **+9.8%** |
+| `CKNOSRV.EXE` | 15,607 B (`NOSRVBLD.EXE`) | 22,097 B | 37,600 B | 25,760 B | **24,272 B** | +70.2% → **+9.8%** |
+| `CKEXE2BN.EXE` | 3,050 B (`EXE2BIN.EXE`, ASM) | 12,779 B | 21,184 B | 14,720 B | **14,032 B** | +65.8% → **+9.8%** |
+| `CKCONV.EXE` | 16,340 B (`CONVERT.EXE`) | 11,457 B | 18,624 B | 13,248 B | **12,640 B** | +62.6% → **+10.3%** |
+| `CKEXEFIX.EXE` | 11,776 B (`EXEFIX.EXE`) | 12,503 B | 21,328 B | 14,528 B | **13,824 B** | +70.6% → **+10.6%** |
+| `CKLINK.EXE` | 65,539 B (`LINK.EXE`) | 42,521 B | 84,368 B (`-AM`) | 54,096 B (`-AS`) | **50,480 B** (`-AS`) | +98.4% → **+18.7%** |
 

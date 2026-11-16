@@ -3559,7 +3559,124 @@ private:
                                                      cond->lhs->type->kind == TypeKind::t_array);
             const bool rhs_ptr = cond->rhs->type && (cond->rhs->type->kind == TypeKind::t_ptr ||
                                                      cond->rhs->type->kind == TypeKind::t_array);
+            auto emit_cond_jcc = [&](bool is_signed) {
+                std::uint8_t jcc = 0x74;
+                if (cond->op == Tok::eq) jcc = 0x74;
+                else if (cond->op == Tok::ne) jcc = 0x75;
+                else if (cond->op == Tok::lt) jcc = is_signed ? 0x7C : 0x72;
+                else if (cond->op == Tok::le) jcc = is_signed ? 0x7E : 0x76;
+                else if (cond->op == Tok::gt) jcc = is_signed ? 0x7F : 0x77;
+                else if (cond->op == Tok::ge) jcc = is_signed ? 0x7D : 0x73;
+                emit_jcc(jump_on_true ? jcc : static_cast<std::uint8_t>(jcc ^ 0x01), target);
+            };
+            auto is_indir_lval = [](const ExprPtr& ex) {
+                return ex && (ex->kind == ExprKind::member ||
+                              (ex->kind == ExprKind::unary && ex->op == Tok::star));
+            };
+            auto is_word_value_type = [](const TypePtr& t) {
+                return t && !is_byte_scalar(t) && !is_32bit_scalar(t) && !is_aggregate_type(t) &&
+                       t->kind != TypeKind::t_array && t->kind != TypeKind::t_func &&
+                       t->kind != TypeKind::t_void && type_size(t) == 2;
+            };
+
             if (!is_32bit_scalar(cond->lhs->type) && !is_32bit_scalar(cond->rhs->type)) {
+                const bool is_signed =
+                    is_signed_type(cond->lhs->type) && is_signed_type(cond->rhs->type);
+
+                // 1. Direct 8-bit comparisons (char / unsigned char without 16-bit widening)
+                if (is_byte_scalar(cond->lhs->type) && cond->rhs->kind == ExprKind::int_lit) {
+                    const bool in_range =
+                        is_signed ? (static_cast<std::int16_t>(cond->rhs->int_val) >= -128 &&
+                                     static_cast<std::int16_t>(cond->rhs->int_val) <= 127)
+                                  : (static_cast<std::uint16_t>(cond->rhs->int_val) <= 255U);
+                    if (in_range) {
+                        const auto imm8 = static_cast<std::uint8_t>(cond->rhs->int_val & 0xFF);
+                        DirectMem dm;
+                        if (try_resolve_direct_mem(cond->lhs, dm)) {
+                            emit_u8(0x80);
+                            if (dm.kind == DirectMem::bp_rel) {
+                                emit_bp_rm(7, dm.disp);  // cmp byte ptr [bp+d], imm8
+                            } else {
+                                emit_u8(0x3E);
+                                emit_dgroup_disp(dm.sym, dm.disp);  // cmp byte ptr [sym+d], imm8
+                            }
+                            emit_u8(imm8);
+                        } else if (is_indir_lval(cond->lhs)) {
+                            PtrBase base = PtrBase::bx;
+                            bool is_far = false;
+                            int disp = 0;
+                            emit_lvalue_idx_disp(cond->lhs, base, is_far, disp);
+                            if (is_far) emit_u8(0x26);
+                            emit_u8(0x80);
+                            emit_idx_rm(base, 7, disp);  // cmp byte ptr [base+disp], imm8
+                            emit_u8(imm8);
+                        } else {
+                            emit_expr(cond->lhs);
+                            if (imm8 == 0) {
+                                emit_u8(0x84); emit_u8(0xC0);  // test al, al
+                            } else {
+                                emit_u8(0x3C); emit_u8(imm8);  // cmp al, imm8
+                            }
+                        }
+                        emit_cond_jcc(is_signed);
+                        return;
+                    }
+                }
+                if (is_byte_scalar(cond->lhs->type) && is_byte_scalar(cond->rhs->type) &&
+                    is_signed_type(cond->lhs->type) == is_signed_type(cond->rhs->type)) {
+                    DirectMem rdm;
+                    if (try_resolve_direct_mem(cond->rhs, rdm)) {
+                        emit_expr(cond->lhs);
+                        emit_u8(0x3A);
+                        if (rdm.kind == DirectMem::bp_rel) {
+                            emit_bp_rm(0, rdm.disp);  // cmp al, [bp+d]
+                        } else {
+                            emit_u8(0x06);
+                            emit_dgroup_disp(rdm.sym, rdm.disp);  // cmp al, [sym+d]
+                        }
+                        emit_cond_jcc(is_signed);
+                        return;
+                    }
+                    DirectMem ldm;
+                    if (try_resolve_direct_mem(cond->lhs, ldm)) {
+                        emit_expr(cond->rhs);
+                        emit_u8(0x38);
+                        if (ldm.kind == DirectMem::bp_rel) {
+                            emit_bp_rm(0, ldm.disp);  // cmp [bp+d], al
+                        } else {
+                            emit_u8(0x06);
+                            emit_dgroup_disp(ldm.sym, ldm.disp);  // cmp [sym+d], al
+                        }
+                        emit_cond_jcc(is_signed);
+                        return;
+                    }
+                    if (is_indir_lval(cond->rhs) && can_emit_lvalue_bx_preserving_ax_dx(cond->rhs)) {
+                        emit_expr(cond->lhs);
+                        PtrBase base = PtrBase::bx;
+                        bool is_far = false;
+                        int disp = 0;
+                        emit_lvalue_idx_disp(cond->rhs, base, is_far, disp);
+                        if (is_far) emit_u8(0x26);
+                        emit_u8(0x3A);
+                        emit_idx_rm(base, 0, disp);  // cmp al, [base+disp]
+                        emit_cond_jcc(is_signed);
+                        return;
+                    }
+                    if (is_indir_lval(cond->lhs) && can_emit_lvalue_bx_preserving_ax_dx(cond->lhs)) {
+                        emit_expr(cond->rhs);
+                        PtrBase base = PtrBase::bx;
+                        bool is_far = false;
+                        int disp = 0;
+                        emit_lvalue_idx_disp(cond->lhs, base, is_far, disp);
+                        if (is_far) emit_u8(0x26);
+                        emit_u8(0x38);
+                        emit_idx_rm(base, 0, disp);  // cmp [base+disp], al
+                        emit_cond_jcc(is_signed);
+                        return;
+                    }
+                }
+
+                // 2. 16-bit register, direct-memory, or general comparisons
                 const RegVar lhs_rv = find_expr_reg_var(cond->lhs);
                 const RegVar rhs_rv = find_expr_reg_var(cond->rhs);
                 if (lhs_rv != RegVar::none &&
@@ -3594,19 +3711,67 @@ private:
                     }
                 } else if (cond->rhs->kind == ExprKind::int_lit) {
                     const std::uint16_t imm = static_cast<std::uint16_t>(cond->rhs->int_val);
-                    emit_expr(cond->lhs);
-                    if (imm == 0) {
-                        emit_u8(0x85); emit_u8(0xC0);  // test ax, ax
+                    const std::int16_t simm = static_cast<std::int16_t>(imm);
+                    DirectMem ldm;
+                    if (try_resolve_word_mem(cond->lhs, ldm)) {
+                        if (ldm.kind == DirectMem::bp_rel) {
+                            emit_grp1_bp_imm16(7, ldm.disp, imm);  // cmp word ptr [bp+d], imm
+                        } else if (simm >= -128 && simm <= 127) {
+                            emit_u8(0x83); emit_u8(0x3E);
+                            emit_dgroup_disp(ldm.sym, ldm.disp);
+                            emit_u8(static_cast<std::uint8_t>(simm & 0xFF));
+                        } else {
+                            emit_expr(cond->lhs);
+                            emit_u8(0x3D); emit_u16(imm);
+                        }
+                    } else if (is_indir_lval(cond->lhs) && is_word_value_type(cond->lhs->type)) {
+                        PtrBase base = PtrBase::bx;
+                        bool is_far = false;
+                        int disp = 0;
+                        emit_lvalue_idx_disp(cond->lhs, base, is_far, disp);
+                        if (is_far) emit_u8(0x26);
+                        if (simm >= -128 && simm <= 127) {
+                            emit_u8(0x83); emit_idx_rm(base, 7, disp);
+                            emit_u8(static_cast<std::uint8_t>(simm & 0xFF));
+                        } else {
+                            emit_u8(0x81); emit_idx_rm(base, 7, disp);
+                            emit_u16(imm);
+                        }
                     } else {
-                        emit_u8(0x3D); emit_u16(imm);   // cmp ax, imm16
+                        emit_expr(cond->lhs);
+                        if (imm == 0) {
+                            emit_u8(0x85); emit_u8(0xC0);  // test ax, ax
+                        } else {
+                            emit_u8(0x3D); emit_u16(imm);   // cmp ax, imm16
+                        }
                     }
                 } else if (rhs_rv != RegVar::none) {
-                    emit_expr(cond->lhs);
-                    emit_u8(0x3B);
-                    emit_u8(static_cast<std::uint8_t>(0xC0 | reg_num(rhs_rv)));  // cmp ax, si
+                    DirectMem ldm;
+                    if (try_resolve_word_mem(cond->lhs, ldm)) {
+                        emit_u8(0x39);
+                        if (ldm.kind == DirectMem::bp_rel) {
+                            emit_bp_rm(reg_num(rhs_rv), ldm.disp);  // cmp [bp+d], si
+                        } else {
+                            emit_u8(static_cast<std::uint8_t>((reg_num(rhs_rv) << 3) | 0x06));
+                            emit_dgroup_disp(ldm.sym, ldm.disp);     // cmp [sym+d], si
+                        }
+                    } else {
+                        emit_expr(cond->lhs);
+                        emit_u8(0x3B);
+                        emit_u8(static_cast<std::uint8_t>(0xC0 | reg_num(rhs_rv)));  // cmp ax, si
+                    }
                 } else if (DirectMem dm; try_resolve_word_mem(cond->rhs, dm)) {
                     emit_expr(cond->lhs);
                     emit_op_ax_direct_mem(0x3B, dm);  // cmp ax, [bp+d] / [sym+d]
+                } else if (DirectMem ldm; try_resolve_word_mem(cond->lhs, ldm)) {
+                    emit_expr(cond->rhs);
+                    emit_u8(0x39);
+                    if (ldm.kind == DirectMem::bp_rel) {
+                        emit_bp_rm(0, ldm.disp);  // cmp [bp+d], ax
+                    } else {
+                        emit_u8(0x06);
+                        emit_dgroup_disp(ldm.sym, ldm.disp);  // cmp [sym+d], ax
+                    }
                 } else {
                     emit_expr(cond->lhs);
                     emit_u8(0x50);  // push ax
@@ -3615,16 +3780,7 @@ private:
                     emit_u8(0x58);                 // pop ax
                     emit_u8(0x3B); emit_u8(0xC1);  // cmp ax, cx
                 }
-                const bool is_signed =
-                    is_signed_type(cond->lhs->type) && is_signed_type(cond->rhs->type);
-                std::uint8_t jcc = 0x74;
-                if (cond->op == Tok::eq) jcc = 0x74;
-                else if (cond->op == Tok::ne) jcc = 0x75;
-                else if (cond->op == Tok::lt) jcc = is_signed ? 0x7C : 0x72;
-                else if (cond->op == Tok::le) jcc = is_signed ? 0x7E : 0x76;
-                else if (cond->op == Tok::gt) jcc = is_signed ? 0x7F : 0x77;
-                else if (cond->op == Tok::ge) jcc = is_signed ? 0x7D : 0x73;
-                emit_jcc(jump_on_true ? jcc : static_cast<std::uint8_t>(jcc ^ 0x01), target);
+                emit_cond_jcc(is_signed);
                 return;
             }
             if (!lhs_ptr && !rhs_ptr &&
@@ -3698,6 +3854,31 @@ private:
             emit_u8(static_cast<std::uint8_t>(0xC0 | (rn << 3) | rn));  // test si, si
             emit_jcc(jump_on_true ? 0x75 : 0x74, target);
             return;
+        }
+        if (cond->type && !is_32bit_scalar(cond->type) && !is_aggregate_type(cond->type) &&
+            cond->type->kind != TypeKind::t_array && cond->type->kind != TypeKind::t_func) {
+            DirectMem dm;
+            if (try_resolve_direct_mem(cond, dm) && dm.kind == DirectMem::bp_rel) {
+                if (is_byte_scalar(cond->type)) {
+                    emit_u8(0x80); emit_bp_rm(7, dm.disp); emit_u8(0);  // cmp byte ptr [bp+d], 0
+                } else {
+                    emit_grp1_bp_imm16(7, dm.disp, 0);                  // cmp word ptr [bp+d], 0
+                }
+                emit_jcc(jump_on_true ? 0x75 : 0x74, target);
+                return;
+            }
+            if ((cond->kind == ExprKind::member ||
+                 (cond->kind == ExprKind::unary && cond->op == Tok::star)) &&
+                is_byte_scalar(cond->type)) {
+                PtrBase base = PtrBase::bx;
+                bool is_far = false;
+                int disp = 0;
+                emit_lvalue_idx_disp(cond, base, is_far, disp);
+                if (is_far) emit_u8(0x26);
+                emit_u8(0x80); emit_idx_rm(base, 7, disp); emit_u8(0);  // cmp byte ptr [base+disp], 0
+                emit_jcc(jump_on_true ? 0x75 : 0x74, target);
+                return;
+            }
         }
         emit_expr(cond);
         if (is_32bit_scalar(cond->type)) {
