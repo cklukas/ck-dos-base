@@ -1,0 +1,199 @@
+# Copyright (c) 2026 C. Klukas
+# SPDX-License-Identifier: MIT
+#
+# Pushing a tag vMAJOR.MINOR.PATCH matching VERSION builds and verifies all
+# native SDK archives (Linux x64/arm64, macOS arm64, Windows x64) plus all 5
+# MS-DOS 4.00 bootable/installable media formats, verifies boot in QEMU, and
+# publishes a GitHub Release with SHA256SUMS.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  verify-version:
+    name: Verify tag matches VERSION
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - id: version
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          if [ "v$version" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match VERSION $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  linux-x64-and-dos-media:
+    name: Linux x64 SDK & DOS media
+    needs: verify-version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install QEMU x86
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+      - name: Build, package all DOS media & verify QEMU boot
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          version=${{ needs.verify-version.outputs.version }}
+          cmake -S . -B "$RUNNER_TEMP/build" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/build" --config Release --parallel
+          ctest --test-dir "$RUNNER_TEMP/build" --build-config Release --output-on-failure
+          "$RUNNER_TEMP/build/ckdist" release \
+            --repo-root . \
+            --tool-dir "$RUNNER_TEMP/build" \
+            --verify-manifest docs/build-manifest.json \
+            --output "$RUNNER_TEMP/dist" \
+            --version "$version" \
+            --platform linux-x64
+          "$RUNNER_TEMP/build/ckdist" verify-boot --dist-dir "$RUNNER_TEMP/dist"
+          rm -f "$RUNNER_TEMP/dist/SHA256SUMS"
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: dist-linux-x64
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error
+
+  linux-arm64:
+    name: Linux arm64 SDK
+    needs: verify-version
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build & package Linux arm64 SDK
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          version=${{ needs.verify-version.outputs.version }}
+          cmake -S . -B "$RUNNER_TEMP/build" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/build" --config Release --parallel
+          ctest --test-dir "$RUNNER_TEMP/build" --build-config Release --output-on-failure
+          "$RUNNER_TEMP/build/ckdist" release \
+            --repo-root . \
+            --tool-dir "$RUNNER_TEMP/build" \
+            --verify-manifest docs/build-manifest.json \
+            --output "$RUNNER_TEMP/dist" \
+            --version "$version" \
+            --platform linux-arm64 \
+            --sdk-only
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: dist-linux-arm64
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error
+
+  macos-arm64:
+    name: macOS arm64 SDK
+    needs: verify-version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build & package macOS arm64 SDK
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          version=${{ needs.verify-version.outputs.version }}
+          cmake -S . -B "$RUNNER_TEMP/build" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/build" --config Release --parallel
+          ctest --test-dir "$RUNNER_TEMP/build" --build-config Release --output-on-failure
+          "$RUNNER_TEMP/build/ckdist" release \
+            --repo-root . \
+            --tool-dir "$RUNNER_TEMP/build" \
+            --verify-manifest docs/build-manifest.json \
+            --output "$RUNNER_TEMP/dist" \
+            --version "$version" \
+            --platform macos-arm64 \
+            --sdk-only
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: dist-macos-arm64
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error
+
+  windows-x64:
+    name: Windows x64 SDK
+    needs: verify-version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build & package Windows x64 SDK
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          version=${{ needs.verify-version.outputs.version }}
+          cmake -S . -B "$RUNNER_TEMP/build" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/build" --config Release --parallel
+          ctest --test-dir "$RUNNER_TEMP/build" --build-config Release --output-on-failure
+          if [ -f "$RUNNER_TEMP/build/Release/ckdist.exe" ]; then
+            CKDIST="$RUNNER_TEMP/build/Release/ckdist.exe"
+          else
+            CKDIST="$RUNNER_TEMP/build/ckdist.exe"
+          fi
+          "$CKDIST" release \
+            --repo-root . \
+            --verify-manifest docs/build-manifest.json \
+            --output "$RUNNER_TEMP/dist" \
+            --version "$version" \
+            --platform windows-x64 \
+            --sdk-only
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: dist-windows-x64
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [verify-version, linux-x64-and-dos-media, linux-arm64, macos-arm64, windows-x64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v7.0.1
+        with:
+          path: ${{ runner.temp }}/artifacts
+          merge-multiple: true
+      - name: Generate SHA256SUMS
+        run: |
+          cd "$RUNNER_TEMP/artifacts"
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${{ needs.verify-version.outputs.version }}
+          {
+            echo "# CK-DOS Base $version"
+            echo
+            echo "Clean-room built MS-DOS 4.00 distribution media, 16-bit self-hosting DOS toolchain, and native cross-compiler SDKs."
+            echo
+            echo "## Bootable & Installable DOS Media"
+            echo
+            echo "- \`ckdos-4.00-floppy-1440k.img\` — 3.5\" 1.44 MB Boot + Install Diskette (QEMU, 86Box, PCem, VirtualBox, Gotek)"
+            echo "- \`ckdos-4.00-floppy-720k-disk1.img\` & \`disk2.img\` — 2x720 KB Floppy Set for vintage XT/PS2 systems"
+            echo "- \`ckdos-4.00-hdd-32m.vhd\` — Pre-installed 32 MB Fixed VHD hard disk with \`C:\\DOS\` and 16-bit \`C:\\DEVTOOLS\` SDK"
+            echo "- \`ckdos-4.00-boot.iso\` — El-Torito bootable CD-ROM ISO-9660 image"
+            echo "- \`ckdos-4.00-files.zip\` — File archive for DOSBox-X, XT-IDE CompactFlash, and SD adapters"
+            echo
+            echo "## Cross-Compiler SDKs"
+            echo
+            echo "- \`ck-dos-sdk-$version-linux-x64.zip\`"
+            echo "- \`ck-dos-sdk-$version-linux-arm64.zip\`"
+            echo "- \`ck-dos-sdk-$version-macos-arm64.zip\`"
+            echo "- \`ck-dos-sdk-$version-windows-x64.zip\`"
+            echo "- \`SHA256SUMS\`"
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP"/artifacts/* \
+            --title "CK-DOS Base $version" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag

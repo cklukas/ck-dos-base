@@ -20,6 +20,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -1315,12 +1316,106 @@ void write_pages_site(const fs::path& pages_dir,
     write_text_file(pages_dir / "index.html", html.str());
 }
 
+void verify_boot_media_with_qemu(const fs::path& dist_dir, const std::string& qemu_bin) {
+#if defined(_WIN32)
+    (void)dist_dir;
+    (void)qemu_bin;
+    throw std::runtime_error("verify-boot is supported on POSIX hosts");
+#else
+    ScratchDir scratch("ckdist-qemu");
+
+    auto check_one = [&](const std::string& label,
+                         const std::vector<std::string>& media_args,
+                         const std::string& expected) {
+        const fs::path vga_file = scratch.path() / ("vga_" + label + ".bin");
+        int in_pipe[2]{-1, -1};
+        if (pipe(in_pipe) != 0) throw std::runtime_error("pipe() failed");
+
+        std::vector<std::string> cmd = {
+            qemu_bin, "-m", "4M", "-display", "none", "-serial", "none", "-parallel", "none",
+            "-monitor", "stdio"};
+        cmd.insert(cmd.end(), media_args.begin(), media_args.end());
+
+        const pid_t pid = fork();
+        if (pid < 0) {
+            close(in_pipe[0]);
+            close(in_pipe[1]);
+            throw std::runtime_error("fork() failed for qemu");
+        }
+        if (pid == 0) {
+            dup2(in_pipe[0], STDIN_FILENO);
+            close(in_pipe[0]);
+            close(in_pipe[1]);
+            if (FILE* f = std::fopen("/dev/null", "wb")) {
+                dup2(fileno(f), STDOUT_FILENO);
+                dup2(fileno(f), STDERR_FILENO);
+                std::fclose(f);
+            }
+            std::vector<char*> argv_ptrs;
+            for (auto& s : cmd) argv_ptrs.push_back(s.data());
+            argv_ptrs.push_back(nullptr);
+            execvp(cmd[0].c_str(), argv_ptrs.data());
+            _exit(127);
+        }
+        close(in_pipe[0]);
+
+        auto send_mon = [&](const std::string& line) {
+            const ssize_t wr = write(in_pipe[1], line.data(), line.size());
+            (void)wr;
+        };
+
+        bool matched = false;
+        for (int attempt = 0; attempt < 80; ++attempt) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            std::error_code ec;
+            fs::remove(vga_file, ec);
+            send_mon("pmemsave 0xb8000 4000 \"" + vga_file.string() + "\"\n");
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+            if (fs::is_regular_file(vga_file, ec) && fs::file_size(vga_file, ec) == 4000u) {
+                std::ifstream vin(vga_file, std::ios::binary);
+                std::array<char, 4000> raw{};
+                vin.read(raw.data(), 4000);
+                std::string screen;
+                screen.reserve(2000);
+                for (std::size_t i = 0; i < 4000; i += 2) {
+                    const unsigned char ch = static_cast<unsigned char>(raw[i]);
+                    screen.push_back((ch >= 32 && ch < 127) ? static_cast<char>(ch) : ' ');
+                }
+                if (screen.find(expected) != std::string::npos) {
+                    matched = true;
+                    break;
+                }
+            }
+        }
+        send_mon("quit\n");
+        close(in_pipe[1]);
+        int status = 0;
+        waitpid(pid, &status, 0);
+        if (!matched) {
+            throw std::runtime_error("QEMU boot check timed out for " + label + " (expected '" + expected + "')");
+        }
+        std::cout << "QEMU boot verified: " << label << " -> '" << expected << "'\n";
+    };
+
+    const fs::path f1440 = dist_dir / "ckdos-4.00-floppy-1440k.img";
+    const fs::path f720 = dist_dir / "ckdos-4.00-floppy-720k-disk1.img";
+    const fs::path vhd = dist_dir / "ckdos-4.00-hdd-32m.vhd";
+    const fs::path iso = dist_dir / "ckdos-4.00-boot.iso";
+
+    check_one("floppy-1440k", {"-fda", f1440.string(), "-boot", "a"}, "A:\\>");
+    check_one("floppy-720k-disk1", {"-fda", f720.string(), "-boot", "a"}, "A:\\>");
+    check_one("hdd-32m-vhd", {"-drive", "file=" + vhd.string() + ",format=vpc", "-boot", "c"}, "MS-DOS Version 4.00");
+    check_one("boot-iso", {"-cdrom", iso.string(), "-boot", "d"}, "A:\\>");
+#endif
+}
+
 void print_usage() {
     std::cerr << "Usage:\n"
               << "  ckdist verify-build [--repo-root DIR] [--tool-dir DIR] [--verify-manifest JSON] [--write-manifest JSON]\n"
               << "  ckdist build-dos-tools [--repo-root DIR] [--tool-dir DIR] --out-dir DIR\n"
               << "  ckdist release [--repo-root DIR] [--tool-dir DIR] --output DIR [--version VER] [--platform PLAT]\n"
-              << "                 [--verify-manifest JSON] [--sdk-only] [--pages-out DIR]\n";
+              << "                 [--verify-manifest JSON] [--sdk-only] [--pages-out DIR]\n"
+              << "  ckdist verify-boot --dist-dir DIR [--qemu QEMU_BIN]\n";
 }
 
 }  // namespace
@@ -1340,6 +1435,7 @@ int main(int argc, char** argv) {
         fs::path pages_dir;
         std::string version;
         std::string platform = default_platform_tag();
+        std::string qemu_bin = "qemu-system-i386";
         bool sdk_only = false;
 
         for (int i = 2; i < argc; ++i) {
@@ -1348,10 +1444,11 @@ int main(int argc, char** argv) {
             else if (a == "--tool-dir" && i + 1 < argc) tool_dir = argv[++i];
             else if (a == "--verify-manifest" && i + 1 < argc) verify_manifest = argv[++i];
             else if (a == "--write-manifest" && i + 1 < argc) write_manifest = argv[++i];
-            else if ((a == "--output" || a == "--out-dir" || a == "-o") && i + 1 < argc) output_dir = argv[++i];
+            else if ((a == "--output" || a == "--out-dir" || a == "--dist-dir" || a == "-o") && i + 1 < argc) output_dir = argv[++i];
             else if (a == "--pages-out" && i + 1 < argc) pages_dir = argv[++i];
             else if (a == "--version" && i + 1 < argc) version = argv[++i];
             else if (a == "--platform" && i + 1 < argc) platform = argv[++i];
+            else if (a == "--qemu" && i + 1 < argc) qemu_bin = argv[++i];
             else if (a == "--sdk-only") sdk_only = true;
             else {
                 std::cerr << "ckdist: unrecognized option: " << a << "\n";
@@ -1410,6 +1507,14 @@ int main(int argc, char** argv) {
             return 0;
         }
 
+        if (subcmd == "verify-boot") {
+            if (output_dir.empty()) {
+                std::cerr << "ckdist verify-boot requires --dist-dir\n";
+                return 1;
+            }
+            verify_boot_media_with_qemu(output_dir, qemu_bin);
+            return 0;
+        }
         print_usage();
         return 1;
     } catch (const std::exception& ex) {

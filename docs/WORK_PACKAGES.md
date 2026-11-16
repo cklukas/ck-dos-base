@@ -282,3 +282,27 @@ Close the remaining C89 struct-value limitation in `ckcl` and upgrade the 16-bit
 | `CKLINK.EXE` | 65,539 B (`LINK.EXE`) | 42,521 B | 84,368 B (`-AM`) | 54,096 B (`-AS`) | 50,480 B (`-AS`) | **43,880 B** (`-AS`) | +98.4% → **+3.2%** |
 | **Total (9 tools)** | **267,317 B** | **174,437 B** | **308,032 B** | **206,640 B** | **193,776 B** | **168,486 B** | **+76.6% → -3.4%** |
 
+---
+
+# Phase 3: Zero-Python C89 Release Media Tooling, Dual CI/CD & Standalone C89 SDK Roadmap
+
+## WP-16: Portable C89 Disk/ISO/ZIP Builder (`ckmkimg` / `CKMKIMG.EXE`), `ckdist` & Dual CI/CD (`ckgit@rpi4` + GitHub) — DONE
+
+- [x] **Portable 16-bit/64-bit C89 media engine ([`diskimg_core.c`](file:///Volumes/PRO-BLADE/git/ck-dos-base/src/devtools/core/diskimg_core.c)):** Streaming FAT12 (`360K`/`720K`/`1.2M`/`1.44M`) & FAT16 volume formatter (contiguous `IO.SYS`/`MSDOS.SYS` root-slot placement, nested subdirectories, deterministic BPB & timestamps), MBR + Fixed VHD hard-disk builder, El-Torito bootable ISO-9660 writer, and IEEE 802.3 CRC-32 PKZIP writer.
+- [x] **Host `ckmkimg` + 16-bit DOS `CKMKIMG.EXE` ([`ckmkimg_main.cpp`](file:///Volumes/PRO-BLADE/git/ck-dos-base/src/devtools/ckmkimg_main.cpp), [`ckmkimg.c`](file:///Volumes/PRO-BLADE/git/ck-dos-base/src/devtools/dos/ckmkimg.c)):** Creates bootable DOS floppy images on macOS/Linux/Windows and natively from inside 16-bit MS-DOS 4.00 (`28,578 B` `.EXE`, verified byte-for-byte identical in QEMU).
+- [x] **Zero-Python build verifier & Option B release packager ([`ckdist_main.cpp`](file:///Volumes/PRO-BLADE/git/ck-dos-base/src/devtools/ckdist_main.cpp)):** Builds runtime + all 60 MS-DOS 4.00 directories, verifies all 654 SHA-256 manifest hashes, compiles all 10 16-bit DOS tools, packages all 5 Option B release media (`1440k.img`, `2x720k`, `hdd-32m.vhd`, `boot.iso`, `files.zip`) + cross-SDK `.zip` + `SHA256SUMS` + `ck-pages` site, and verifies headless QEMU boot across all 4 bootable formats.
+- [x] **Automated CI/CD & tag-triggered releases on `ckgit@rpi4` & GitHub ([`.ckgit/ci.yml`](file:///Volumes/PRO-BLADE/git/ck-dos-base/.ckgit/ci.yml), [`build.yml`](file:///Volumes/PRO-BLADE/git/ck-dos-base/.github/workflows/build.yml), [`release.yml`](file:///Volumes/PRO-BLADE/git/ck-dos-base/.github/workflows/release.yml), [`build-ci.cmake`](file:///Volumes/PRO-BLADE/git/ck-dos-base/packaging/windows/build-ci.cmake)).**
+
+## Planned Next Phase (`WP-17`..`WP-25`): General-Purpose Standalone C89 / MS C 5.10 `ckcl` SDK
+
+- [ ] **WP-17:** Preprocessor C89 conformance (`#line` tracking, multi-line macros, C89 `#`/`##` expansion order, `#pragma pack`, `file(line,col)` diagnostics).
+- [ ] **WP-18:** Core C89 type/promotion/initializer/pointer bug-hardening (32-bit unary `-`/`~`, `common_arith_type` signedness, 32-bit `far` pointer `==`/`!=`, indirect calls via global function pointers, `sizeof("str")`, local brace initializers, lexical `typedef`/tag scoping).
+- [ ] **WP-19:** Struct bitfields (signed/unsigned shift+mask loads & RMW stores), `O(1)` `switch` jump tables, and `_interrupt` `DS = DGROUP` ABI parity.
+- [ ] **WP-20:** Clean-room C89 & DOS header suite (`runtime/include/`) and standalone `ckcl` compile-and-link driver mode (`-Fe`, `@rsp`, `/link`).
+- [ ] **WP-21:** All 6 x86 memory models (`-AT`, `-AS`, `-AC`, `-AM`, `-AL`, `-AH`), `huge` 20-bit pointer normalization, and separate `S/M/C/LLIBCE.LIB` builds.
+- [ ] **WP-22:** Full multi-model C89 & DOS CRT (512B-buffered `FILE*` with CRLF translation, streaming `vprintf`/`vsscanf`, `qsort`, `setjmp`/`longjmp`, `getenv`/`spawn*`, `_dos_findfirst`, `stat`, `<time.h>`).
+- [ ] **WP-23:** IEEE-754 `float`/`double` (`-FPa` software float helpers & `-FPi87` inline 8087 FPU instructions + `<math.h>`).
+- [ ] **WP-24:** Inline `_asm { ... }` blocks and `-Oi` compiler intrinsics (`inp`/`outp`, `_disable`/`_enable`).
+- [ ] **WP-25:** Differential testing against MS `CL.EXE` 5.10 in QEMU (`c-testsuite`, 16-bit `gcc.c-torture`, 1,000+ `csmith` seeds, cross-`.OBJ` ABI fuzzer, and external DOS utility ports).
+
+

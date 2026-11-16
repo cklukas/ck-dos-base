@@ -1,0 +1,66 @@
+# Copyright (c) 2026 C. Klukas
+# SPDX-License-Identifier: MIT
+#
+# Automated zero-Python CI/CD and release pipeline on ckgit@rpi4:
+#   - Every push to main builds all native C/C++20 tools, runs unit tests,
+#     builds all 60 MS-DOS 4.00 directories + 10 16-bit self-hosting DOS tools
+#     (including CKMKIMG.EXE), verifies all 654 SHA-256 manifest hashes,
+#     packages all Option B DOS media (1.44M floppy, 2x720K floppy set,
+#     32M fixed VHD, El-Torito ISO, files.zip) + native SDK archives,
+#     boot-tests all 4 bootable images in headless QEMU, and updates ck-pages.
+#   - Pushing a tag vMAJOR.MINOR.PATCH matching VERSION publishes durable
+#     release bundles across Linux arm64 and Windows x64.
+version: 2
+on:
+  branches: [main]
+  tags: [v*]
+jobs:
+  - name: linux-arm64
+    runs_on: [linux, arm64]
+    steps:
+      - name: build-and-test
+        script: |
+          set -eu
+          version=$(tr -d '[:space:]' < VERSION)
+          case "${CKGIT_REF:-}" in
+            refs/tags/*)
+              tag=${CKGIT_REF#refs/tags/}
+              if [ "$tag" != "v$version" ]; then
+                echo "tag $tag does not match VERSION $version" >&2
+                exit 1
+              fi
+              ;;
+          esac
+          cmake -G Ninja -S "$PWD" -B "$TMPDIR/build" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$TMPDIR/build" --config Release --parallel 4
+          ctest --test-dir "$TMPDIR/build" --output-on-failure
+      - name: package-dos-and-sdk
+        script: |
+          set -eu
+          version=$(tr -d '[:space:]' < VERSION)
+          "$TMPDIR/build/ckdist" release \
+            --repo-root "$PWD" \
+            --tool-dir "$TMPDIR/build" \
+            --verify-manifest "$PWD/docs/build-manifest.json" \
+            --output "$PWD/dist" \
+            --pages-out "$PWD/public" \
+            --version "$version" \
+            --platform linux-arm64
+      - name: verify-boot-media-in-qemu
+        script: |
+          set -eu
+          "$TMPDIR/build/ckdist" verify-boot --dist-dir "$PWD/dist"
+    artifacts:
+      name: dos-media-and-linux-arm64-sdk
+      paths: [dist]
+  - name: windows-x64
+    runs_on: [windows, x64]
+    steps:
+      - name: build-and-package-windows-sdk
+        run: [cmake.exe, -P, packaging/windows/build-ci.cmake]
+    artifacts:
+      name: windows-x64-sdk
+      paths: [dist]
+pages:
+  path: public
+  job: linux-arm64

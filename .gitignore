@@ -1,5 +1,7 @@
 /build/
 /package/
+/dist/
+/public/
 /_CPack_Packages/
 /ck-dos-base-tools-*.tar.gz
 /.cache/
