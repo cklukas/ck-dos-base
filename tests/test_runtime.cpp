@@ -165,4 +165,90 @@ DOSBASE_TEST(runtime_clean_room_libs_build_package_and_link) {
     DOSBASE_TEST_EXPECT_EQ(mz.header().signature, std::uint16_t{0x5A4D});
     DOSBASE_TEST_EXPECT(mz.header().minimum_extra_paragraphs >= 768u);
 }
+
+DOSBASE_TEST(runtime_medium_model_mlibce_float_and_dos_link) {
+    const fs::path rt_root = fs::path(DOSBASE_SOURCE_DIR) / "runtime";
+    const fs::path tool_dir(DOSBASE_TOOL_DIR);
+
+    TemporaryDirectory temp;
+    const fs::path d = temp.path();
+
+    auto run_asm = [&](const fs::path& src, const std::string& obj, bool farcode) {
+        const fs::path local_asm = d / src.filename();
+        fs::copy_file(src, local_asm, fs::copy_options::overwrite_existing);
+        std::vector<std::string> args = {"-Mx"};
+        if (farcode) args.push_back("-DFARCODE");
+        args.push_back(src.filename().string() + "," + obj + ";");
+        DOSBASE_TEST_EXPECT_EQ(
+            dosbase::bootstrap_test::run_tool(tool_dir, "ckmasm", args, d), 0);
+    };
+
+    auto run_cc_mm = [&](const fs::path& src, const std::string& obj, bool omit_lib = true) {
+        std::vector<std::string> args = {"-c", "-AM", "-I" + (rt_root / "include").string()};
+        if (omit_lib) args.push_back("-Zl");
+        args.push_back("-Fo" + obj);
+        args.push_back(src.string());
+        DOSBASE_TEST_EXPECT_EQ(
+            dosbase::bootstrap_test::run_tool(tool_dir, "ckcl", args, d), 0);
+    };
+
+    run_asm(rt_root / "crt" / "crt0.asm", "MCRT0.OBJ", true);
+    run_asm(rt_root / "crt" / "crt_fmem.asm", "CRT_FMEM.OBJ", false);
+    run_cc_mm(rt_root / "crt" / "crt_mem.c", "CRT_MEM.OBJ");
+    run_cc_mm(rt_root / "crt" / "crt_str.c", "CRT_STR.OBJ");
+    run_cc_mm(rt_root / "crt" / "crt_fp.c", "CRT_FP.OBJ");
+    run_cc_mm(rt_root / "crt" / "crt_math.c", "CRT_MATH.OBJ");
+    run_cc_mm(rt_root / "crt" / "crt_dos.c", "CRT_DOS.OBJ");
+    run_cc_mm(rt_root / "crt" / "crt_mstdio.c", "CRT_MSTDIO.OBJ");
+
+    {
+        std::ostringstream rsp;
+        rsp << "MLIBCE.LIB\nY\n"
+            << "+MCRT0.OBJ&\n+CRT_FMEM.OBJ&\n+CRT_MEM.OBJ&\n+CRT_STR.OBJ&\n"
+            << "+CRT_FP.OBJ&\n+CRT_MATH.OBJ&\n+CRT_DOS.OBJ&\n+CRT_MSTDIO.OBJ;\n";
+        write_text_file(d / "MLIBCE.RSP", rsp.str());
+        DOSBASE_TEST_EXPECT_EQ(
+            dosbase::bootstrap_test::run_tool(tool_dir, "cklib", {"@MLIBCE.RSP"}, d), 0);
+    }
+
+    const OmfLibrary mlib = OmfLibrary::parse(read_binary_file(d / "MLIBCE.LIB"));
+    DOSBASE_TEST_EXPECT(has_symbol(mlib, "___dadd"));
+    DOSBASE_TEST_EXPECT(has_symbol(mlib, "_sin"));
+    DOSBASE_TEST_EXPECT(has_symbol(mlib, "_pow"));
+    DOSBASE_TEST_EXPECT(has_symbol(mlib, "_strtod"));
+    DOSBASE_TEST_EXPECT(has_symbol(mlib, "__fmalloc"));
+    DOSBASE_TEST_EXPECT(has_symbol(mlib, "_spawnve"));
+
+    write_text_file(
+        d / "MAPP.C",
+        "#include <dos.h>\n"
+        "#include <float.h>\n"
+        "#include <i86.h>\n"
+        "#include <malloc.h>\n"
+        "#include <math.h>\n"
+        "#include <process.h>\n"
+        "#include <stdio.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "#include <sys/stat.h>\n"
+        "int main(void) {\n"
+        "    char buf[64];\n"
+        "    int exp = 0;\n"
+        "    double x = strtod(\"3.141592653589793\", NULL);\n"
+        "    double y = sin(x / 6.0) + pow(2.0, 3.0) + ldexp(frexp(1.5, &exp), exp);\n"
+        "    char __far *fp = (char __far *)_fmalloc(256);\n"
+        "    if (fp) { _fmemset(fp, 'A', 16); _ffree(fp); }\n"
+        "    sprintf(buf, \"%.*E|% .7G|% ld\", 4, y, y, -42L);\n"
+        "    return (buf[0] != '\\0' && y < DBL_MAX) ? 0 : 1;\n"
+        "}\n");
+    run_cc_mm(d / "MAPP.C", "MAPP.OBJ", false);
+
+    DOSBASE_TEST_EXPECT_EQ(
+        dosbase::bootstrap_test::run_tool(
+            tool_dir, "cklink", {"MAPP.OBJ,MAPP.EXE,,MLIBCE.LIB;"}, d),
+        0);
+    DOSBASE_TEST_EXPECT(fs::is_regular_file(d / "MAPP.EXE"));
+    const MzImage mz = MzImage::parse(read_binary_file(d / "MAPP.EXE"));
+    DOSBASE_TEST_EXPECT_EQ(mz.header().signature, std::uint16_t{0x5A4D});
+}
 #endif

@@ -854,9 +854,9 @@ public:
         }
         if (!opts_.omit_default_lib) {
             std::string lib = "SLIBC";
-            if (opts_.model == MemoryModel::medium_model) lib = "MLIBC";
-            else if (opts_.model == MemoryModel::compact_model) lib = "CLIBC";
-            else if (opts_.model == MemoryModel::large_model) lib = "LLIBC";
+            if (opts_.model == MemoryModel::medium_model) lib = "MLIBCE";
+            else if (opts_.model == MemoryModel::compact_model) lib = "CLIBCE";
+            else if (opts_.model == MemoryModel::large_model) lib = "LLIBCE";
             std::vector<std::uint8_t> b = {0x00, 0x9F};
             b.insert(b.end(), lib.begin(), lib.end());
             emit_rec(0x88, b);

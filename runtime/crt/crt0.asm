@@ -33,6 +33,10 @@ __heap_ptr  DW  0
 __heap_limit DW 0
 __prog_name DB  'DOS', 0
 __env_empty DW  0
+IFDEF FARCODE
+        PUBLIC  __stack_bottom
+__stack_bottom DW 0
+ENDIF
         EXTRN   _edata:BYTE
         EXTRN   _end:BYTE
 _DATA   ENDS
@@ -53,6 +57,7 @@ DGROUP  GROUP   NULL, _DATA, CONST, _BSS, _STACK
 
 IFDEF FARCODE
         EXTRN   _main:FAR
+        EXTRN   _exit:FAR
 CRT0_TEXT SEGMENT BYTE PUBLIC 'CODE'
         ASSUME  CS:CRT0_TEXT, DS:DGROUP, SS:DGROUP
 ELSE
@@ -87,6 +92,41 @@ heap_shift:
         mov     cl, 4
         shl     bx, cl
 heap_chk:
+IFDEF FARCODE
+        mov     dx, sp
+        inc     dx
+        and     dx, 0FFFEh
+        cmp     bx, dx
+        jbe     far_no_sp_move
+        mov     sp, bx
+        mov     ax, dx
+        add     ax, 18432
+        jc      far_all_stack
+        cmp     bx, ax
+        jbe     far_all_stack
+        mov     __heap_ptr, dx
+        mov     ax, bx
+        sub     ax, 18432
+        mov     __heap_limit, ax
+        mov     __stack_bottom, ax
+        jmp     SHORT far_shrink
+far_all_stack:
+        mov     __stack_bottom, dx
+        jmp     SHORT far_shrink
+far_no_sp_move:
+        mov     __stack_bottom, sp
+far_shrink:
+        push    es
+        mov     es, __psp
+        mov     ax, DGROUP
+        add     ax, 1000h
+        mov     bx, __psp
+        sub     ax, bx
+        mov     bx, ax
+        mov     ah, 4Ah
+        int     21h
+        pop     es
+ELSE
         mov     dx, sp
         add     dx, 2048
         jc      no_heap_expand
@@ -110,6 +150,7 @@ heap_chk:
         mov     ah, 4Ah
         int     21h
         pop     es
+ENDIF
 no_heap_expand:
         ; Zero uninitialized BSS and communal segments ([DGROUP:_edata .. DGROUP:_end))
         push    ds
@@ -210,10 +251,13 @@ args_done:
         push    dx
 IFDEF FARCODE
         call    FAR PTR _main
+        add     sp, 6
+        push    ax
+        call    FAR PTR _exit
 ELSE
         call    _main
-ENDIF
         add     sp, 6
+ENDIF
 
         ; Exit with return code in AL
         mov     ah, 4Ch
