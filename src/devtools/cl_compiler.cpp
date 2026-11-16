@@ -4198,7 +4198,17 @@ private:
         return try_resolve_direct_mem(out_base_e, dm);
     }
 
-    bool can_emit_ptr_to_bx_preserving_ax_dx(const ExprPtr& ptr_expr) const {
+    static ExprPtr unwrap_same_ptr_cast(ExprPtr p) {
+        while (p && p->kind == ExprKind::cast && p->type && p->type->kind == TypeKind::t_ptr &&
+               p->lhs && p->lhs->type && p->lhs->type->kind == TypeKind::t_ptr &&
+               p->lhs->type->is_far == p->type->is_far) {
+            p = p->lhs;
+        }
+        return p;
+    }
+
+    bool can_emit_ptr_to_bx_preserving_ax_dx(const ExprPtr& raw_ptr_expr) const {
+        const ExprPtr ptr_expr = unwrap_same_ptr_cast(raw_ptr_expr);
         if (!ptr_expr || !ptr_expr->type) return false;
         if (ptr_expr->kind == ExprKind::binary &&
             (ptr_expr->op == Tok::plus || ptr_expr->op == Tok::minus) &&
@@ -4216,8 +4226,8 @@ private:
         if (ptr_expr->type->kind == TypeKind::t_array && ptr_expr->kind == ExprKind::member) {
             return can_emit_lvalue_bx_preserving_ax_dx(ptr_expr);
         }
-        if (ptr_expr->type->kind == TypeKind::t_ptr && !ptr_expr->type->is_far) {
-            if (find_expr_reg_var(ptr_expr) != RegVar::none) return true;
+        if (ptr_expr->type->kind == TypeKind::t_ptr) {
+            if (!ptr_expr->type->is_far && find_expr_reg_var(ptr_expr) != RegVar::none) return true;
             DirectMem dm;
             return try_resolve_direct_mem(ptr_expr, dm);
         }
@@ -4237,7 +4247,8 @@ private:
         return false;
     }
 
-    void emit_ptr_to_idx(const ExprPtr& ptr_expr, PtrBase& out_base, bool& out_far, int& inout_disp) {
+    void emit_ptr_to_idx(const ExprPtr& raw_ptr_expr, PtrBase& out_base, bool& out_far, int& inout_disp) {
+        const ExprPtr ptr_expr = unwrap_same_ptr_cast(raw_ptr_expr);
         if (ptr_expr && ptr_expr->kind == ExprKind::binary &&
             (ptr_expr->op == Tok::plus || ptr_expr->op == Tok::minus) &&
             ptr_expr->lhs && ptr_expr->lhs->type &&
@@ -4346,22 +4357,32 @@ private:
             inout_disp += sub_disp;
             return;
         }
-        if (ptr_expr && ptr_expr->type && ptr_expr->type->kind == TypeKind::t_ptr &&
-            !ptr_expr->type->is_far) {
-            if (const RegVar rv = find_expr_reg_var(ptr_expr); rv != RegVar::none) {
-                out_base = (rv == RegVar::si) ? PtrBase::si : PtrBase::di;
-                out_far = false;
-                return;
+        if (ptr_expr && ptr_expr->type && ptr_expr->type->kind == TypeKind::t_ptr) {
+            if (!ptr_expr->type->is_far) {
+                if (const RegVar rv = find_expr_reg_var(ptr_expr); rv != RegVar::none) {
+                    out_base = (rv == RegVar::si) ? PtrBase::si : PtrBase::di;
+                    out_far = false;
+                    return;
+                }
             }
             DirectMem dm;
             if (try_resolve_direct_mem(ptr_expr, dm)) {
                 out_base = PtrBase::bx;
-                out_far = false;
-                if (dm.kind == DirectMem::bp_rel) {
-                    emit_u8(0x8B); emit_bp_rm(3, dm.disp);  // mov bx, [bp+d]
+                out_far = ptr_expr->type->is_far;
+                if (out_far) {
+                    if (dm.kind == DirectMem::bp_rel) {
+                        emit_u8(0xC4); emit_bp_rm(3, dm.disp);  // les bx, [bp+d]
+                    } else {
+                        emit_u8(0xC4); emit_u8(0x1E);           // les bx, [sym+d]
+                        emit_dgroup_disp(dm.sym, dm.disp);
+                    }
                 } else {
-                    emit_u8(0x8B); emit_u8(0x1E);           // mov bx, [sym+d]
-                    emit_dgroup_disp(dm.sym, dm.disp);
+                    if (dm.kind == DirectMem::bp_rel) {
+                        emit_u8(0x8B); emit_bp_rm(3, dm.disp);  // mov bx, [bp+d]
+                    } else {
+                        emit_u8(0x8B); emit_u8(0x1E);           // mov bx, [sym+d]
+                        emit_dgroup_disp(dm.sym, dm.disp);
+                    }
                 }
                 return;
             }
@@ -4843,6 +4864,9 @@ private:
                     const bool is_grp1 = (bin_op == Tok::plus || bin_op == Tok::minus ||
                                           bin_op == Tok::amp || bin_op == Tok::pipe ||
                                           bin_op == Tok::caret);
+                    const bool is_far_ptr_addsub =
+                        lhs_is_ptr && e->type->is_far && (bin_op == Tok::plus || bin_op == Tok::minus);
+                    const bool can_word_inplace = !is_32bit_scalar(e->type) || is_far_ptr_addsub;
                     const std::uint8_t grp1_sub = bin_op == Tok::plus    ? 0
                                                   : bin_op == Tok::pipe  ? 1
                                                   : bin_op == Tok::amp   ? 4
@@ -4850,7 +4874,7 @@ private:
                                                                          : 6;
                     if (dm.kind == DirectMem::bp_rel) {
                         const int disp = dm.disp;
-                        if (!is_32bit_scalar(e->type) && is_grp1 && e->rhs->kind == ExprKind::int_lit) {
+                        if (can_word_inplace && is_grp1 && e->rhs->kind == ExprKind::int_lit) {
                             const std::uint16_t imm = static_cast<std::uint16_t>(
                                 static_cast<std::uint16_t>(e->rhs->int_val) * ptr_scale);
                             if (is_byte_scalar(e->type)) {
@@ -4870,7 +4894,7 @@ private:
                             if (need_value) load_direct_mem(e->type, dm);
                             break;
                         }
-                        if (!need_value && !is_32bit_scalar(e->type) && !is_byte_scalar(e->type) && is_grp1) {
+                        if (!need_value && can_word_inplace && !is_byte_scalar(e->type) && is_grp1) {
                             emit_expr(e->rhs, true);
                             if (ptr_scale > 1) emit_mul16_ax_const(ptr_scale, false);
                             const std::uint8_t mr_opc = bin_op == Tok::plus    ? 0x01
@@ -4916,7 +4940,7 @@ private:
                             break;
                         }
                     } else {
-                        if (!is_32bit_scalar(e->type) && is_grp1 && e->rhs->kind == ExprKind::int_lit) {
+                        if (can_word_inplace && is_grp1 && e->rhs->kind == ExprKind::int_lit) {
                             const std::uint16_t imm = static_cast<std::uint16_t>(
                                 static_cast<std::uint16_t>(e->rhs->int_val) * ptr_scale);
                             if (is_byte_scalar(e->type)) {
@@ -4947,7 +4971,7 @@ private:
                             if (need_value) load_direct_mem(e->type, dm);
                             break;
                         }
-                        if (!need_value && !is_32bit_scalar(e->type) && !is_byte_scalar(e->type) && is_grp1) {
+                        if (!need_value && can_word_inplace && !is_byte_scalar(e->type) && is_grp1) {
                             emit_expr(e->rhs, true);
                             if (ptr_scale > 1) emit_mul16_ax_const(ptr_scale, false);
                             const std::uint8_t mr_opc = bin_op == Tok::plus    ? 0x01
@@ -5076,7 +5100,8 @@ private:
                     }
 
                     // Fast in-place ++ / -- on DirectMem ([bp+d] or [sym+d])
-                    if (DirectMem dm; !is32 && try_resolve_direct_mem(e->lhs, dm)) {
+                    const bool is_far_ptr = e->type && e->type->kind == TypeKind::t_ptr && e->type->is_far;
+                    if (DirectMem dm; (!is32 || is_far_ptr) && try_resolve_direct_mem(e->lhs, dm)) {
                         if (dm.kind == DirectMem::bp_rel) {
                             const int disp = dm.disp;
                             auto emit_mod = [&]() {

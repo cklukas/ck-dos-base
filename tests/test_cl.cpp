@@ -692,3 +692,21 @@ DOSBASE_TEST(cl_base_index_addressing_and_imm_stores) {
         DOSBASE_TEST_EXPECT(!contains_seq(code, {0x50}));
     }
 }
+
+DOSBASE_TEST(cl_far_ptr_les_and_inplace_arith) {
+    const char* src =
+        "int scan_dbcs(unsigned char far *ptr) {\n"
+        "    int count = 0;\n"
+        "    for (; *(unsigned int far *)ptr != 0; ptr += 2) {\n"
+        "        count += ptr[0] + ptr[1];\n"
+        "    }\n"
+        "    return count;\n"
+        "}\n";
+    const auto obj = compile_c_to_omf(src, CompileOptions{});
+    const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+    // Uses 3-byte `les bx, [bp+4]` (C4 5E 04) instead of 10-byte mov ax/dx + mov es, dx
+    DOSBASE_TEST_EXPECT(contains_seq(code, {0xC4, 0x5E, 0x04}));
+    DOSBASE_TEST_EXPECT(!contains_seq(code, {0x8E, 0xC2}));  // zero `mov es, dx`
+    // Uses 4-byte `add word ptr [bp+4], 2` (83 46 04 02) for `ptr += 2`
+    DOSBASE_TEST_EXPECT(contains_seq(code, {0x83, 0x46, 0x04, 0x02}));
+}
