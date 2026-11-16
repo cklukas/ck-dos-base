@@ -732,3 +732,49 @@ DOSBASE_TEST(cl_direct_byte_and_mem_comparisons) {
     DOSBASE_TEST_EXPECT(contains_seq(code, {0x3A, 0x46, 0x06}) || contains_seq(code, {0x38, 0x04}));
     DOSBASE_TEST_EXPECT(!contains_seq(code, {0x50}));  // zero push ax!
 }
+
+DOSBASE_TEST(cl_two_tier_frame_and_per_block_reg_reuse) {
+    // 1. Two-tier layout places scalar `hot` at [bp-2] (disp8) even when declared after char bigbuf[256]
+    {
+        const char* src =
+            "int tier_order(void) {\n"
+            "    char bigbuf[256];\n"
+            "    volatile int hot = 7;\n"
+            "    bigbuf[0] = 1;\n"
+            "    return hot + bigbuf[0];\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        // `hot = 7` uses disp8 [bp-2]: mov word ptr [bp-2], 7 (C7 46 FE 07 00)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0xC7, 0x46, 0xFE, 0x07, 0x00}));
+    }
+
+    // 2. Disjoint sibling blocks both promote their hot pointers to DI while outer `sum` uses SI
+    {
+        const char* src =
+            "int two_loops(int *a, int na, int *b, int nb) {\n"
+            "    int sum = 0;\n"
+            "    {\n"
+            "        int *p1 = a;\n"
+            "        int *e1 = a + na;\n"
+            "        while (p1 < e1) { sum += *p1; p1++; }\n"
+            "    }\n"
+            "    {\n"
+            "        int *p2 = b;\n"
+            "        int *e2 = b + nb;\n"
+            "        while (p2 < e2) { sum += *p2; p2++; }\n"
+            "    }\n"
+            "    return sum;\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        // Count `inc si; inc si` (46 46) or `inc di; inc di` (47 47) — reused across BOTH loop bodies!
+        int si_incs = 0;
+        int di_incs = 0;
+        for (std::size_t i = 0; i + 1 < code.size(); ++i) {
+            if (code[i] == 0x46 && code[i + 1] == 0x46) ++si_incs;
+            if (code[i] == 0x47 && code[i + 1] == 0x47) ++di_incs;
+        }
+        DOSBASE_TEST_EXPECT(si_incs >= 2 || di_incs >= 2);
+    }
+}

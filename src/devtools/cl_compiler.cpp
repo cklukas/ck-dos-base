@@ -3239,38 +3239,253 @@ private:
         walk_stmt(fn.body, 0);
         if (calls_setjmp) return;
 
-        std::vector<RegCand> viable;
-        for (const auto& [off, c] : cands) {
-            (void)off;
-            if (!c.eligible || c.addr_taken || c.uses < 2) continue;
-            const int overhead = c.is_param ? 5 : 2;
-            if (c.byte_savings > overhead || (c.is_register && c.uses >= 2) ||
-                (c.score >= 15 && c.uses >= 2)) {
-                viable.push_back(c);
+        std::function<bool(const StmtPtr&)> subtree_has_jump_target = [&](const StmtPtr& s) -> bool {
+            if (!s) return false;
+            switch (s->kind) {
+                case StmtKind::label_stmt:
+                case StmtKind::case_stmt:
+                case StmtKind::default_stmt:
+                    return true;
+                case StmtKind::block:
+                    for (const StmtPtr& sub : s->stmts) {
+                        if (subtree_has_jump_target(sub)) return true;
+                    }
+                    return false;
+                case StmtKind::if_stmt:
+                    return subtree_has_jump_target(s->body) || subtree_has_jump_target(s->else_body);
+                case StmtKind::while_stmt:
+                case StmtKind::do_while_stmt:
+                case StmtKind::for_stmt:
+                case StmtKind::switch_stmt:
+                    return subtree_has_jump_target(s->body);
+                default:
+                    return false;
             }
-        }
-        std::sort(viable.begin(), viable.end(), [](const RegCand& a, const RegCand& b) {
-            if (a.score != b.score) return a.score > b.score;
-            if (a.byte_savings != b.byte_savings) return a.byte_savings > b.byte_savings;
-            return a.var_id < b.var_id;
-        });
+        };
 
-        if (viable.size() >= 1) {
-            reg_by_var_id_[viable[0].var_id] = RegVar::si;
-            use_si_ = true;
-        }
-        if (viable.size() >= 2) {
-            reg_by_var_id_[viable[1].var_id] = RegVar::di;
-            use_di_ = true;
-        }
-
-        int min_unpromoted = min_temp_bp_off;
-        for (const auto& [vid, boff] : all_locals) {
-            if (reg_by_var_id_.find(vid) == reg_by_var_id_.end() && boff < min_unpromoted) {
-                min_unpromoted = boff;
+        struct BlockTreeNode {
+            bool is_root = false;
+            bool has_jump_target = false;
+            std::vector<int> cand_ids;
+            std::vector<std::size_t> children;
+        };
+        std::vector<BlockTreeNode> btree;
+        {
+            BlockTreeNode root_node;
+            root_node.is_root = true;
+            for (const ParamDecl& p : fn.params) {
+                if (!p.name.empty() && p.var_id != 0) root_node.cand_ids.push_back(p.var_id);
             }
+            for (const LocalVar& lv : fn.body->locals) {
+                root_node.cand_ids.push_back(lv.var_id);
+            }
+            btree.push_back(std::move(root_node));
+
+            std::function<void(const StmtPtr&, std::size_t)> build_btree =
+                [&](const StmtPtr& s, std::size_t parent_idx) {
+                    if (!s) return;
+                    if (s->kind == StmtKind::block) {
+                        const std::size_t my_idx = btree.size();
+                        BlockTreeNode node;
+                        node.is_root = false;
+                        node.has_jump_target = subtree_has_jump_target(s);
+                        for (const LocalVar& lv : s->locals) node.cand_ids.push_back(lv.var_id);
+                        btree.push_back(std::move(node));
+                        btree[parent_idx].children.push_back(my_idx);
+                        for (const StmtPtr& sub : s->stmts) build_btree(sub, my_idx);
+                        return;
+                    }
+                    switch (s->kind) {
+                        case StmtKind::if_stmt:
+                            build_btree(s->body, parent_idx);
+                            build_btree(s->else_body, parent_idx);
+                            break;
+                        case StmtKind::while_stmt:
+                        case StmtKind::do_while_stmt:
+                        case StmtKind::for_stmt:
+                        case StmtKind::switch_stmt:
+                        case StmtKind::case_stmt:
+                        case StmtKind::default_stmt:
+                        case StmtKind::label_stmt:
+                            build_btree(s->body, parent_idx);
+                            break;
+                        default:
+                            break;
+                    }
+                };
+            for (const StmtPtr& sub : fn.body->stmts) build_btree(sub, 0);
         }
-        effective_frame_size_ = static_cast<std::size_t>(-min_unpromoted);
+
+        auto run_reg_tree_dp = [&](RegVar rv) -> bool {
+            const std::size_t n = btree.size();
+            std::vector<int> dp_score(n, 0);
+            std::vector<int> pick_own(n, 0);
+            for (std::size_t i = n; i > 0; --i) {
+                const std::size_t u = i - 1;
+                int child_sum = 0;
+                for (std::size_t ch : btree[u].children) child_sum += dp_score[ch];
+
+                int best_id = 0;
+                int best_sc = 0;
+                int best_sav = 0;
+                if (btree[u].is_root || !btree[u].has_jump_target) {
+                    for (int vid : btree[u].cand_ids) {
+                        if (reg_by_var_id_.find(vid) != reg_by_var_id_.end()) continue;
+                        const auto it = cands.find(vid);
+                        if (it == cands.end()) continue;
+                        const RegCand& c = it->second;
+                        if (!c.eligible || c.addr_taken || c.uses < 2) continue;
+                        const int min_sav = c.is_param ? 4 : (btree[u].is_root ? 3 : 2);
+                        if (c.byte_savings < min_sav && !c.is_register && c.score < 15) continue;
+                        const int eff_sc = c.score - (c.is_param ? 3 : 0);
+                        if (eff_sc > best_sc ||
+                            (eff_sc == best_sc && c.byte_savings > best_sav) ||
+                            (eff_sc == best_sc && c.byte_savings == best_sav &&
+                             (best_id == 0 || vid < best_id))) {
+                            best_id = vid;
+                            best_sc = eff_sc;
+                            best_sav = c.byte_savings;
+                        }
+                    }
+                }
+                if (best_id != 0 && best_sc >= child_sum && best_sc > 0) {
+                    dp_score[u] = best_sc;
+                    pick_own[u] = best_id;
+                } else {
+                    dp_score[u] = child_sum;
+                    pick_own[u] = 0;
+                }
+            }
+
+            std::vector<int> chosen;
+            std::function<void(std::size_t)> collect = [&](std::size_t u) {
+                if (pick_own[u] != 0) {
+                    chosen.push_back(pick_own[u]);
+                } else {
+                    for (std::size_t ch : btree[u].children) collect(ch);
+                }
+            };
+            collect(0);
+            if (chosen.empty()) return false;
+
+            int total_savings = 0;
+            int param_overhead = 0;
+            bool force_keep = false;
+            for (int vid : chosen) {
+                const RegCand& c = cands[vid];
+                total_savings += c.byte_savings;
+                if (c.is_param) param_overhead += 3;
+                if (c.is_register || c.score >= 15) force_keep = true;
+            }
+            if (total_savings <= 2 + param_overhead && !force_keep) return false;
+            for (int vid : chosen) reg_by_var_id_[vid] = rv;
+            return true;
+        };
+
+        if (run_reg_tree_dp(RegVar::si)) use_si_ = true;
+        if (run_reg_tree_dp(RegVar::di)) use_di_ = true;
+
+        // Two-tier stack frame layout:
+        // Tier 1: unpromoted scalars/pointers (sorted by use count in large blocks) closest to BP (disp8!)
+        // Tier 2: arrays, structs/unions, and aggregate call temporaries below Tier 1
+        auto is_tier1_scalar = [](const LocalVar& lv) {
+            return lv.type && lv.type->kind != TypeKind::t_array && !is_aggregate_type(lv.type);
+        };
+
+        int cur_scalar_off = 0;
+        int min_scalar_off = 0;
+        std::function<void(const StmtPtr&)> layout_tier1 = [&](const StmtPtr& s) {
+            if (!s) return;
+            if (s->kind == StmtKind::block) {
+                const int saved = cur_scalar_off;
+                std::vector<std::size_t> idxs;
+                for (std::size_t i = 0; i < s->locals.size(); ++i) {
+                    const LocalVar& lv = s->locals[i];
+                    if (reg_by_var_id_.find(lv.var_id) != reg_by_var_id_.end()) continue;
+                    if (is_tier1_scalar(lv)) idxs.push_back(i);
+                }
+                if (idxs.size() > 8) {
+                    std::stable_sort(idxs.begin(), idxs.end(), [&](std::size_t a, std::size_t b) {
+                        return cands[s->locals[a].var_id].uses > cands[s->locals[b].var_id].uses;
+                    });
+                }
+                for (std::size_t idx : idxs) {
+                    LocalVar& lv = s->locals[idx];
+                    std::size_t sz = std::max<std::size_t>(2, type_size(lv.type));
+                    if (sz % 2 != 0) ++sz;
+                    cur_scalar_off -= static_cast<int>(sz);
+                    lv.bp_offset = cur_scalar_off;
+                    min_scalar_off = std::min(min_scalar_off, cur_scalar_off);
+                }
+                for (const StmtPtr& sub : s->stmts) layout_tier1(sub);
+                cur_scalar_off = saved;
+                return;
+            }
+            switch (s->kind) {
+                case StmtKind::if_stmt:
+                    layout_tier1(s->body);
+                    layout_tier1(s->else_body);
+                    break;
+                case StmtKind::while_stmt:
+                case StmtKind::do_while_stmt:
+                case StmtKind::for_stmt:
+                case StmtKind::switch_stmt:
+                case StmtKind::case_stmt:
+                case StmtKind::default_stmt:
+                case StmtKind::label_stmt:
+                    layout_tier1(s->body);
+                    break;
+                default:
+                    break;
+            }
+        };
+        layout_tier1(fn.body);
+
+        int cur_agg_off = min_scalar_off;
+        int min_total_off = min_scalar_off;
+        std::function<void(const ExprPtr&)> layout_tier2_expr = [&](const ExprPtr& e) {
+            if (!e) return;
+            layout_tier2_expr(e->lhs);
+            layout_tier2_expr(e->rhs);
+            layout_tier2_expr(e->third);
+            for (const ExprPtr& a : e->args) layout_tier2_expr(a);
+            if (e->kind == ExprKind::call && e->temp_bp_offset != 0) {
+                std::size_t rsz = std::max<std::size_t>(2, type_size(e->type));
+                if (rsz % 2 != 0) ++rsz;
+                cur_agg_off -= static_cast<int>(rsz);
+                e->temp_bp_offset = cur_agg_off;
+                min_total_off = std::min(min_total_off, cur_agg_off);
+            }
+        };
+        std::function<void(const StmtPtr&)> layout_tier2 = [&](const StmtPtr& s) {
+            if (!s) return;
+            if (s->kind == StmtKind::block) {
+                const int saved = cur_agg_off;
+                for (LocalVar& lv : s->locals) {
+                    if (!is_tier1_scalar(lv)) {
+                        std::size_t sz = std::max<std::size_t>(2, type_size(lv.type));
+                        if (sz % 2 != 0) ++sz;
+                        cur_agg_off -= static_cast<int>(sz);
+                        lv.bp_offset = cur_agg_off;
+                        min_total_off = std::min(min_total_off, cur_agg_off);
+                    }
+                    layout_tier2_expr(lv.init);
+                }
+                for (const StmtPtr& sub : s->stmts) layout_tier2(sub);
+                cur_agg_off = saved;
+                return;
+            }
+            layout_tier2_expr(s->expr);
+            layout_tier2_expr(s->cond);
+            layout_tier2_expr(s->post);
+            layout_tier2(s->body);
+            layout_tier2(s->else_body);
+        };
+        layout_tier2(fn.body);
+
+        (void)all_locals;
+        (void)min_temp_bp_off;
+        effective_frame_size_ = static_cast<std::size_t>(-min_total_off);
     }
 
     // Copies sz bytes from src (BX, or CX:BX if src_far) to dst (AX, or DX:AX if dst_far).
