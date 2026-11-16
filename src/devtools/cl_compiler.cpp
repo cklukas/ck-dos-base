@@ -374,6 +374,7 @@ struct ParamDecl {
     TypePtr type;
     bool is_register = false;
     bool is_volatile = false;
+    int var_id = 0;
 };
 
 struct CType {
@@ -519,6 +520,7 @@ struct LocalVar {
     ExprPtr init;
     bool is_register = false;
     bool is_volatile = false;
+    int var_id = 0;
 };
 
 struct Stmt {
@@ -884,6 +886,8 @@ private:
     // Local scopes during function parsing
     std::vector<std::unordered_map<std::string, VarSymbol>> local_scopes_;
     int next_local_offset_ = 0;
+    int min_local_offset_ = 0;
+    int next_var_id_ = 1;
 
     const Token& peek(std::size_t ahead = 0) const {
         if (pos_ + ahead >= tokens_.size()) return tokens_.back();
@@ -1360,6 +1364,8 @@ private:
                 local_scopes_.clear();
                 local_scopes_.emplace_back();
                 next_local_offset_ = 0;
+                min_local_offset_ = 0;
+                next_var_id_ = 1;
 
                 // Bind parameters at positive BP offsets
                 int arg_off = type->is_far ? 6 : 4;
@@ -1372,6 +1378,7 @@ private:
                     for (auto it = fn.params.rbegin(); it != fn.params.rend(); ++it) {
                         std::size_t sz = std::max<std::size_t>(2, type_size(it->type));
                         if (sz % 2 != 0) ++sz;
+                        it->var_id = next_var_id_++;
                         if (!it->name.empty()) {
                             local_scopes_.back()[it->name] = {
                                 it->name, it->type, false, false, false, arg_off, {}};
@@ -1379,9 +1386,10 @@ private:
                         arg_off += static_cast<int>(sz);
                     }
                 } else {
-                    for (const ParamDecl& p : fn.params) {
+                    for (ParamDecl& p : fn.params) {
                         std::size_t sz = std::max<std::size_t>(2, type_size(p.type));
                         if (sz % 2 != 0) ++sz;
+                        p.var_id = next_var_id_++;
                         if (!p.name.empty()) {
                             local_scopes_.back()[p.name] = {
                                 p.name, p.type, false, false, false, arg_off, {}};
@@ -1391,7 +1399,7 @@ private:
                 }
 
                 fn.body = parse_compound_stmt();
-                fn.frame_size = static_cast<std::size_t>(-next_local_offset_);
+                fn.frame_size = static_cast<std::size_t>(-min_local_offset_);
                 local_scopes_.clear();
                 funcs.push_back(std::move(fn));
                 return;
@@ -1506,6 +1514,7 @@ private:
         auto blk = std::make_shared<Stmt>();
         blk->kind = StmtKind::block;
         local_scopes_.emplace_back();
+        const int saved_local_offset = next_local_offset_;
 
         while (!at(Tok::rbrace) && !at(Tok::eof)) {
             if (is_type_start()) {
@@ -1541,6 +1550,8 @@ private:
                     std::size_t sz = std::max<std::size_t>(2, type_size(type));
                     if (sz % 2 != 0) ++sz;
                     next_local_offset_ -= static_cast<int>(sz);
+                    min_local_offset_ = std::min(min_local_offset_, next_local_offset_);
+                    const int vid = next_var_id_++;
                     local_scopes_.back()[name] = {
                         name, type, false, false, false, next_local_offset_, {}};
                     ExprPtr init;
@@ -1559,7 +1570,7 @@ private:
                         }
                     }
                     blk->locals.push_back(
-                        {name, type, next_local_offset_, init, ds.is_register, ds.is_volatile});
+                        {name, type, next_local_offset_, init, ds.is_register, ds.is_volatile, vid});
                 } while (match(Tok::comma));
                 consume(Tok::semi, "expected ';'");
             } else {
@@ -1567,6 +1578,7 @@ private:
             }
         }
         consume(Tok::rbrace, "expected '}'");
+        next_local_offset_ = saved_local_offset;
         local_scopes_.pop_back();
         return blk;
     }
@@ -1953,6 +1965,7 @@ private:
                     std::size_t rsz = std::max<std::size_t>(2, type_size(call->type));
                     if (rsz % 2 != 0) ++rsz;
                     next_local_offset_ -= static_cast<int>(rsz);
+                    min_local_offset_ = std::min(min_local_offset_, next_local_offset_);
                     call->temp_bp_offset = next_local_offset_;
                 }
                 e = std::move(call);
@@ -2214,12 +2227,18 @@ private:
         LabelId target = 0;
     };
 
+    struct LocalBinding {
+        TypePtr type;
+        int bp_offset = 0;
+        int var_id = 0;
+    };
+
     std::size_t fn_code_start_ = 0;
     std::vector<std::size_t> label_raw_pos_;
     std::vector<BranchSite> branches_;
     LabelId epilogue_label_ = 0;
-    std::vector<std::unordered_map<std::string, std::pair<TypePtr, int>>> local_vars_;
-    std::unordered_map<int, RegVar> reg_by_bp_off_;
+    std::vector<std::unordered_map<std::string, LocalBinding>> local_vars_;
+    std::unordered_map<int, RegVar> reg_by_var_id_;
     bool use_si_ = false;
     bool use_di_ = false;
     bool has_hidden_sret_ = false;
@@ -2902,8 +2921,8 @@ private:
     RegVar find_reg_var(const std::string& name) const {
         auto loc = find_local(name);
         if (!loc) return RegVar::none;
-        auto it = reg_by_bp_off_.find(loc->second);
-        return it != reg_by_bp_off_.end() ? it->second : RegVar::none;
+        auto it = reg_by_var_id_.find(loc->var_id);
+        return it != reg_by_var_id_.end() ? it->second : RegVar::none;
     }
 
     RegVar find_expr_reg_var(const ExprPtr& e) const {
@@ -2951,13 +2970,14 @@ private:
     }
 
     void analyze_and_allocate_reg_vars(const FuncDef& fn) {
-        reg_by_bp_off_.clear();
+        reg_by_var_id_.clear();
         use_si_ = false;
         use_di_ = false;
         effective_frame_size_ = fn.frame_size;
         if (fn.type->is_interrupt || !fn.body) return;
 
         struct RegCand {
+            int var_id = 0;
             int bp_off = 0;
             bool is_param = false;
             bool is_register = false;
@@ -2969,7 +2989,7 @@ private:
         };
 
         std::unordered_map<int, RegCand> cands;
-        std::vector<int> all_local_offs;
+        std::vector<std::pair<int, int>> all_locals;  // (var_id, bp_offset)
         std::vector<std::unordered_map<std::string, int>> sim_scopes;
         sim_scopes.emplace_back();
 
@@ -2988,16 +3008,17 @@ private:
         auto seed_param = [&](const ParamDecl& p) {
             std::size_t sz = std::max<std::size_t>(2, type_size(p.type));
             if (sz % 2 != 0) ++sz;
-            if (!p.name.empty()) {
-                sim_scopes.back()[p.name] = arg_off;
-                cands[arg_off] = {arg_off,
-                                  true,
-                                  p.is_register,
-                                  !p.is_volatile && is_reg_eligible_type(p.type),
-                                  false,
-                                  0,
-                                  0,
-                                  p.is_register ? 50 : 0};
+            if (!p.name.empty() && p.var_id != 0) {
+                sim_scopes.back()[p.name] = p.var_id;
+                cands[p.var_id] = {p.var_id,
+                                   arg_off,
+                                   true,
+                                   p.is_register,
+                                   !p.is_volatile && is_reg_eligible_type(p.type),
+                                   false,
+                                   0,
+                                   0,
+                                   p.is_register ? 50 : 0};
             }
             arg_off += static_cast<int>(sz);
         };
@@ -3008,7 +3029,7 @@ private:
         }
 
         bool calls_setjmp = false;
-        bool has_call_temps = false;
+        int min_temp_bp_off = 0;
 
         auto unwrap_base_ptr_var = [&](const ExprPtr& pexpr) -> std::optional<int> {
             const Expr* cur = pexpr.get();
@@ -3118,7 +3139,9 @@ private:
                         walk_expr(e->third, loop_depth, false);
                         break;
                     case ExprKind::call:
-                        if (e->temp_bp_offset != 0) has_call_temps = true;
+                        if (e->temp_bp_offset < min_temp_bp_off) {
+                            min_temp_bp_off = e->temp_bp_offset;
+                        }
                         if (e->lhs && e->lhs->kind == ExprKind::var &&
                             (e->lhs->name == "setjmp" || e->lhs->name == "_setjmp")) {
                             calls_setjmp = true;
@@ -3138,9 +3161,10 @@ private:
                     case StmtKind::block:
                         sim_scopes.emplace_back();
                         for (const LocalVar& lv : s->locals) {
-                            all_local_offs.push_back(lv.bp_offset);
-                            sim_scopes.back()[lv.name] = lv.bp_offset;
-                            cands[lv.bp_offset] = {
+                            all_locals.emplace_back(lv.var_id, lv.bp_offset);
+                            sim_scopes.back()[lv.name] = lv.var_id;
+                            cands[lv.var_id] = {
+                                lv.var_id,
                                 lv.bp_offset,
                                 false,
                                 lv.is_register,
@@ -3151,7 +3175,7 @@ private:
                                 lv.is_register ? 50 : 0};
                             if (lv.init) {
                                 walk_expr(lv.init, loop_depth, false);
-                                auto& c = cands[lv.bp_offset];
+                                auto& c = cands[lv.var_id];
                                 c.uses += 1;
                                 c.byte_savings += (lv.init->kind == ExprKind::int_lit) ? 2 : 1;
                                 c.score += 1 + 10 * loop_depth;
@@ -3210,28 +3234,25 @@ private:
         std::sort(viable.begin(), viable.end(), [](const RegCand& a, const RegCand& b) {
             if (a.score != b.score) return a.score > b.score;
             if (a.byte_savings != b.byte_savings) return a.byte_savings > b.byte_savings;
-            return a.bp_off < b.bp_off;
+            return a.var_id < b.var_id;
         });
 
         if (viable.size() >= 1) {
-            reg_by_bp_off_[viable[0].bp_off] = RegVar::si;
+            reg_by_var_id_[viable[0].var_id] = RegVar::si;
             use_si_ = true;
         }
         if (viable.size() >= 2) {
-            reg_by_bp_off_[viable[1].bp_off] = RegVar::di;
+            reg_by_var_id_[viable[1].var_id] = RegVar::di;
             use_di_ = true;
         }
 
-        if (!all_local_offs.empty() && !has_call_temps) {
-            bool all_promoted = true;
-            for (int loff : all_local_offs) {
-                if (reg_by_bp_off_.find(loff) == reg_by_bp_off_.end()) {
-                    all_promoted = false;
-                    break;
-                }
+        int min_unpromoted = min_temp_bp_off;
+        for (const auto& [vid, boff] : all_locals) {
+            if (reg_by_var_id_.find(vid) == reg_by_var_id_.end() && boff < min_unpromoted) {
+                min_unpromoted = boff;
             }
-            if (all_promoted) effective_frame_size_ = 0;
         }
+        effective_frame_size_ = static_cast<std::size_t>(-min_unpromoted);
     }
 
     // Copies sz bytes from src (BX, or CX:BX if src_far) to dst (AX, or DX:AX if dst_far).
@@ -3283,9 +3304,10 @@ private:
         emit_u8(0x8B); emit_u8(0xD8);  // mov bx, ax
     }
 
-    void emit_local_init(const LocalVar& lv) {
+    void emit_local_init(const LocalVar& lv, bool& ax_is_zero) {
         if (!lv.init) return;
         if (is_aggregate_type(lv.type)) {
+            ax_is_zero = false;
             bool src_far = false;
             emit_agg_addr_to_bx(lv.init, src_far);
             if (src_far) { emit_u8(0x8C); emit_u8(0xC1); }  // mov cx, es
@@ -3293,16 +3315,53 @@ private:
             emit_copy_agg(type_size(lv.type), false, src_far);
             return;
         }
-        auto rit = reg_by_bp_off_.find(lv.bp_offset);
-        if (rit != reg_by_bp_off_.end()) {
+        auto rit = reg_by_var_id_.find(lv.var_id);
+        if (rit != reg_by_var_id_.end()) {
             if (lv.init->kind == ExprKind::int_lit) {
                 emit_mov_regvar_imm(rit->second, static_cast<std::uint16_t>(lv.init->int_val));
             } else {
+                ax_is_zero = false;
                 emit_expr(lv.init);
                 emit_mov_regvar_ax(rit->second);
             }
             return;
         }
+        if (lv.init->kind == ExprKind::int_lit) {
+            if (is_byte_scalar(lv.type)) {
+                const std::uint8_t imm8 = static_cast<std::uint8_t>(lv.init->int_val & 0xFF);
+                if (imm8 == 0 && ax_is_zero) {
+                    emit_u8(0x88); emit_bp_rm(0, lv.bp_offset);  // mov [bp+d], al
+                } else {
+                    emit_u8(0xC6); emit_bp_rm(0, lv.bp_offset); emit_u8(imm8);  // mov byte ptr [bp+d], imm8
+                }
+                return;
+            }
+            if (!is_32bit_scalar(lv.type)) {
+                const std::uint16_t imm16 = static_cast<std::uint16_t>(lv.init->int_val);
+                if (imm16 == 0) {
+                    if (!ax_is_zero) {
+                        emit_u8(0x33); emit_u8(0xC0);  // xor ax, ax
+                        ax_is_zero = true;
+                    }
+                    emit_u8(0x89); emit_bp_rm(0, lv.bp_offset);  // mov [bp+d], ax
+                } else {
+                    emit_u8(0xC7); emit_bp_rm(0, lv.bp_offset); emit_u16(imm16);  // mov word ptr [bp+d], imm16
+                }
+                return;
+            }
+            const std::uint16_t lo = static_cast<std::uint16_t>(lv.init->int_val & 0xFFFF);
+            const std::uint16_t hi = static_cast<std::uint16_t>((lv.init->int_val >> 16) & 0xFFFF);
+            if (lo == 0 && hi == 0) {
+                if (!ax_is_zero) {
+                    emit_u8(0x33); emit_u8(0xC0);  // xor ax, ax
+                    ax_is_zero = true;
+                }
+                emit_u8(0x89); emit_bp_rm(0, lv.bp_offset);
+                emit_u8(0x89); emit_bp_rm(0, lv.bp_offset + 2);
+                return;
+            }
+        }
+        ax_is_zero = false;
         emit_expr(lv.init);
         if (is_32bit_scalar(lv.type)) emit_widen_dxax(lv.init->type);
         store_local(lv.type, lv.bp_offset);
@@ -3343,9 +3402,9 @@ private:
             std::size_t sz = std::max<std::size_t>(2, type_size(p.type));
             if (sz % 2 != 0) ++sz;
             if (!p.name.empty()) {
-                local_vars_.back()[p.name] = {p.type, arg_off};
-                auto rit = reg_by_bp_off_.find(arg_off);
-                if (rit != reg_by_bp_off_.end()) {
+                local_vars_.back()[p.name] = {p.type, arg_off, p.var_id};
+                auto rit = reg_by_var_id_.find(p.var_id);
+                if (rit != reg_by_var_id_.end()) {
                     param_reg_inits.emplace_back(arg_off, rit->second);
                 }
             }
@@ -3401,11 +3460,6 @@ private:
                 emit_u8(op);
             }
         } else {
-            const std::size_t saved_regs = (use_si_ ? 2U : 0U) + (use_di_ ? 2U : 0U);
-            if (effective_frame_size_ > 0 && saved_regs > 0) {
-                emit_u8(0x8D);
-                emit_bp_rm(4, -static_cast<int>(effective_frame_size_ + saved_regs));  // lea sp, [bp-N]
-            }
             if (use_di_) emit_u8(0x5F);  // pop di
             if (use_si_) emit_u8(0x5E);  // pop si
             if (effective_frame_size_ > 0) {
@@ -3431,7 +3485,7 @@ private:
 
         relax_and_finalize_function(pf_start, cf_start);
 
-        reg_by_bp_off_.clear();
+        reg_by_var_id_.clear();
         use_si_ = false;
         use_di_ = false;
         local_vars_.clear();
@@ -3644,15 +3698,17 @@ private:
             case StmtKind::expr:
                 emit_expr(s->expr, false);
                 break;
-            case StmtKind::block:
+            case StmtKind::block: {
                 local_vars_.emplace_back();
+                bool ax_is_zero = false;
                 for (const LocalVar& lv : s->locals) {
-                    local_vars_.back()[lv.name] = {lv.type, lv.bp_offset};
-                    emit_local_init(lv);
+                    local_vars_.back()[lv.name] = {lv.type, lv.bp_offset, lv.var_id};
+                    emit_local_init(lv, ax_is_zero);
                 }
                 for (const StmtPtr& sub : s->stmts) emit_stmt(sub);
                 local_vars_.pop_back();
                 break;
+            }
             case StmtKind::if_stmt: {
                 const LabelId l_false = new_label();
                 emit_branch(s->cond, l_false, false);
@@ -3719,7 +3775,6 @@ private:
             }
             case StmtKind::switch_stmt: {
                 emit_expr(s->cond);
-                emit_u8(0x50);  // push ax
                 const LabelId l_dispatch = new_label();
                 const LabelId l_after = new_label();
                 emit_jmp(l_dispatch);
@@ -3730,7 +3785,6 @@ private:
                 emit_jmp(l_after);
 
                 bind_label(l_dispatch);
-                emit_u8(0x58);  // pop ax
                 for (const auto& [val, target_lbl] : cases) {
                     const std::uint16_t uval = static_cast<std::uint16_t>(val);
                     if (uval == 0) {
@@ -3815,9 +3869,10 @@ private:
         if (!s) return;
         if (s->kind == StmtKind::block) {
             local_vars_.emplace_back();
+            bool ax_is_zero = false;
             for (const LocalVar& lv : s->locals) {
-                local_vars_.back()[lv.name] = {lv.type, lv.bp_offset};
-                emit_local_init(lv);
+                local_vars_.back()[lv.name] = {lv.type, lv.bp_offset, lv.var_id};
+                emit_local_init(lv, ax_is_zero);
             }
             for (const StmtPtr& sub : s->stmts) emit_switch_body(sub, cases, def_lbl);
             local_vars_.pop_back();
@@ -3845,7 +3900,7 @@ private:
         }
     }
 
-    std::optional<std::pair<TypePtr, int>> find_local(const std::string& name) const {
+    std::optional<LocalBinding> find_local(const std::string& name) const {
         for (auto it = local_vars_.rbegin(); it != local_vars_.rend(); ++it) {
             auto f = it->find(name);
             if (f != it->end()) return f->second;
@@ -3885,7 +3940,7 @@ private:
             if (e->type && e->type->kind == TypeKind::t_func) return false;
             if (find_reg_var(e->name) != RegVar::none) return false;
             if (auto loc = find_local(e->name)) {
-                out = {DirectMem::bp_rel, loc->second, ""};
+                out = {DirectMem::bp_rel, loc->bp_offset, ""};
                 return true;
             }
             auto gf = parser_.global_syms.find(e->name);
@@ -4292,6 +4347,16 @@ private:
                     break;
                 }
                 if (is_aggregate_type(e->type)) {
+                    DirectMem dm;
+                    if (try_resolve_direct_mem(e, dm)) {
+                        if (dm.kind == DirectMem::bp_rel) {
+                            emit_u8(0x8D); emit_bp_rm(0, dm.disp);  // lea ax, [bp+d]
+                        } else {
+                            emit_u8(0xB8); emit_dgroup_disp(dm.sym, dm.disp);  // mov ax, offset sym+d
+                        }
+                        if (e->type && e->type->is_far) { emit_u8(0x8C); emit_u8(0xDA); }
+                        break;
+                    }
                     bool is_far = false;
                     emit_lvalue_addr(e, is_far);
                     emit_u8(0x8B); emit_u8(0xC3);  // mov ax, bx
@@ -4317,6 +4382,16 @@ private:
 
             case ExprKind::member: {
                 if (is_aggregate_type(e->type) || (e->type && e->type->kind == TypeKind::t_array)) {
+                    DirectMem dm;
+                    if (try_resolve_direct_mem(e, dm)) {
+                        if (dm.kind == DirectMem::bp_rel) {
+                            emit_u8(0x8D); emit_bp_rm(0, dm.disp);  // lea ax, [bp+d]
+                        } else {
+                            emit_u8(0xB8); emit_dgroup_disp(dm.sym, dm.disp);  // mov ax, offset sym+d
+                        }
+                        if (e->type && e->type->is_far) { emit_u8(0x8C); emit_u8(0xDA); }
+                        break;
+                    }
                     bool is_far = false;
                     emit_lvalue_addr(e, is_far);
                     emit_u8(0x8B); emit_u8(0xC3);  // mov ax, bx
@@ -4659,6 +4734,18 @@ private:
             case ExprKind::unary: {
                 if (e->op == Tok::amp) {
                     if (!need_value) { emit_expr(e->lhs, false); break; }
+                    DirectMem dm;
+                    if (try_resolve_direct_mem(e->lhs, dm)) {
+                        if (dm.kind == DirectMem::bp_rel) {
+                            emit_u8(0x8D); emit_bp_rm(0, dm.disp);  // lea ax, [bp+d]
+                        } else {
+                            emit_u8(0xB8); emit_dgroup_disp(dm.sym, dm.disp);  // mov ax, offset sym+d
+                        }
+                        if (e->type && e->type->is_far) {
+                            emit_u8(0x8C); emit_u8(0xDA);  // mov dx, ds
+                        }
+                        break;
+                    }
                     bool is_far = false;
                     emit_lvalue_addr(e->lhs, is_far);
                     emit_u8(0x8B); emit_u8(0xC3);  // mov ax, bx

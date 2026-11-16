@@ -553,8 +553,8 @@ DOSBASE_TEST(cl_wp14_si_di_register_allocation) {
         // `fast` is in SI: xor si, si (33 F6) and inc si (0x46)
         DOSBASE_TEST_EXPECT(contains_seq(code, {0x33, 0xF6}));
         DOSBASE_TEST_EXPECT(contains_seq(code, {0x46}));
-        // `taken` stays on stack: lea bx, [bp-2] (8D 5E FE)
-        DOSBASE_TEST_EXPECT(contains_seq(code, {0x8D, 0x5E, 0xFE}));
+        // `taken` stays on stack: lea ax, [bp-2] (8D 46 FE)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x8D, 0x46, 0xFE}));
     }
 
     // 3. MS C cast-as-lvalue on register-allocated pointer variable (((int)sptr) = ..., ((char*)sptr)++)
@@ -639,4 +639,25 @@ DOSBASE_TEST(cl_wp15_struct_value_abi) {
         DOSBASE_TEST_EXPECT(linked.errors.empty());
         DOSBASE_TEST_EXPECT(!linked.exe.empty());
     }
+}
+
+DOSBASE_TEST(cl_block_scope_frame_compaction_and_zero_init_reuse) {
+    const char* src =
+        "int sibling_scopes(void) {\n"
+        "    volatile int z1 = 0;\n"
+        "    volatile int z2 = 0;\n"
+        "    int acc = 0;\n"
+        "    { volatile int s1 = 10; acc += s1; }\n"
+        "    { volatile int s2 = 20; acc += s2; }\n"
+        "    { volatile int s3 = 30; acc += s3; }\n"
+        "    return acc + z1 + z2;\n"
+        "}\n";
+    const auto obj = compile_c_to_omf(src, CompileOptions{});
+    const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+    // z1 (-2), z2 (-4), acc (promoted to SI -> -4), and s1/s2/s3 share the same 2-byte slot (-8):
+    // frame is <= 8 bytes (83 EC 06 or 83 EC 08), never 12 bytes (83 EC 0C)!
+    DOSBASE_TEST_EXPECT(!contains_seq(code, {0x83, 0xEC, 0x0C}));
+    // z1 = 0 and z2 = 0 share a single xor ax, ax followed by two mov [bp-d], ax stores:
+    // 33 C0 89 46 FE 89 46 FC
+    DOSBASE_TEST_EXPECT(contains_seq(code, {0x33, 0xC0, 0x89, 0x46, 0xFE, 0x89, 0x46, 0xFC}));
 }
