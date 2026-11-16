@@ -556,6 +556,57 @@ fs::path compile_clean_room_runtime(const fs::path& repo_root,
     return d;
 }
 
+fs::path compile_medium_model_runtime(const fs::path& repo_root,
+                                      const fs::path& tool_dir,
+                                      const fs::path& scratch_root) {
+    const fs::path d = scratch_root / "rt_build_mm";
+    if (fs::is_regular_file(d / "MLIBCE.LIB")) {
+        return d;
+    }
+    const fs::path ckcl = exe_path(tool_dir, "ckcl");
+    const fs::path ckmasm = exe_path(tool_dir, "ckmasm");
+    const fs::path cklib = exe_path(tool_dir, "cklib");
+    const fs::path rt_root = repo_root / "runtime";
+    const fs::path inc_dir = rt_root / "include";
+    fs::create_directories(d);
+
+    auto run_asm = [&](const fs::path& src, const std::string& obj, bool farcode) {
+        fs::copy_file(src, d / src.filename(), fs::copy_options::overwrite_existing);
+        std::vector<std::string> args = {ckmasm.string(), "-Mx"};
+        if (farcode) args.push_back("-DFARCODE");
+        args.push_back(src.filename().string() + "," + obj + ";");
+        if (run_process(args, d) != 0) {
+            throw std::runtime_error("ckmasm failed on medium-model CRT " + src.string());
+        }
+    };
+
+    auto run_cc_mm = [&](const fs::path& src, const std::string& obj) {
+        if (run_process({ckcl.string(), "-c", "-AM", "-Os", "-Zl",
+                         "-I" + inc_dir.string(), "-Fo" + obj, src.string()}, d) != 0) {
+            throw std::runtime_error("ckcl -AM failed on medium-model CRT " + src.string());
+        }
+    };
+
+    run_asm(rt_root / "crt" / "crt0.asm", "MCRT0.OBJ", true);
+    run_asm(rt_root / "crt" / "crt_fmem.asm", "CRT_FMEM.OBJ", false);
+    run_cc_mm(rt_root / "crt" / "crt_mem.c", "CRT_MEM.OBJ");
+    run_cc_mm(rt_root / "crt" / "crt_str.c", "CRT_STR.OBJ");
+    run_cc_mm(rt_root / "crt" / "crt_fp.c", "CRT_FP.OBJ");
+    run_cc_mm(rt_root / "crt" / "crt_math.c", "CRT_MATH.OBJ");
+    run_cc_mm(rt_root / "crt" / "crt_dos.c", "CRT_DOS.OBJ");
+    run_cc_mm(rt_root / "crt" / "crt_mstdio.c", "CRT_MSTDIO.OBJ");
+
+    std::ostringstream rsp;
+    rsp << "MLIBCE.LIB\nY\n"
+        << "+MCRT0.OBJ&\n+CRT_FMEM.OBJ&\n+CRT_MEM.OBJ&\n+CRT_STR.OBJ&\n"
+        << "+CRT_FP.OBJ&\n+CRT_MATH.OBJ&\n+CRT_DOS.OBJ&\n+CRT_MSTDIO.OBJ;\n";
+    write_text_file(d / "MLIBCE.RSP", rsp.str());
+    if (run_process({cklib.string(), "@MLIBCE.RSP"}, d) != 0) {
+        throw std::runtime_error("cklib failed building MLIBCE.LIB");
+    }
+    return d;
+}
+
 void install_clean_room_runtime(const fs::path& rt_build_dir, const fs::path& stage) {
     const fs::path bld_lib = stage / "TOOLS" / "BLD" / "LIB";
     fs::create_directories(bld_lib);
@@ -697,14 +748,20 @@ void validate_flat_com_image(const fs::path& com_path, const std::string& label)
     }
 }
 
-void build_dos5_dosui_tools(const fs::path& tool_dir, const fs::path& out_stage) {
+void build_dos5_dosui_tools(const fs::path& repo_root,
+                            const fs::path& tool_dir,
+                            const fs::path& scratch_root,
+                            const fs::path& out_stage) {
     const fs::path dosui_dir = out_stage / "CMD" / "DOSUI";
     const fs::path edit_dir = out_stage / "CMD" / "EDIT";
     const fs::path help_dir = out_stage / "CMD" / "HELP";
-    if (!fs::is_directory(dosui_dir) || !fs::is_directory(edit_dir) || !fs::is_directory(help_dir)) {
-        throw std::runtime_error("[CK-DOS 5.0] missing CMD/DOSUI, CMD/EDIT, or CMD/HELP source directories");
+    const fs::path qbasic_dir = out_stage / "CMD" / "QBASIC";
+    if (!fs::is_directory(dosui_dir) || !fs::is_directory(edit_dir) ||
+        !fs::is_directory(help_dir) || !fs::is_directory(qbasic_dir)) {
+        throw std::runtime_error("[CK-DOS 5.0] missing CMD/DOSUI, CMD/EDIT, CMD/HELP, or CMD/QBASIC source directories");
     }
 
+    const fs::path ckcl = exe_path(tool_dir, "ckcl");
     const fs::path ckmasm = exe_path(tool_dir, "ckmasm");
     const fs::path cklink = exe_path(tool_dir, "cklink");
     const fs::path ckexe2bin = exe_path(tool_dir, "ckexe2bin");
@@ -805,9 +862,51 @@ void build_dos5_dosui_tools(const fs::path& tool_dir, const fs::path& out_stage)
         throw std::runtime_error("[CK-DOS 5.0] EXPAND.EXE missing after cklink");
     }
 
+    // Build medium-model + IEEE-754 float CRT (MLIBCE.LIB) and CK Basic (QBASIC.EXE)
+    const fs::path rt_mm_dir = compile_medium_model_runtime(repo_root, tool_dir, scratch_root);
+    const fs::path mlibce_lib = find_ci(rt_mm_dir, "MLIBCE.LIB");
+    fs::copy_file(mlibce_lib, out_stage / "TOOLS" / "BLD" / "LIB" / "MLIBCE.LIB",
+                  fs::copy_options::overwrite_existing);
+
+    if (run_process({ckmasm.string(), "-Mx", "-I.", "-I" + dosui_dir.string(),
+                     "CKBUI.ASM,CKBUI.OBJ,NUL,NUL;"}, qbasic_dir) != 0) {
+        throw std::runtime_error("[CK-DOS 5.0] ckmasm failed on CMD/QBASIC/CKBUI.ASM");
+    }
+    const fs::path rt_inc = repo_root / "runtime" / "include";
+    const std::vector<const char*> qb_c_stems = {
+        "QBASIC", "CKBIDE", "CKBRUN", "CKBSTR", "CKBCON", "CKBFMT", "CKBNUM",
+        "CKENV", "CKBSER", "CKBINI", "CKBHELP", "CKBFIND", "CKBPROC"};
+    std::string qb_objs;
+    for (std::size_t i = 0; i < qb_c_stems.size(); ++i) {
+        const std::string stem = qb_c_stems[i];
+        const std::string c_file = stem + ".C";
+        const std::string obj_file = stem + ".OBJ";
+        if (run_process({ckcl.string(), "-c", "-AM", "-Os", "-I.",
+                         "-I" + rt_inc.string(), "-Fo" + obj_file, c_file}, qbasic_dir) != 0) {
+            throw std::runtime_error("[CK-DOS 5.0] ckcl -AM failed on CMD/QBASIC/" + c_file);
+        }
+        if (i > 0) qb_objs += "+\n";
+        qb_objs += obj_file;
+    }
+    qb_objs += "+\nCKBUI.OBJ+\nDOSUI.OBJ\nQBASIC.EXE\nNUL\nMLIBCE.LIB;\n";
+    fs::copy_file(dosui_obj, qbasic_dir / "DOSUI.OBJ", fs::copy_options::overwrite_existing);
+    fs::copy_file(mlibce_lib, qbasic_dir / "MLIBCE.LIB", fs::copy_options::overwrite_existing);
+    write_text_file(qbasic_dir / "QBASIC.RSP", qb_objs);
+    if (run_process({cklink.string(), "@QBASIC.RSP"}, qbasic_dir) != 0) {
+        throw std::runtime_error("[CK-DOS 5.0] cklink failed on QBASIC.EXE");
+    }
+    fs::remove(qbasic_dir / "DOSUI.OBJ", ec);
+    fs::remove(qbasic_dir / "MLIBCE.LIB", ec);
+    fs::remove(qbasic_dir / "QBASIC.RSP", ec);
+    const fs::path qbasic_exe = find_ci(qbasic_dir, "QBASIC.EXE");
+    if (!fs::is_regular_file(qbasic_exe) || fs::file_size(qbasic_exe) < 65536u) {
+        throw std::runtime_error("[CK-DOS 5.0] QBASIC.EXE missing or truncated after cklink");
+    }
+
     std::cout << "[CK-DOS 5.0] Built first-party tools: EDIT.COM ("
               << fs::file_size(edit_com) << " bytes), HELP.COM ("
-              << fs::file_size(help_com) << " bytes), SETVER.EXE ("
+              << fs::file_size(help_com) << " bytes), QBASIC.EXE ("
+              << fs::file_size(qbasic_exe) << " bytes), SETVER.EXE ("
               << fs::file_size(setver_exe) << " bytes), DOSKEY.COM ("
               << fs::file_size(doskey_com) << " bytes), LOADFIX.COM ("
               << fs::file_size(loadfix_com) << " bytes), EXPAND.EXE ("
@@ -890,7 +989,7 @@ void build_dos_source_stage(const std::string& os_label,
     }
 
     if (build_dos5_extras) {
-        build_dos5_dosui_tools(tool_dir, out_stage);
+        build_dos5_dosui_tools(repo_root, tool_dir, scratch_root, out_stage);
     }
 
     const auto manifest = collect_manifest(out_stage);
@@ -1203,6 +1302,7 @@ void build_sdk_zip(const fs::path& repo_root,
     const std::vector<std::pair<std::string, fs::path>> dos_libs = {
         {"SLIBC.LIB", find_ci(stage / "TOOLS" / "BLD" / "LIB", "SLIBC.LIB")},
         {"SLIBCE.LIB", find_ci(stage / "TOOLS" / "BLD" / "LIB", "SLIBCE.LIB")},
+        {"MLIBCE.LIB", find_ci(stage / "TOOLS" / "BLD" / "LIB", "MLIBCE.LIB")},
         {"SETARGV.OBJ", find_ci(stage / "TOOLS" / "BLD" / "LIB", "SETARGV.OBJ")},
         {"BINMODE.OBJ", find_ci(stage / "TOOLS" / "BLD" / "LIB", "BINMODE.OBJ")},
         {"COMSUBS.LIB", find_ci(stage / "INC", "COMSUBS.LIB")},
@@ -1381,10 +1481,11 @@ OsMediaSpec make_dos5_media_spec(const std::string& version) {
         "==============================================================\r\n\r\n"
         "Independent MIT-licensed CK-DOS 5.00 distribution built 100% from source\r\n"
         "with clean-room native tools (ckcl, ckmasm, cklink, cklib, cknmake, ckmkimg).\r\n"
-        "Includes full-screen DOSUI utilities EDIT.COM and HELP.COM.\r\n\r\n"
+        "Includes CK Edit (EDIT.COM), CK Help (HELP.COM), CK Basic (QBASIC.EXE),\r\n"
+        "HIMEM.SYS, DOSKEY.COM, SETVER.EXE, LOADFIX.COM, and EXPAND.EXE.\r\n\r\n"
         "Included Release Media:\r\n"
         "  - ckdos-5.00-floppy-1440k.img : 3.5\" 1.44M Boot + Install Floppy (CKDOS500)\r\n"
-        "  - ckdos-5.00-floppy-720k-disk1.img / disk2.img : 2x720K XT/PS2 Set\r\n"
+        "  - ckdos-5.00-floppy-720k-disk1..3.img : 3x720K XT/PS2 Set (+CK Basic Disk 3)\r\n"
         "  - ckdos-5.00-hdd-32m.vhd      : Ready-to-Boot 32MB Hard Disk (+DEVTOOLS)\r\n"
         "  - ckdos-5.00-boot.iso         : El-Torito Bootable CD-ROM Image\r\n"
         "  - ckdos-5.00-files.zip        : File Archive for DOSBox-X / CF / SD\r\n";
@@ -1487,6 +1588,7 @@ void build_os_media_set(const fs::path& stage,
 
     const fs::path img_720_1 = dist_dir / (spec.prefix + "-floppy-720k-disk1.img");
     const fs::path img_720_2 = dist_dir / (spec.prefix + "-floppy-720k-disk2.img");
+    const fs::path img_720_3 = dist_dir / (spec.prefix + "-floppy-720k-disk3.img");
     {
         std::vector<MemOrFileItem> d1 = {
             {"IO.SYS", io_sys, {}, false, 0x07u, 0100644u},
@@ -1502,8 +1604,18 @@ void build_os_media_set(const fs::path& stage,
         std::vector<MemOrFileItem> d2 = {
             {"README.TXT", {}, spec.disk2_readme, true, 0x20u, 0100644u},
         };
+        const std::string disk3_readme =
+            "CK-DOS 5.00 Disk 3 (CK Basic / Supplemental Diskette)\r\n"
+            "Copy DOS\\*.* to C:\\DOS.\r\n";
+        std::vector<MemOrFileItem> d3 = {
+            {"README.TXT", {}, disk3_readme, true, 0x20u, 0100644u},
+        };
         for (const auto& [name, p] : cmd_files) {
-            (d1_cmds.count(name) ? d1 : d2).push_back({"DOS/" + name, p, {}, false, 0x20u, 0100644u});
+            if (spec.is_dos5 && name == "QBASIC.EXE") {
+                d3.push_back({"DOS/" + name, p, {}, false, 0x20u, 0100644u});
+            } else {
+                (d1_cmds.count(name) ? d1 : d2).push_back({"DOS/" + name, p, {}, false, 0x20u, 0100644u});
+            }
         }
         for (const auto& [name, p] : dev_files) {
             (d1_devs.count(name) ? d1 : d2).push_back({"DEV/" + name, p, {}, false, 0x20u, 0100644u});
@@ -1527,8 +1639,22 @@ void build_os_media_set(const fs::path& stage,
                 throw std::runtime_error("failed building " + img_720_2.filename().string() + ": " + err.message);
             }
         }
-        std::cout << "Built " << spec.prefix << " 2x720k floppy set ("
-                  << fs::file_size(img_720_1) << " + " << fs::file_size(img_720_2) << " bytes)\n";
+        if (spec.is_dos5 && d3.size() > 1u) {
+            ck_fat_geom g3{};
+            ck_diskimg_floppy_geom(CK_FLOPPY_720K, "CKDOS5 DSK3", &g3);
+            const auto b3 = bind_img_files(d3);
+            std::ofstream out3(img_720_3, std::ios::binary | std::ios::trunc);
+            if (ck_diskimg_write_fat_volume(&g3, nullptr, b3.data(), b3.size(), ofstream_write_cb, &out3, &err) != 0) {
+                throw std::runtime_error("failed building " + img_720_3.filename().string() + ": " + err.message);
+            }
+            out3.close();
+            std::cout << "Built " << spec.prefix << " 3x720k floppy set ("
+                      << fs::file_size(img_720_1) << " + " << fs::file_size(img_720_2)
+                      << " + " << fs::file_size(img_720_3) << " bytes)\n";
+        } else {
+            std::cout << "Built " << spec.prefix << " 2x720k floppy set ("
+                      << fs::file_size(img_720_1) << " + " << fs::file_size(img_720_2) << " bytes)\n";
+        }
     }
 
     // Shared full HDD / ISO / ZIP item list (includes C:\DEVTOOLS self-hosting 16-bit SDK)
@@ -1547,6 +1673,7 @@ void build_os_media_set(const fs::path& stage,
     }
     for (const auto& [lname, lp] : std::vector<std::pair<std::string, fs::path>>{
              {"SLIBC.LIB", find_ci(stage / "TOOLS" / "BLD" / "LIB", "SLIBC.LIB")},
+             {"MLIBCE.LIB", find_ci(stage / "TOOLS" / "BLD" / "LIB", "MLIBCE.LIB")},
              {"COMSUBS.LIB", find_ci(stage / "INC", "COMSUBS.LIB")},
              {"CASSFAR.LIB", find_ci(stage / "SELECT", "CASSFAR.LIB")},
          }) {
@@ -1937,6 +2064,12 @@ void verify_boot_media_with_qemu(const fs::path& dist_dir,
             type_cmd("edit /?\n");
             wait_for_tokens({"Starts the CK-DOS Editor", "EDIT [[drive:][path]filename]"}, "EDIT.COM /?");
             std::cout << "QEMU utility verified: dos5 EDIT.COM /?\n";
+
+            type_cmd("cls\n");
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            type_cmd("qbasic /?\n");
+            wait_for_tokens({"Starts CK Basic", "QBASIC"}, "QBASIC.EXE /?");
+            std::cout << "QEMU utility verified: dos5 QBASIC.EXE /? (CK Basic)\n";
 
             type_cmd("cls\n");
             std::this_thread::sleep_for(std::chrono::milliseconds(150));

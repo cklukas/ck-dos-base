@@ -62,7 +62,7 @@ ctest --test-dir build --build-config Release --output-on-failure
 ### Release artifacts (`dist/`)
 
 - `ckdos-5.00-floppy-1440k.img` & `ckdos-4.00-floppy-1440k.img` — 3.5" 1.44 MB bootable & installable FAT12 floppies (`INSTALL.BAT` installs DOS onto `C:`)
-- `ckdos-5.00-floppy-720k-disk1.img` / `disk2.img` & `ckdos-4.00-floppy-720k-disk1.img` / `disk2.img` — 2×720 KB floppy sets for vintage PC/XT and early PS/2 systems
+- `ckdos-5.00-floppy-720k-disk1..3.img` (`3×720 KB` set, including CK Basic Disk 3) & `ckdos-4.00-floppy-720k-disk1..2.img` (`2×720 KB` set) — 720 KB floppy sets for vintage PC/XT and early PS/2 systems
 - `ckdos-5.00-hdd-32m.vhd` & `ckdos-4.00-hdd-32m.vhd` — Ready-to-boot 32 MB Fixed VHD hard disks with `C:\DOS` and 16-bit self-hosting `C:\DEVTOOLS`
 - `ckdos-5.00-boot.iso` & `ckdos-4.00-boot.iso` — El-Torito bootable CD-ROM ISO-9660 images
 - `ckdos-5.00-files.zip` & `ckdos-4.00-files.zip` — Complete DOS + `DEVTOOLS` directory archives for DOSBox-X, XT-IDE CF, and SD cards

@@ -184,7 +184,7 @@ jobs:
             echo "## CK-DOS 5.0 Bootable & Installable Media"
             echo
             echo "- \`ckdos-5.00-floppy-1440k.img\` — 3.5\" 1.44 MB Boot + Install Diskette (\`CKDOS500\`)"
-            echo "- \`ckdos-5.00-floppy-720k-disk1.img\` & \`disk2.img\` — 2x720 KB Floppy Set for vintage XT/PS2 systems"
+            echo "- \`ckdos-5.00-floppy-720k-disk1.img\`..\`disk3.img\` — 3x720 KB Floppy Set (+CK Basic Disk 3) for vintage XT/PS2 systems"
             echo "- \`ckdos-5.00-hdd-32m.vhd\` — Pre-installed 32 MB Fixed VHD hard disk with \`C:\\DOS\` and 16-bit \`C:\\DEVTOOLS\` SDK"
             echo "- \`ckdos-5.00-boot.iso\` — El-Torito bootable CD-ROM ISO-9660 image"
             echo "- \`ckdos-5.00-files.zip\` — File archive for DOSBox-X, XT-IDE CompactFlash, and SD adapters"

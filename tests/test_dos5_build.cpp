@@ -82,7 +82,13 @@ DOSBASE_TEST(dos5_tree_contains_zero_prebuilt_binaries) {
     DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "EDIT" / "EDITHLP.ASM"));
     DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "HELP" / "HELP.ASM"));
     DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "HELP" / "HELPDATA.INC"));
+    DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "QBASIC" / "QBASIC.C"));
+    DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "QBASIC" / "CKBUI.ASM"));
     DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "SETVER" / "SETVER.ASM"));
+    DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "DOSKEY" / "DOSKEY.ASM"));
+    DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "LOADFIX" / "LOADFIX.ASM"));
+    DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "EXPAND" / "EXPAND.ASM"));
+    DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "DEV" / "HIMEM" / "HIMEM.ASM"));
     DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "DOSKEY" / "DOSKEY.ASM"));
     DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "LOADFIX" / "LOADFIX.ASM"));
     DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "EXPAND" / "EXPAND.ASM"));
