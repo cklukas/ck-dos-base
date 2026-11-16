@@ -517,6 +517,7 @@ HAVDIF:
 ;
 	MOV	word ptr DS:[PDB_Next_PDB],-1
 	MOV	word ptr DS:[PDB_Next_PDB+2],-1
+	MOV	word ptr DS:[PDB_Version],(MINOR_VERSION SHL 8) + MAJOR_VERSION
 	return
 
 EndProc $CREATE_PROCESS_DATA_BLOCK

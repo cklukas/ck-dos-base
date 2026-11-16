@@ -12,9 +12,9 @@ first-party CK-DOS 5.0 kernel enhancements and full-screen utilities.
 - **First-party full-screen DOSUI applications:**
   - `src/CMD/DOSUI/` — `DOSUI-0` 8086 text-mode UI, menu, modal dialog, and
     `INT 33h` mouse framework.
-  - `src/CMD/EDIT/` — `EDIT.COM` (also installed as `CKEDIT.COM`), a clean-room
-    full-screen ASCII text editor with pull-down menus, mouse navigation,
-    clipboard, search/replace, and embedded context help (`EDITHLP.ASM`).
+  - `src/CMD/EDIT/` — `EDIT.COM`, a clean-room full-screen ASCII text editor with
+    pull-down menus, mouse navigation, clipboard, search/replace, and embedded
+    context help (`EDITHLP.ASM`).
   - `src/CMD/HELP/` — `HELP.COM`, a clean-room full-screen command reference
     browser built from the authored topic corpus in `src/CMD/HELP/topics.json`
     (`HELPDATA.INC`).

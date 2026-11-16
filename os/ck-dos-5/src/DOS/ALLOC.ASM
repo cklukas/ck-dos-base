@@ -46,7 +46,10 @@ PAGE
 	i_need  FirstArena,WORD         ; first free block found
 	i_need  BestArena,WORD          ; best free block found
 	i_need  LastArena,WORD          ; last free block found
-	i_need  AllocMethod,BYTE        ; how to alloc first(best)last
+	i_need  AllocMethod,BYTE        ; how to alloc first(best)last + high flags
+	i_need  UMB_LINK_STATE,BYTE     ; 0=unlinked, 1=UMBs linked
+	i_need  UMB_HEAD,WORD           ; first UMB MCB segment (0 if none)
+	i_need  CONV_END_ARENA,WORD     ; bridge MCB at top of conventional memory
 	I_need  EXTERR_LOCUS,BYTE       ; Extended Error Locus
 
 ;
@@ -169,6 +172,28 @@ PAGE
 	MOV     [LastArena],AX
 
 	PUSH    AX                      ; alloc_max <- 0
+	MOV     AL,[AllocMethod]
+	AND     AL,0C0h
+	JZ      alloc_start_low         ; 00h = low (and UMB if linked)
+	CMP     BYTE PTR [UMB_LINK_STATE],0
+	JNZ     alloc_try_umb
+	CMP     AL,40h
+	JE      alloc_fail              ; 40h = high ONLY, fails when UMBs unlinked
+	JMP     SHORT alloc_start_low   ; 80h = high first then low -> scan low
+
+alloc_try_umb:
+	MOV     AX,[UMB_HEAD]
+	OR      AX,AX
+	JNZ     alloc_umb_chk
+	CMP     AL,40h
+	JE      alloc_fail
+	JMP     SHORT alloc_start_low
+alloc_umb_chk:
+	CALL    Check_signature
+	JC      alloc_err
+	JMP     SHORT alloc_scan
+
+alloc_start_low:
 	MOV     AX,[arena_head]         ; AX <- beginning of arena
 	CALL    Check_signature         ; ES <- AX, carry set if error
 	JC      alloc_err               ; IF error THEN GOTO err
@@ -181,10 +206,14 @@ alloc_scan:
 
 alloc_next:
 	CMP     BYTE PTR DS:[DI],arena_signature_end
-					; IF current block is last THEN
-	JZ      alloc_end               ;   GOTO end
+	JZ      alloc_end               ; end of chain
 	CALL    arena_next              ; AX, ES <- next block, Carry set if error
-	JNC     alloc_scan              ; IF no error THEN GOTO scan
+	JC      alloc_err
+	TEST    BYTE PTR [AllocMethod],80h
+	JZ      alloc_scan
+	CMP     AX,[UMB_HEAD]           ; stop low fallback pass before re-entering UMBs
+	JNE     alloc_scan
+	JMP     SHORT alloc_end_low
 
 alloc_err:
 	POP     AX
@@ -195,7 +224,20 @@ alloc_trashed:
 
 alloc_end:
 	CMP     [FirstArena],0
-	JNZ     alloc_do_split
+	JNZ     alloc_go_split
+	TEST    BYTE PTR [AllocMethod],80h
+	JZ      alloc_fail
+	CMP     BYTE PTR [UMB_LINK_STATE],0
+	JZ      alloc_fail
+	MOV     AX,DS
+	CMP     AX,[UMB_HEAD]
+	JAE     alloc_start_low         ; UMB pass found nothing -> fallback to low RAM
+	JMP     SHORT alloc_fail
+alloc_end_low:
+	CMP     [FirstArena],0
+	JZ      alloc_fail
+alloc_go_split:
+	JMP     alloc_do_split
 
 alloc_fail:
 	invoke  get_user_stack
@@ -257,7 +299,9 @@ alloc_do_split_high:
 ; last must be split high
 ;
 alloc_do_split:
-	CMP     BYTE PTR [AllocMethod], 1
+	MOV     AL,BYTE PTR [AllocMethod]
+	AND     AL,03h
+	CMP     AL,1
 	JA      alloc_do_split_high
 	MOV     DS,[FirstArena]
 	JB      alloc_get_size
@@ -377,6 +421,10 @@ PAGE
 	CMP     AL,1
 	JB      AllocOperGet
 	JZ      AllocOperSet
+	CMP     AL,3
+	JB      AllocOperGetUMB
+	JZ      AllocOperSetUMB
+AllocOperBad:
 	MOV     EXTERR_LOCUS,errLoc_mem ; Extended Error Locus
 	error   error_invalid_function
 AllocOperGet:
@@ -384,7 +432,47 @@ AllocOperGet:
 	XOR     AH,AH
 	transfer    SYS_RET_OK
 AllocOperSet:
+	OR      BH,BH
+	JNZ     AllocOperBad
+	TEST    BL,3Ch
+	JNZ     AllocOperBad
+	MOV     AL,BL
+	AND     AL,03h
+	CMP     AL,2
+	JA      AllocOperBad
+	MOV     AL,BL
+	AND     AL,0C0h
+	CMP     AL,0C0h
+	JE      AllocOperBad
 	MOV     [AllocMethod],BL
+	transfer    SYS_RET_OK
+AllocOperGetUMB:
+	MOV     AL,BYTE PTR [UMB_LINK_STATE]
+	XOR     AH,AH
+	transfer    SYS_RET_OK
+AllocOperSetUMB:
+	CMP     BX,1
+	JA      AllocOperBad
+	CMP     [UMB_HEAD],0
+	JNZ     AllocOperDoUMB
+	OR      BX,BX
+	JZ      AllocOperUMBDone        ; unlinking when no UMBs is a no-op
+	JMP     SHORT AllocOperBad      ; linking when DOS=UMB not active fails (01h)
+AllocOperDoUMB:
+	EnterCrit   critMem
+	MOV     [UMB_LINK_STATE],BL
+	MOV     AX,[CONV_END_ARENA]
+	OR      AX,AX
+	JZ      AllocOperLeaveUMB
+	MOV     ES,AX
+	MOV     BYTE PTR ES:[arena_signature],arena_signature_end
+	OR      BL,BL
+	JZ      AllocOperLeaveUMB
+	MOV     BYTE PTR ES:[arena_signature],arena_signature_normal
+AllocOperLeaveUMB:
+	LeaveCrit   critMem
+AllocOperUMBDone:
+	XOR     AX,AX
 	transfer    SYS_RET_OK
 EndProc $AllocOper
 

@@ -50,6 +50,7 @@ CODE    SEGMENT BYTE PUBLIC 'CODE'
         I_need  DISK_FULL,BYTE             ;AN000;
         I_need  InterCon,BYTE              ;AN000;
         I_need  BOOTDRIVE,BYTE             ;AN000;
+        I_need  DOS_FLAG,BYTE              ; 10h if DOS in HMA, else 00h
         I_need  EXTOPEN_ON,BYTE            ;AN000;
         I_need  DOS34_FLAG,WORD            ;AN000;
         I_need  ACT_PAGE,WORD              ;AN000;
@@ -131,9 +132,20 @@ CPSWset:                                ;AN000;
         IRET                             ;AN000;;FT.
 QueryDOSboot:                            ;AN000;
         CMP     AL,5                ;AN000;MS.
-        JA      BadVal              ;AN000;MS.
+        JA      QueryTrueVer        ; check AX=3306h Get True DOS Version
         MOV     DL,[BOOTDRIVE]      ;AN000;;MS. put boot drive in DL
         IRET                        ;AN000;;MS.
+QueryTrueVer:
+        CMP     AL,6
+        JA      BadVal
+        MOV     BX,(MINOR_VERSION SHL 8) + MAJOR_VERSION ; BL=5, BH=0
+        XOR     DL,DL               ; DL=0 revision
+        MOV     DH,[DOS_FLAG]       ; DH=10h when DOS is in HMA, else 00h
+        PUSH    BP
+        MOV     BP,SP
+        AND     BYTE PTR [BP+6],NOT 1 ; clear CF in caller flags
+        POP     BP
+        IRET
 
 
 ;; DOS 4.00 File Tagging

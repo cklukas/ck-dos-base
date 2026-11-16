@@ -160,32 +160,7 @@ Break	<SET_MAP_PAGE - map handle and page >					;AN000;
 										;AN000;
 Procedure   SET_MAP_PAGE,NEAR							;AN000;
 	ASSUME	DS:NOTHING,ES:NOTHING						;AN000;
-
-;	int	3
-										;AN000;
-	CMP	[BUF_EMS_MODE],-1	  ;LB. EMS support			;AN000;
-	JZ	No_map			  ;LB. no				;AN000;
-
-IF	NOT BUFFERFLAG
-	CMP	[ACT_PAGE],BX		  ;LB. already mapped ? 		;AN000;
-	JZ	No_map			  ;LB. yes				;AN000;
-ENDIF
-	MOV	[ACT_PAGE],BX		  ;LB. save active page mapped		;AN000;
-
-IF	BUFFERFLAG	
-	cmp	[BUF_EMS_SAFE_FLAG], 1
-	je	no_coll
-;	int	3
-	call	detect_collision
-no_coll:
-ENDIF
-
-	MOV	DX,[BUF_EMS_HANDLE]	  ;LB.					;AN000;
-	MOV	AH,44H			  ;LB. activate current handle		;AN000;
-	MOV	AL,BYTE PTR [BUF_EMS_PAGE_FRAME]  ;LB. page frame number	;AN000;
-	INT	67H			  ;LB.					;AN000;
-No_map: 									;AN000;
-	return									;AN000;
+	return									; EMS BUFFERS /X removed in CK-DOS 5.0
 EndProc SET_MAP_PAGE								;AN000;
 										;AN000;
 

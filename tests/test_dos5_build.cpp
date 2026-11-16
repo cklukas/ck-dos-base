@@ -82,6 +82,11 @@ DOSBASE_TEST(dos5_tree_contains_zero_prebuilt_binaries) {
     DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "EDIT" / "EDITHLP.ASM"));
     DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "HELP" / "HELP.ASM"));
     DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "HELP" / "HELPDATA.INC"));
+    DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "SETVER" / "SETVER.ASM"));
+    DOSBASE_TEST_EXPECT(!fs::exists(dos5_src / "DOS" / "IFS.ASM"));
+    DOSBASE_TEST_EXPECT(!fs::exists(dos5_src / "DOS" / "EXTATTR.ASM"));
+    DOSBASE_TEST_EXPECT(!fs::exists(dos5_src / "CMD" / "IFSFUNC"));
+    DOSBASE_TEST_EXPECT(!fs::exists(dos5_src / "CMD" / "FILESYS"));
 
     const std::set<std::string> forbidden = {".EXE", ".COM", ".OBJ", ".SYS", ".BIN"};
     for (const auto& entry : fs::recursive_directory_iterator(dos5_src)) {
@@ -144,6 +149,32 @@ DOSBASE_TEST(dos5_dosui_edit_and_help_assemble_link_and_convert) {
         char hdr[2]{0, 0};
         in.read(hdr, 2);
         DOSBASE_TEST_EXPECT(!(hdr[0] == 'M' && hdr[1] == 'Z'));
+    }
+
+    fs::copy_file(cmd_root / "SETVER" / "SETVER.ASM", d / "SETVER.ASM",
+                  fs::copy_options::overwrite_existing);
+    DOSBASE_TEST_EXPECT_EQ(
+        dosbase::bootstrap_test::run_tool(tool_dir, "ckmasm", {"-I.", "SETVER.ASM,SETVER.OBJ,NUL,NUL;"}, d),
+        0);
+    DOSBASE_TEST_EXPECT_EQ(
+        dosbase::bootstrap_test::run_tool(tool_dir, "cklink", {"SETVER.OBJ,SETVER.EXE,NUL,;"}, d), 0);
+    const fs::path setver_exe = d / "SETVER.EXE";
+    DOSBASE_TEST_EXPECT(fs::is_regular_file(setver_exe));
+    {
+        std::ifstream in(setver_exe, std::ios::binary);
+        std::vector<unsigned char> img((std::istreambuf_iterator<char>(in)),
+                                       std::istreambuf_iterator<char>());
+        DOSBASE_TEST_EXPECT(img.size() > 1060u);
+        DOSBASE_TEST_EXPECT(img[0] == 'M' && img[1] == 'Z');
+        const unsigned int hdr_paras =
+            static_cast<unsigned int>(img[8]) | (static_cast<unsigned int>(img[9]) << 8);
+        const std::size_t code_off = hdr_paras * 16u;
+        DOSBASE_TEST_EXPECT(code_off + 24u < img.size());
+        // Dual device-driver header at CODE:0000h ('SETVERXX' + 'CKSV')
+        DOSBASE_TEST_EXPECT_EQ(std::string(reinterpret_cast<const char*>(&img[code_off + 10]), 8),
+                               "SETVERXX");
+        DOSBASE_TEST_EXPECT_EQ(std::string(reinterpret_cast<const char*>(&img[code_off + 18]), 4),
+                               "CKSV");
     }
 }
 #endif

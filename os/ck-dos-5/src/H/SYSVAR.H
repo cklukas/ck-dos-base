@@ -19,12 +19,14 @@ struct sysVarsType
         unsigned stratNUL ;     /* strategy entry point of NUL dev         */
         unsigned intNUL ;       /* interrupt entry point of NUL dev        */
         char    namNUL[8] ;     /* name of NUL device                      */
-        char    fSplice ;       /* TRUE => splices are in effect           */
-        unsigned ibmdos_size ;  /* ;AN000; size in paragraphs              */
-        long    ifs_doscall ;   /* ;AN000; IFS serv routine entry          */
-        long    ifs ;           /* ;AN000; IFS header chain                */
-        unsigned buffers ;      /* ;AN000; BUFFERS= values (m,n)           */
-        char    boot_drive ;    /* ;AN000; boot drive A=1 B=2...           */
-        char    dwmove ;        /* ;AN000; 1 if 386 machine                */
+        long    setver_tab ;    /* +34h pointer to SETVER program list     */
+        unsigned a20_off ;      /* +38h A20 fixup offset in DOS CS         */
+        unsigned hma_psp ;      /* +3Ah HMA PSP                            */
+        unsigned buffers ;      /* +3Ch BUFFERS= x                         */
+        unsigned buffers2 ;     /* +3Eh BUFFERS= y                         */
+        char    boot_drive ;    /* +40h boot drive A=1 B=2...              */
+        char    dwmove ;        /* +41h 1 if 386 machine                   */
+        unsigned ext_mem ;      /* +42h extended memory size in KB         */
+        char    fSplice ;       /* +44h TRUE => splices are in effect      */
 } ;
 

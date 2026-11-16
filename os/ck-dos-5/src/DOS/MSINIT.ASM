@@ -32,8 +32,8 @@ include fastopen.inc
 	I_need	SysInitTable,BYTE	 ; sys init table for SYSINIT
 	I_need	FastOpenTable,BYTE	 ; table for FASTOPEN
 	I_need	FETCHI_TAG,WORD 	 ; TAG CHECK
-	I_need	Special_Entries,WORD	 ; address of special entries ;AN007;
-	I_need	IFS_DOS_CALL,DWORD	 ; IFS IBMDOS CALL entry      ;AN000;
+	I_need	SETVER_TAB,DWORD	 ; pointer to SETVER table
+	EXTRN	DEFAULT_SETVER_TABLE:BYTE
 	I_need	HASHINITVAR,WORD	 ; hash table variables       ;AN000;
 	I_need	Packet_Temp,WORD	 ; used for initial Hash table;AN000;
 	I_need	BUF_HASH_PTR,DWORD	 ; used for initial Hash table;AN000;
@@ -47,7 +47,7 @@ include fastopen.inc
 	I_need	Hash_Temp,WORD		 ; temporary Hash table     ;AN000;
 
 CODE		SEGMENT BYTE PUBLIC 'CODE'
-	Extrn	IRETT:NEAR,INT2F:NEAR,CALL_ENTRY:NEAR,QUIT:NEAR,IFS_DOSCALL:FAR
+	Extrn	IRETT:NEAR,INT2F:NEAR,CALL_ENTRY:NEAR,QUIT:NEAR
 	Extrn	COMMAND:NEAR,ABSDRD:NEAR,ABSDWRT:NEAR
 CODE		ENDS
 
@@ -108,11 +108,6 @@ SETFINDPB:
 ;;	MOV	WORD PTR ES:[DI.buf_prev],DI  ;;;1/19/88
 
 ;;	POP	ES
-	MOV	SI,OFFSET DOSGROUP:Version_Fake_Table ;MS.;AN007;move special
-	MOV	DI,ES:[Special_Entries] 	      ;MS.;AN007;entries
-	MOV	CX,ES:[Temp_Var]		      ;MS.;AN007;
-	REP	MOVSB				      ;MS.;AN007;
-
 	ASSUME	ES:DOSGroup
 
 	PUSH	ES
@@ -349,23 +344,6 @@ TRUEDPBAD:
 	MOV	AX,-1
 	STOSW			; End of list
 
-	MOV	[Special_Entries],BP ;MS.;AN007 save starting address of Special entries
-	MOV	SI,OFFSET DOSGROUP:Version_Fake_Table	;MS.;AN007
-	MOV	DX,SI		     ;MS.;AN007
-	XOR	AH,AH		     ;MS.;AN007
-NextEntry:			     ;MS.;AN007
-	LODSB			     ;MS.;AN007  get name length
-	OR	AL,AL		     ;MS.;AN007  end of list
-	JZ	endlist 	     ;MS.;AN007  yes
-	ADD	SI,AX		     ;MS.;AN007  position to
-	ADD	SI,3		     ;MS.;AN007  next entry
-	JMP	NextEntry	     ;MS.;AN007
-endlist:			     ;MS.;AN007
-	SUB	SI,DX		     ;MS.;AN007
-	MOV	[Temp_Var],SI	     ;MS.;AN007  si = total table length
-	ADD	BP,SI		     ;MS.;AN007
-
-
 	ADD	BP,15		; True start of free space (round up to segment)
 	RCR	BP,1
 	MOV	CL,3
@@ -566,9 +544,9 @@ OUTDONE:
 	MOV	WORD PTR ES:[SI.FASTOPEN_NAME_CACHING + 2],ES
 	MOV	ES:[FETCHI_TAG],22642	  ; TAG for IBM,
 					  ; Fetchi's serial # = 822642
-	MOV	WORD PTR ES:[IFS_DOS_CALL+2],ES   ;IFS. 			;AN000;
-	MOV	SI,OFFSET DOSGROUP:IFS_DOSCALL	  ;IFS. 			;AN000;
-	MOV	WORD PTR ES:[IFS_DOS_CALL],SI	  ;IFS. 			;AN000;
+	MOV	WORD PTR ES:[SETVER_TAB+2],ES
+	MOV	SI,OFFSET DOSGROUP:DEFAULT_SETVER_TABLE
+	MOV	WORD PTR ES:[SETVER_TAB],SI
 
 	MOV	DI,OFFSET DOSGROUP:SWAP_START	  ;IFS. 			;AN000;
 	MOV	CX,OFFSET DOSGROUP:SWAP_END	  ;IFS. 			;AN000;
@@ -648,18 +626,6 @@ INITSTACK LABEL BYTE
 ;fake_count: ff means the version will be reset when Abort or Exec is encountered
 ;	     n means the version will be reset after n DOS version calls are issued
 ;
-Version_Fake_Table:			    ;AN007  starting address for special
-	DB	12,"IBMCACHE.COM",3,40,255  ;AN007  ibmcache     1
-	DB	12,"IBMCACHE.SYS",3,40,255  ;AN007  ibmcache     2
-	DB	12,"DXMA0MOD.SYS",3,40,255  ;AN007  lan support  3
-	DB	10,"WIN200.BIN"  ,3,40,4    ;AN008  windows      4
-	DB	 9,"PSCPG.COM"   ,3,40,255  ;AN008  vittoria     5
-	DB	11,"DCJSS02.EXE" ,3,40,255  ;AN008  netview      6
-	DB	 8,"ISAM.EXE"    ,3,40,255  ;AN008  basic        7
-	DB	 9,"ISAM2.EXE"   ,3,40,255  ;AN008  basic        8
-	DB	12,"DFIA0MOD.SYS",3,40,255  ;AN008  lan support  9
-	DB	20  dup(0)		    ;AN007
-
 MEMSTRT LABEL	WORD
 MSINI002E label byte
 ADJFAC	EQU	MEMSTRT-SYSBUF

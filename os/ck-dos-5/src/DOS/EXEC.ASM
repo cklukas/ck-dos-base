@@ -84,7 +84,7 @@ include EA.INC
 include version.inc
 
 	I_Need	   Temp_Var2,WORD	     ;AN000;file type from $open
-	I_Need	   Special_Entries,WORD      ;AN007;address of special entries
+	I_Need	   SETVER_TAB,DWORD	     ;pointer to SETVER program list
 	I_Need	   Special_Version,WORD      ;AN007;special version number
 	I_Need	   Fake_Count,BYTE	     ;AN008;fake version count
 
@@ -151,6 +151,12 @@ EXEC001E:
 ; validate function
 ;
 
+	CMP	AL,5			; DOS 5.0 AX=4B05h Set Execution State
+	JNE	exec_chk_std
+	XOR	AX,AX
+	Leave
+	transfer    SYS_RET_OK
+exec_chk_std:
 	CMP	AL,3			; only 0, 1 or 3 are allowed
 	JNA	exec_check_2
 
@@ -620,8 +626,6 @@ exec_set_PDB:
 	CALL	exec_alloc
 	TEST	BYTE PTR exec_func,exec_func_overlay
 	JZ	exec_build_header
-	CALL	Scan_Execname		;MS.;AN007;
-	CALL	Scan_Special_Entries	;MS.;AN007;
 	Leave
 	transfer    SYS_RET_OK		; overlay load -> done
 
@@ -669,13 +673,20 @@ fill8:					;AN000;
 	POP    SI			;AN007;MS. ds:si -> file name
 	POP    CX			;AN007;MS.
 
-	CALL   Scan_Special_Entries	;AN007;MS.
+	CALL   Reset_Version
 
 	PUSH	DX
 	MOV	SI,exec_size
 	ADD	SI,DX
 	invoke	$Dup_PDB		; ES is now PDB
 	POP	DX
+
+	PUSH	ES
+	PUSH	DX
+	CALL	Scan_Execname		; DS:SI -> basename, CX = len + 1
+	CALL	Scan_Setver_Entries	; sets ES:[PDB_Version] on match
+	POP	DX
+	POP	ES
 
 	PUSH	exec_environ
 	POP	ES:[PDB_environ]
@@ -870,6 +881,8 @@ scan0:					;AN000;
 	JZ	save_begin		;AN000;;MS. yes, save si
 	CMP	AL,'\'                  ;AN000;;MS. is '\', may be A:\name
 	JZ	save_begin		;AN000;;MS. yes, save si
+	CMP	AL,'/'
+	JZ	save_begin
 	CMP	AL,0			;AN000;;MS. is end of name
 	JNZ	scan0			;AN000;;MS. no, continue scanning
 	SUB	SI,CX			;AN000;;MS. get name's length
@@ -879,46 +892,71 @@ scan0:					;AN000;
 EndProc Scan_Execname			;AN000;;MS.
 
 
-Procedure    Scan_Special_Entries,near	;AN000;MS.
-
-	DEC    CX			;AN007;MS. cx= name length
-	MOV    DI,CS:[Special_Entries]	;AN007;MS. es:di -> addr of special entries
-	CALL   Reset_Version		;AN008;MS.
-	PUSH   CS			;AN007;MS.
-	POP    ES			;AN007;MS.
-Getentries:				;AN007;MS.
-	MOV    AL,ES:[DI]		;AN007;MS. end of list
-	OR     AL,AL			;AN007;MS.
-	JZ     end_list 		;AN007;MS. yes
-	MOV    CS:[Temp_Var2],DI	;AN007;MS. save di
-	CMP    AL,CL			;AN007;MS. same length ?
-	JNZ    skipone			;AN007;MS. no
-	INC    DI			;AN007;MS. es:di -> special name
-	PUSH   CX			;AN007;MS. save length and name addr
-	PUSH   SI			;AN007;MS.
-	REPZ   CMPSB			;AN007;MS. same name ?
-	JNZ    not_matched		;AN007;MS. no
-	MOV    AX,ES:[DI]		;AN007;MS. get special version
-	MOV    CS:[Special_Version],AX	;AN007;MS. save it
-	MOV    AL,ES:[DI+2]		;AN008;MS. get fake count
-	MOV    CS:[Fake_Count],AL	;AN007;MS. save it
-	POP    SI			;AN007;MS.
-	POP    CX			;AN007;MS.
-	JMP    SHORT end_list		;AN007;MS.
-not_matched:				;AN007;MS.
-	POP    SI			;AN007;MS. restore si,cx
-	POP    CX			;AN007;MS.
-skipone:				;AN007;MS.
-	MOV    DI,CS:[Temp_Var2]	;AN007;MS. restore old di
-	XOR    AH,AH			;AN007;MS. position to next entry
-	ADD    DI,AX			;AN007;MS.
-	ADD    DI,4			;AN007;MS.
-	JMP    Getentries		;AN007;MS.
-
-
-end_list:				;AN007;MS.
+; Scan_Setver_Entries:
+;   Inputs:  DS:SI -> executed filename (ASCIIZ), CX = length including NUL,
+;            ES    = child PSP segment (already initialized to MSVERS).
+;   Action:  Walks SYSI_SETVER_TAB (CS:[SETVER_TAB]): [len][NAME][major][minor]...0
+;            and writes (minor SHL 8) + major to ES:[PDB_Version] on match.
+Procedure    Scan_Setver_Entries,near
+	DEC	CX
+	JZ	sv_done
+	MOV	DX,ES			; DX = child PSP segment
+	LES	DI,CS:[SETVER_TAB]
+	MOV	AX,ES
+	OR	AX,DI
+	JZ	sv_done
+sv_loop:
+	MOV	AL,ES:[DI]
+	OR	AL,AL
+	JZ	sv_done
+	CMP	AL,0FFh
+	JE	sv_done
+	XOR	AH,AH
+	CMP	AL,CL
+	JNE	sv_skip
+	PUSH	CX
+	PUSH	SI
+	PUSH	DI
+	INC	DI
+sv_cmp_ch:
+	LODSB
+	CMP	AL,'a'
+	JB	sv_up1
+	CMP	AL,'z'
+	JA	sv_up1
+	SUB	AL,20h
+sv_up1:
+	MOV	BL,ES:[DI]
+	INC	DI
+	CMP	BL,'a'
+	JB	sv_up2
+	CMP	BL,'z'
+	JA	sv_up2
+	SUB	BL,20h
+sv_up2:
+	CMP	AL,BL
+	JNE	sv_mismatch
+	LOOP	sv_cmp_ch
+	MOV	AX,ES:[DI]		; AL = major, AH = minor
+	MOV	ES,DX			; ES = child PSP
+	MOV	ES:[PDB_Version],AX
+	POP	DI
+	POP	SI
+	POP	CX
+	JMP	SHORT sv_done
+sv_mismatch:
+	POP	DI
+	POP	SI
+	POP	CX
+	MOV	AL,ES:[DI]
+	XOR	AH,AH
+sv_skip:
+	ADD	DI,AX
+	ADD	DI,3			; skip len byte + major + minor
+	JMP	SHORT sv_loop
+sv_done:
 	return
-EndProc Scan_Special_Entries		;AN000;;MS.
+EndProc Scan_Setver_Entries
 
 Procedure    Reset_Version,near 	;AN008;MS.
 

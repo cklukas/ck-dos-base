@@ -18,14 +18,13 @@ SYSI_ATTR	    DW	    ?		; null device attribute word
 SYSI_STRAT	    DW	    ?		; null device strategy entry point
 SYSI_INTER	    DW	    ?		; null device interrupt entry point
 SYSI_NAME	    DB	 8 DUP(?)	; null device name
-SYSI_SPLICE	    DB	    0		; TRUE -> splicees being done
-SYSI_IBMDOS_SIZE    DW	    ?		; DOS size in paragraphs
-SYSI_IFS_DOSCALL@   DD	    ?		; IFS DOS service rountine entry
-SYSI_IFS	    DD	    ?		; IFS header chain
-SYSI_BUFFERS	    DW	    ?,0 	; BUFFERS= values (m,n)
-SYSI_BOOT_DRIVE     DB	    ?		; boot drive A=1 B=2,..
-SYSI_DWMOVE	    DB	    0		; 1 if 386 machine
-SYSI_EXT_MEM	    DW	    0		; Extended memory size in KB.
+SYSI_SETVER_TAB     DD	    0		; +34h pointer to SETVER program list
+SYSI_A20_OFF	    DW	    0FFFFh	; +38h offset in DOS CS of A20-fixup routine
+SYSI_HMA_PSP	    DW	    0		; +3Ah PSP of last program if DOS in HMA
+SYSI_BUFFERS	    DW	    ?,0 	; +3Ch BUFFERS= values (x,y)
+SYSI_BOOT_DRIVE     DB	    ?		; +40h boot drive A=1 B=2,..
+SYSI_DWMOVE	    DB	    0		; +41h 1 if 386+ machine
+SYSI_EXT_MEM	    DW	    0		; +42h Extended memory size in KB.
 SysInitVars ENDS
 
 ;This is added for more information exchage between DOS, BIOS.

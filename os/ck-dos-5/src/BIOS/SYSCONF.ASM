@@ -764,10 +764,6 @@ CONFLP: JC	ENDCONV
 	call	Reset_DOS_Version	;AN024;AN026; Still need to reset version even IBMDOS handles this through
 					; function 4Bh call, since IBMDOS does not know when Load/Overlay call finishes.
 
-IF	NOT BUFFERFLAG
-	call	EMS_Stub_handler	;AN030;
-ENDIF
-
 	inc	LineCount		;AN000; Increase LineCount.
 	mov	Buffer_Pre_Scan, 0	;AN030; Reset Buffer_Pre_Scan.
 	mov	MultDeviceFlag,0	;AN001; Reset MultDeviceFlag.
@@ -829,9 +825,7 @@ Multi_Try_Buff: 				;AN030;
 	jmp	TryB				;AN030; TryB will set P_Buffer_Slash_X to non-zero value.
 
 Multi_Try_J:					;AN026;
-	cmp	ah, 'J' 			;AN026; IFS= command?
-	jne	Multi_Pass_Filter		;AN026; No. Ignore this.
-	jmp	GotJ				;AN026; Handles IFS= command.
+	jmp	Multi_Pass_Filter		; IFS= removed in CK-DOS 5.0
 
 Multi_Try_I:					;AN026;
 	cmp	ah, 'I' 			;AN026; INSTALL= command?
@@ -971,10 +965,10 @@ $$IF4:
 	    cmp    ax, $P_RC_EOL	;AN000; End of Line?
 ;	$LEAVE	   E			;AN000;  then jmp to $Endloop for semantic check.
 	JE $$EN4
-	    cmp    Result_Val.$P_SYNONYM_PTR, offset Switch_X ;AN000;AN025;
+		 cmp	Result_Val.$P_SYNONYM_PTR, offset Switch_X ;AN000;AN025;
 ;	    $IF    E					      ;AN000;
 	    JNE $$IF8
-		mov	P_Buffer_Slash_X, 1		      ;AN000;AN025; set the flag
+		mov	P_Buffer_Slash_X, 0		      ; /X EMS buffers disabled in CK-DOS 5.0
 ;	    $ELSE					      ;AN000;
 	    JMP SHORT $$EN8
 $$IF8:
@@ -1275,21 +1269,7 @@ TRYDJ:
 	and	cs:IFS_Flag, NOT_IFS	;AN000; Reset the flag
 	CMP	AH,'D'
 	JZ	GOTDJ
-	CMP	AH,'J'
-	jz	GOTJ
 	JMP	TRYQ
-GOTJ:					;AN000; IFS= command.
-	or	cs:[IFS_Flag], IS_IFS	;AN000; set the flag.
-	cmp	Multi_Pass_Id, 2	;second pass?
-	je	GOTDJ			;then proceed
-	jmp	Coff			;else ignore this until the second pass.
-
-;	 jmp	 GOTDJ_Cont
-;GOTD:
-;	 test	 cs:[IFS_Flag], HAD_IFS  ;AN000; Cannot have DEVICE= command after IFS= command.
-;	 jz	 GOTDJ_Cont		 ;AN000;
-;	 call	 Incorrect_Order	 ;AN000; Display "Incorrect order ..." msg.
-;	 jmp	 COFF			 ;AN000;
 
 GOTDJ:
 	MOV	BX,CS			;DEVICE= or IFS= command.
@@ -1422,25 +1402,8 @@ BADBRK_1:
 	JMP	COFF
 
 GOODLD:
-;J.K. If it is IFS=, then we should set IFS_DOSCALL@ field in IFSHEADER.
-	test	cs:[IFS_Flag], IS_IFS		;AN000;
-	jz	Skip_IFSHEADER_Set		;AN000;
-	push	es				;AN000;
-	push	di				;AN000;
-	push	ds				;AN000;
-	mov	bx, word ptr cs:[ENTRY_POINT+2] ;AN000;
-	mov	ds, bx				;AN000; DS:0 will be the header
-	les	di, cs:[DosInfo]		;AN000;
-	mov	bx, word ptr es:[di.SYSI_IFS_DOSCALL@]	 ;AN000;
-	mov	word ptr ds:[IFS_DOSCALL@], bx		 ;AN000;
-	mov	bx, word ptr es:[di.SYSI_IFS_DOSCALL@]+2 ;AN000;
-	mov	word ptr ds:[IFS_DOSCALL@]+2, bx	 ;AN000;
-	pop	ds				;AN000;
-	pop	di				;AN000;
-	pop	es				;AN000;
 Skip_IFSHEADER_Set:				;AN000;
 	SaveReg <ES,SI> 		;INITIALIZE THE DEVICE
-;	 call	 Chk_IBMCACHE		 ;AN024 IBMCACHE.SYS problem.;AN026;IBMDOS will handles this thru 4Bh call.
 Restore:MOV	BL,ES:[SI]		;   while ((c=*p) != 0)
 	OR	BL,BL
 	JZ	Got
@@ -1451,11 +1414,6 @@ Got:	MOV	BYTE PTR ES:[SI],' '	;   *p = ' ';
 	PUSH	CS
 	POP	ES
 
-	test	cs:[IFS_Flag], IS_IFS	;AN000;
-	jz	Got_Device_Com		;AN000;
-	mov	bx, IFS_CALL@		;AN000; offset from the start of IFSHEADER
-	call	CallIFS 		;AN000;
-	jmp	short End_Init_Call
 Got_Device_Com:
 	push	ds			;AN017;
 	push	si			;AN017;
@@ -1483,35 +1441,7 @@ End_Init_Call:
 
 	PUSH	CS
 	POP	DS
-
-	test	[IFS_Flag], IS_IFS	;AN000;
-	jz	Was_Device_Com		;AN000;
-	cmp	[ifs_rh.IFSR_RETCODE], 0 ;AN000; Was a success ?
-	jne	Erase_Dev_do		;AN000;
-	pop	si			;AN000; restore es:si to clean up the
-	pop	es			;AN000; stack for Set_Break call.
-	mov	ax, word ptr [Entry_Point+2]	   ;AN000; Get the loaded segment
-	add	ax, word ptr [ifs_rh.IFSR_RESSIZE] ;AN000;
-	mov	word ptr [Break_addr], 0	   ;AN000;
-	mov	word ptr [Break_addr+2], ax	   ;AN000;
-	or	cs:[SetDevMarkFlag], FOR_DEVMARK       ;AN004;
-	invoke	Set_Break		;AN000; Will also check the memory size too.
-	push	es			;AN000; Save it again, in case, for Erase_Dev_Do.
-	push	si			;AN000;
-	jc	Erase_Dev_do		;AN000;
-Link_IFS:				;AN000;
-	les	di, cs:[dosinfo]	;AN000;
-	mov	cx, word ptr es:[di.SYSI_IFS]	;AN000; save old pointer
-	mov	dx, word ptr es:[di.SYSI_IFS+2] ;AN000;
-	lds	si, cs:[Entry_Point]		;AN000;
-	mov	word ptr es:[di.SYSI_IFS],si	;AN000;
-	mov	word ptr es:[di.SYSI_IFS+2], ds ;AN000;
-	mov	word ptr ds:[si], cx		;AN000; We don't permit multiple IFSs.
-	mov	word ptr ds:[si+2], dx		;AN000;
-	pop	si			;AN000; Restore es:si for the next command.
-	pop	es			;AN000;
-;	 mov	 cs:[IFS_Flag], HAD_IFS  ;AN014; Set the flag.
-	jmp	COFF			;AN000;
+	jmp	Was_Device_Com
 
 ERASE_DEV_do:				;AC000;; Modified to show message "Error in CONFIG.SYS..."
 	pop	si

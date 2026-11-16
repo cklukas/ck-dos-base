@@ -1513,7 +1513,6 @@ COMTAB	LABEL	BYTE
 	DB	7,"COUNTRY",  'Q'
 	DB	5,"SHELL",    'S'
 	db	7,"INSTALL",  'I'       ;AN000;
-	db	3,"IFS",      'J'       ;AN000;
 	db	4,"CPSW",     'W'       ;AN000;
 ;;;;	   DB	   8,"SWITCHAR",'W'     ; NO LONGER SUPPORTED
 	db	7,"COMMENT",  'Y'       ;AN000;

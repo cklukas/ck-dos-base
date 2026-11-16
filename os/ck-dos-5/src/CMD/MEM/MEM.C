@@ -145,15 +145,14 @@ struct p_value_blk p_noval;                                                     
                 unsigned  NullDeviceStrategyEntryPoint;                                                                          /* ;an000; */
                 unsigned  NullDeviceInterruptEntryPoint;                                                                         /* ;an000; */
                 char      NullDeviceName[8];                                                                                     /* ;an000; */
-                char      SpliceIndicator;                                                                                       /* ;an000; */
-                unsigned  DosParagraphs;                                                                                         /* ;an000; */
-                char far *DosServiceRntryPoint;                                                                                  /* ;an000; */
-                char far *IfsChain;                                                                                              /* ;an000; */
-                unsigned  BufferValues;                                                                                          /* ;an000; */
-                unsigned  LastDriveValue;                                                                                        /* ;an000; */
-                char      BootDrive;                                                                                             /* ;an000; */
-                char      MoveType;
-                unsigned  ExtendedMemory;
+                char far *SetverTable;      /* +34h */
+                unsigned  A20FixupOffset;   /* +38h */
+                unsigned  HmaPsp;           /* +3Ah */
+                unsigned  BufferValues;     /* +3Ch */
+                unsigned  BufferValues2;    /* +3Eh */
+                char      BootDrive;        /* +40h */
+                char      MoveType;         /* +41h */
+                unsigned  ExtendedMemory;   /* +42h */
                 };                                                                                                               /* ;an000; */
                                                                                                                                  /* ;an000; */
 /*컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�*/                                                  /* ;an000; */

@@ -935,7 +935,7 @@ ERR_ESIZE  EQU	01H		;Transfer size adjusted
 
 ; additional errors added - kwc
 
-major_version	    equ     4	;Major DOS version
+major_version	    equ     5	;Major DOS version
 minor_version	    equ     00	;Minor DOS Version
 
 expected_version    equ     (MINOR_VERSION SHL 8)+MAJOR_VERSION

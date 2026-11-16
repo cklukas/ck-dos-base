@@ -464,7 +464,11 @@ SetFCBBits:
 	MOV	AX,ES:[DI].sf_flags
 	AND	AL,0C0h 		; mask off drive bits
 	OR	AL,BYTE PTR ES:[DI].sf_mode ; stick in open mode
-	MOV	[SI].fcb_nsl_bits,AL	; save dirty info
+	CMP	WORD PTR ES:[DI].sf_dirsec+2,0
+	JZ	NoBigDirSec
+	OR	AL,08h			; mark >32MB directory sector in fcb_nsl_bits
+NoBigDirSec:
+	MOV	[SI].fcb_nsl_bits,AL	; save dirty + >32MB info
 	JMP	SaveSFN 		; go and save SFN
 
 ;
@@ -914,6 +918,8 @@ RegenDeadJ:
 ; File found.  Just copy in the remaining pieces.
 ;
 RegenFileNoSharing:
+	TEST	[SI].FCB_nsl_bits,08h	; >32MB directory sector cannot be regenerated from 16-bit field
+	JNZ	RegenDeadJ
 	MOV	AX,ES:[DI].sf_flags
 	AND	AX,03Fh
 	SaveReg <DS,SI>
@@ -1065,14 +1071,23 @@ CheckNoShare:
 	TEST	AL,FCBDEVICE		; Device?
 	JNZ	CheckNoShareDev 	; Yes
 ;
-; Check no sharing local file
+; Check no sharing local file (including >32MB FAT16 volumes without SHARE)
 ;
 	MOV	BX,[SI].FCB_nsl_Dirsec
-	CMP	WORD PTR ES:[DI].sf_dirsec+2,0	;AN000;F.C. >32mb
-	JNZ	BadSFt				;AN000;F.C. >32mb
-
-	CMP	BX,WORD PTR ES:[DI].sf_dirsec	;AN000;F.C. >32mb
+	CMP	BX,WORD PTR ES:[DI].sf_dirsec
 	JNZ	BadSFT
+	TEST	[SI].FCB_nsl_bits,08h
+	JNZ	CheckBigDirSec
+	CMP	WORD PTR ES:[DI].sf_dirsec+2,0
+	JNZ	BadSFT
+	JMP	SHORT CheckDirPos
+CheckBigDirSec:
+	CMP	WORD PTR ES:[DI].sf_dirsec+2,0
+	JZ	BadSFT
+	MOV	BX,[SI].FCB_nsl_firclus
+	CMP	BX,ES:[DI].sf_firclus
+	JNZ	BadSFT
+CheckDirPos:
 	MOV	BL,[SI].FCB_nsl_Dirpos
 	CMP	BL,ES:[DI].sf_dirpos
 	JNZ	BadSFt
@@ -1083,10 +1098,10 @@ CheckNoShare:
 	MOV	BH,BYTE PTR ES:[DI].sf_flags
 	XOR	BH,BL
 	AND	BH,0C0h
-	JNZ	BadSFT			; dirty/device bits are different
+	JNZ	BadSFT2			; dirty/device bits are different
 	XOR	BL,BYTE PTR ES:[DI].sf_mode
 	AND	BL,access_mask
-	JNZ	BadSFT			; access modes are different
+	JNZ	BadSFT2			; access modes are different
 ; Make sure that the names are the same in the FCB and the SFT
 ; This case can appear under the following scenario:
 ;		Create	FOO
@@ -1102,18 +1117,20 @@ CheckNoShare:
 	REPE	CMPSB
 	POP	SI
 	POP	DI
-	JNZ	BadSFT
+	JNZ	BadSFT2
 	MOV	BX,[SI].FCB_nsl_firclus
 	JMP	CheckFirClus
 
 CheckNoShareDev:
 	MOV	BX,WORD PTR [SI].FCB_nsld_drvptr
 	CMP	BX,WORD PTR ES:[DI].sf_devptr
-	JNZ	BadSFT
+	JNZ	BadSFT2
 	MOV	BX,WORD PTR [SI].FCB_nsld_drvptr + 2
 	CMP	BX,WORD PTR ES:[DI].sf_devptr + 2
-	JNZ	BadSFT
+	JNZ	BadSFT2
 	JMP	CheckD
+BadSFT2:	STC
+	return
 
 EndProc CheckFCB
 

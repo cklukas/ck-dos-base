@@ -50,9 +50,7 @@
  macro2.obj           +
  file.obj             +
  lock.obj             +
- share.obj            +
- extattr.obj          +
- ifs.obj
+ share.obj
 MSDOS.EXE
 MSDOS.MAP /M
 ;

@@ -82,15 +82,27 @@ SYSINITVAR  LABEL   WORD		; [SYSTEM]
 	short_addr  SNULDEV		; [SYSTEM] Strategy entry point
 	short_addr  INULDEV		; [SYSTEM] Interrupt entry point
 	DB	"NUL     "              ; [SYSTEM] Name of null device
-	I_am	Splices,BYTE,<0>	; [SYSTEM] TRUE => splices being done
-	I_am	Special_Entries,WORD,<0>; [SYSTEM] address of specail entries	;AN000;
-	I_am	IFS_DOS_CALL,DWORD	; [SYSTEM] entry for IFS DOS service	;AN000;
-	I_am	IFS_HEADER,DWORD	; [SYSTEM] IFS header chain		;AN000;
-	I_am	BUFFERS_PARM1,WORD,<0>	; [SYSTEM] value of BUFFERS= ,m 	;AN000;
-	I_am	BUFFERS_PARM2,WORD,<0>	; [SYSTEM] value of BUFFERS= ,n 	;AN000;
-	I_am	BOOTDRIVE,BYTE		; [SYSTEM] the boot drive		;AN000;
-	I_am	DDMOVE,BYTE,<0> 	; [SYSTEM] 1 if we need DWORD move	;AN000;
-	I_am	EXT_MEM_SIZE,WORD,<0>	; [SYSTEM] extended memory size 	;AN000;
+	I_am	SETVER_TAB,DWORD,<0,0>	; +34h [SYSTEM] pointer to SETVER program list
+	I_am	A20_FIXUP_OFF,WORD,<0FFFFh> ; +38h [SYSTEM] offset in DOS CS of A20 fixup
+	I_am	HMA_PSP,WORD,<0>	; +3Ah [SYSTEM] PSP of last program when DOS in HMA
+	I_am	BUFFERS_PARM1,WORD,<0>	; +3Ch [SYSTEM] value of BUFFERS= x
+	I_am	BUFFERS_PARM2,WORD,<0>	; +3Eh [SYSTEM] value of BUFFERS= ,y
+	I_am	BOOTDRIVE,BYTE		; +40h [SYSTEM] the boot drive
+	I_am	DDMOVE,BYTE,<0> 	; +41h [SYSTEM] 1 if 386+ machine
+	I_am	EXT_MEM_SIZE,WORD,<0>	; +42h [SYSTEM] extended memory size in KB
+	I_am	Splices,BYTE,<0>	; +44h [SYSTEM] TRUE => splices being done
+	I_am	DOS_FLAG,BYTE,<0>	; [SYSTEM] 10h when DOS is in HMA, else 00h
+	I_am	UMB_LINK_STATE,BYTE,<0>	; [SYSTEM] 0=unlinked, 1=UMBs linked to arena
+	I_am	UMB_HEAD,WORD,<0>	; [SYSTEM] first UMB arena paragraph (0 if none)
+	I_am	CONV_END_ARENA,WORD,<0>	; [SYSTEM] bridge MCB at top of conventional RAM
+
+	PUBLIC	DEFAULT_SETVER_TABLE,DEFAULT_SETVER_END
+DEFAULT_SETVER_TABLE LABEL BYTE
+	DB	10,"WIN200.BIN",3,40
+	DB	12,"IBMCACHE.SYS",3,40
+	DB	0
+	DB	(256 - ($ - DEFAULT_SETVER_TABLE)) DUP (0)
+DEFAULT_SETVER_END LABEL BYTE
 
 	PUBLIC	HASHINITVAR		; [SYSTEM]				;AN000;
 HASHINITVAR  LABEL   WORD		; [SYSTEM]				;AN000;

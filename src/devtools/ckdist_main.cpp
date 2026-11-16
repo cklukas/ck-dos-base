@@ -733,9 +733,6 @@ void build_dos5_dosui_tools(const fs::path& tool_dir, const fs::path& out_stage)
     fs::remove(edit_dir / "DOSUI.OBJ", ec);
     const fs::path edit_com = find_ci(edit_dir, "EDIT.COM");
     validate_flat_com_image(edit_com, "EDIT.COM");
-    const fs::path ckedit_com = edit_dir / "CKEDIT.COM";
-    fs::copy_file(edit_com, ckedit_com, fs::copy_options::overwrite_existing);
-    validate_flat_com_image(ckedit_com, "CKEDIT.COM");
 
     if (run_process({ckmasm.string(), "-I.", "-I" + dosui_dir.string(), "HELP.ASM,HELP.OBJ,NUL,NUL;"}, help_dir) != 0) {
         throw std::runtime_error("[CK-DOS 5.0] ckmasm failed on CMD/HELP/HELP.ASM");
@@ -752,9 +749,25 @@ void build_dos5_dosui_tools(const fs::path& tool_dir, const fs::path& out_stage)
     const fs::path help_com = find_ci(help_dir, "HELP.COM");
     validate_flat_com_image(help_com, "HELP.COM");
 
-    std::cout << "[CK-DOS 5.0] Built first-party DOSUI tools: EDIT.COM & CKEDIT.COM ("
+    const fs::path setver_dir = out_stage / "CMD" / "SETVER";
+    if (!fs::is_directory(setver_dir)) {
+        throw std::runtime_error("[CK-DOS 5.0] missing CMD/SETVER source directory");
+    }
+    if (run_process({ckmasm.string(), "-I.", "SETVER.ASM,SETVER.OBJ,NUL,NUL;"}, setver_dir) != 0) {
+        throw std::runtime_error("[CK-DOS 5.0] ckmasm failed on CMD/SETVER/SETVER.ASM");
+    }
+    if (run_process({cklink.string(), "SETVER.OBJ,SETVER.EXE,NUL,;"}, setver_dir) != 0) {
+        throw std::runtime_error("[CK-DOS 5.0] cklink failed on SETVER.EXE");
+    }
+    const fs::path setver_exe = find_ci(setver_dir, "SETVER.EXE");
+    if (!fs::is_regular_file(setver_exe) || fs::file_size(setver_exe) == 0) {
+        throw std::runtime_error("[CK-DOS 5.0] SETVER.EXE missing after cklink");
+    }
+
+    std::cout << "[CK-DOS 5.0] Built first-party tools: EDIT.COM ("
               << fs::file_size(edit_com) << " bytes), HELP.COM ("
-              << fs::file_size(help_com) << " bytes)\n";
+              << fs::file_size(help_com) << " bytes), SETVER.EXE ("
+              << fs::file_size(setver_exe) << " bytes)\n";
 }
 
 void build_dos_source_stage(const std::string& os_label,
@@ -1322,7 +1335,7 @@ OsMediaSpec make_dos5_media_spec(const std::string& version) {
         "==============================================================\r\n\r\n"
         "Independent MIT-licensed CK-DOS 5.00 distribution built 100% from source\r\n"
         "with clean-room native tools (ckcl, ckmasm, cklink, cklib, cknmake, ckmkimg).\r\n"
-        "Includes full-screen DOSUI utilities EDIT.COM (CKEDIT.COM) and HELP.COM.\r\n\r\n"
+        "Includes full-screen DOSUI utilities EDIT.COM and HELP.COM.\r\n\r\n"
         "Included Release Media:\r\n"
         "  - ckdos-5.00-floppy-1440k.img : 3.5\" 1.44M Boot + Install Floppy (CKDOS500)\r\n"
         "  - ckdos-5.00-floppy-720k-disk1.img / disk2.img : 2x720K XT/PS2 Set\r\n"
@@ -1400,6 +1413,7 @@ void build_os_media_set(const fs::path& stage,
     if (spec.is_dos5) {
         d1_cmds.insert("EDIT.COM");
         d1_cmds.insert("HELP.COM");
+        d1_cmds.insert("SETVER.EXE");
     }
     const std::set<std::string> d1_devs = {
         "ANSI.SYS", "COUNTRY.SYS", "DISPLAY.SYS", "DRIVER.SYS",
@@ -1832,9 +1846,9 @@ void verify_boot_media_with_qemu(const fs::path& dist_dir,
 
             type_cmd("cls\n");
             std::this_thread::sleep_for(std::chrono::milliseconds(150));
-            type_cmd("ckedit /?\n");
-            wait_for_tokens({"Starts the CK-DOS Editor", "/NOHI"}, "CKEDIT.COM /?");
-            std::cout << "QEMU utility verified: dos5 CKEDIT.COM /?\n";
+            type_cmd("setver /?\n");
+            wait_for_tokens({"Sets the version number that CK-DOS reports", "SETVER"}, "SETVER.EXE /?");
+            std::cout << "QEMU utility verified: dos5 SETVER.EXE /?\n";
 
             type_cmd("help ver\n");
             wait_for_tokens({"File  Help", "CK-DOS 5 version", "SETVER"}, "HELP.COM VER");

@@ -41,11 +41,7 @@ all:
 	$(make)
 	cd ..\nlsfunc
 	$(make)
-	cd ..\ifsfunc
-	$(make)
 	cd ..\mem
-	$(make)
-	cd ..\filesys
 	$(make)
 	cd ..\backup
 	$(make)

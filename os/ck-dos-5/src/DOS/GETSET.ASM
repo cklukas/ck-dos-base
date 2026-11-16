@@ -68,6 +68,7 @@ include doscntry.inc
 	i_need	FILE_UCASE_TAB,BYTE
 	i_need	InterCon,BYTE
 	i_need	CURRENTPDB,WORD
+	i_need	DOS_FLAG,BYTE
 	i_need	DBCS_TAB,BYTE			   ;AN000;
 	i_need	Special_version,WORD		   ;AN006;
 	i_need	Fake_Count,BYTE 		   ;AN008;
@@ -95,8 +96,18 @@ ASSUME	DS:NOTHING,ES:NOTHING
 	MOV	BX,[USERNUM + 2]
 	MOV	CX,[USERNUM]
 	MOV	AX,[MSVERS]
+	MOV	ES,[CURRENTPDB]
+	CMP	WORD PTR ES:[PDB_Version],0
+	JZ	getver_have_pdb
+	MOV	AX,ES:[PDB_Version]
+getver_have_pdb:
+	MOV	DL,[DOS_FLAG]
 	invoke	get_user_stack
 ASSUME	DS:NOTHING
+	CMP	BYTE PTR [SI.user_AX],1 	   ; DOS 5.0 AL=01h -> version flag in BH
+	JNE	getver_store_bx
+	MOV	BH,DL
+getver_store_bx:
 	MOV	[SI.user_BX],BX
 	MOV	[SI.user_CX],CX
 	CMP	CS:[Fake_Count],0FFH		   ;AN008;
@@ -109,7 +120,7 @@ reg:						   ;AN008;
 	JZ	usual				   ;AN006;
 	MOV	AX,CS:[Special_version] 	   ;AN006;
 usual:						   ;AN006;
-	MOV	[SI.user_AX],AX 	; Really only sets AH
+	MOV	[SI.user_AX],AX 	; AL=major, AH=minor
 	return
 EndProc $GET_VERSION
 

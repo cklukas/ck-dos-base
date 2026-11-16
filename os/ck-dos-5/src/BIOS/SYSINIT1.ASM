@@ -539,9 +539,6 @@ LOCSTACK LABEL BYTE
 No_Ext_Memory:
 
 ;SB34SYSINIT1002**************************************************************
-	mov	word ptr es:[di.SYSI_IFS], -1	;AN000; Initialize SYSI_IFS chain.
-	mov	word ptr es:[di.SYSI_IFS+2], -1 ;AN000;
-
 	mov	ax, es:[di.SYSI_MAXSEC] 	;AN020; Get the sector size
 	add	ax, BUFINSIZ			;AN020; size of buffer header
 	mov	[SingleBufferSize], ax		;AN020; total size for a buffer
@@ -660,7 +657,6 @@ NODRVSET:
 ;J.K. [AREA] has the segment address for the allocated memory of SYSINIT,CONFBOT.
 ;Free the CONFBOT area used for CONFIG.SYS and SYSINIT itself.
 DoLast:
-	call	LoadShare		;AN021; Try to load share.exe, if needed.
 	mov	cs:[DoNotShowNum], 1	;AN000; Done with CONFIG.SYS. Do not show line number message.
 	mov	cx, [area]		;AN000;
 	mov	es, cx			;AN000;

@@ -199,12 +199,6 @@ lock.obj: lock.asm $(inc)\dosseg.asm $(inc)\dossym.inc \
 share.obj: share.asm $(inc)\dosseg.asm $(inc)\dossym.inc \
     $(inc)\devsym.inc
 
-extattr.obj: extattr.asm $(inc)\dosseg.asm $(inc)\dossym.inc \
-    $(inc)\devsym.inc $(inc)\ea.inc $(inc)\buffer.inc
-
-ifs.obj: ifs.asm $(inc)\dosseg.asm $(inc)\dossym.inc \
-    $(inc)\devsym.inc $(inc)\doscntry.inc $(inc)\buffer.inc
-
 msdos.sys: msdos.cl1 $(inc)\nibdos.obj $(inc)\const2.obj  \
     $(inc)\msdata.obj mscode.obj $(inc)\msdosme.obj time.obj getset.obj \
     parse.obj misc.obj misc2.obj crit.obj cpmio.obj cpmio2.obj \
@@ -213,8 +207,8 @@ msdos.sys: msdos.cl1 $(inc)\nibdos.obj $(inc)\const2.obj  \
     dup.obj create.obj open.obj dinfo.obj isearch.obj buf.obj \
     abort.obj close.obj dircall.obj disk.obj disk2.obj disk3.obj dir.obj \
     dir2.obj dev.obj mknode.obj rom.obj fcb.obj msctrlc.obj fat.obj \
-    proc.obj alloc.obj srvcall.obj util.obj macro.obj macro2.obj ifs.obj \
-    handle.obj file.obj lock.obj share.obj extattr.obj \
+    proc.obj alloc.obj srvcall.obj util.obj macro.obj macro2.obj \
+    handle.obj file.obj lock.obj share.obj \
     makefile msdos.lnk
 	link @msdos.lnk
 	exe2bin msdos.exe msdos.sys

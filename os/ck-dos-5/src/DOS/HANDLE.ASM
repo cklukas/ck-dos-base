@@ -579,83 +579,9 @@ BREAK <FileTimes - modify write times on a handle>
 
 procedure   $File_Times,NEAR
 	ASSUME	CS:DOSGROUP,DS:NOTHING,ES:NOTHING,SS:DOSGROUP
-	CMP	AL,2			; correct subfunction?
-	JAE	gsetxa
-	JMP	filetimes_ok		; Yes, continue
-;;;; DOS 4.00				;AN000;
-gsetxa: 				;AN000;
-	EnterCrit   critSFT		;AN000;;FT. enter critical section
-	CMP	AL,4			;AN000;;FT. =4
-	JBE	gshandle		;AN000;;FT. 2,3,4   do get/set by handle
-funcerr:				;AN000;
-	JMP	inval_func		;AN000;;FT. invalid function
-					;AN000;
-gshandle:				;AN000;
-	MOV	[SAVE_ES],ES		;AN000;;FT. save regs
-	MOV	[SAVE_DI],DI		;AN000;;FT.
-	MOV	[SAVE_DS],DS		;AN000;;FT. save regs
-	MOV	[SAVE_SI],SI		;AN000;;FT.
-	MOV	[SAVE_CX],CX		;AN000;;FT.
-	MOV	[XA_TYPE],AL		;AN000;;FT.
-					;AN000;
-;	MOV	[XA_handle],BX		;AN000;    ;FT. save handle
-	CALL	CheckOwner		;AN000;    ;FT. get sf pointer
-	JNC	getsetit		;AN000;    ;FT. good handle
-	LeaveCrit   critSFT		;AN000;    ;FT. leave critical section
-	JMP	LSeekError		;AN000;    ;FT. turkey handle
-					;AN000;
-getsetit:				;AN000;
-	MOV	WORD PTR [ThisSFT],DI	;AN000;       ;FT. set ThisSFT
-	MOV	WORD PTR [ThisSFT+2],ES ;AN000;       ;FT. set ThisSFT
-;	TEST	ES:[DI.sf_mode],INT_24_ERROR   ;AN000;;FT. mask INT 24
-;	JZ	nomask			       ;AN000;;FT. no
-;	OR	[EXTOPEN_ON],EXT_OPEN_I24_OFF  ;AN000;;FT. set bit for I24 handler
-nomask: 				       ;AN000;
-	TEST	ES:[DI.sf_flags],sf_isnet      ;AN000;;FT. remote handle
-	JZ	localhandle		       ;AN000;;FT. no
-	LeaveCrit   critSFT		       ;AN000;;FT. doesn't support Network
-
-	MOV	BL,[XA_TYPE]		       ;AN000;;FT.
-IFSsearch:				       ;AN000;
-	MOV	AX,(multNET SHL 8) or 45       ;AN000;;FT. Get/Set XA support
-	INT	2FH			       ;AN000;
-	JC	getseterror		       ;AN000;;FT. error
-	transfer    SYS_RET_OK		       ;AN000;;FT.
-localhandle:				       ;AN000;
-;	TEST	ES:[DI.sf_flags],devid_device  ;AN000;;FT. device
-;	JZ	getsetfile8		       ;AN000;;FT. no
-;	MOV	[XA_device],1		       ;AN000;;FT. indicating device
-;	JMP	SHORT doXA		       ;AN000;;FT. do XA
-getsetfile8:				       ;AN000;
-;	MOV	[XA_device],0		       ;AN000;;FT. indicating File
-;	LES	BP,ES:[DI.sf_devptr]	       ;AN000;;FT. ES:BP -> DPB
-
-doXA:					       ;AN000;
-;	MOV	[XA_from],By_XA 	       ;AN000;;FT. from get/set XA
-;	PUSH	[SAVE_ES]		       ;AN000;;FT. save XA list
-;	PUSH	[SAVE_DI]		       ;AN000;;FT. save XA list
-
-	invoke	GetSet_XA		       ;AN000;;FT. issue Get/Set XA
-;	POP	SI			       ;AN000;;FT. DS:SI -> XA list
-;	POP	DS			       ;AN000;
-	JC	getexit 		       ;AN000;;FT. error
-;	CMP	[XA_device],0		       ;AN000;;FT. device ?
-;	JNZ	ftok			       ;AN000;;FT. yes, exit
-;	MOV	AX,4			       ;AN000;;FT. function 4 for ShSU
-;	CMP	[XA_type],4		       ;AN000;;FT. set XA
-;	JNZ	ftok			       ;AN000;;FT. no
-;
-;
-;	LES	DI,[ThisSFT]		       ;AN000;;FT. es:di -> sft
-;	CMP	WORD PTR [SI],0 	       ;AN000;;FT. null list ?
-;	JNZ	do_share		       ;AN000;;FT. no
-	JMP	SHORT ftok		       ;AN000;;FT. return
-getexit:				       ;AN000;;FT.
-	LeaveCrit   critSFT		       ;AN000;;FT. leave critical section
-
-
-getseterror:				       ;AN000;
-	transfer    SYS_RET_ERR 	       ;AN000;;FT. mark file as dirty
+	CMP	AL,2			; only AL=0 (get) and AL=1 (set) in CK-DOS 5.0
+	JB	filetimes_ok
+	JMP	inval_func
 inval_func:
 
 ;;;;; DOS 4.00
