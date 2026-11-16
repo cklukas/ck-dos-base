@@ -241,14 +241,34 @@ Implement Microsoft C 5.1's signature 16-bit optimization: keeping up to two hot
 
 Close the remaining C89 struct-value limitation in `ckcl` and upgrade the 16-bit DOS CRT heap in [`runtime/crt/crt_mem.c`](file:///Volumes/PRO-BLADE/git/ck-dos-base/runtime/crt/crt_mem.c) so DOS tools can run arbitrarily large workloads within 64 KB `DGROUP`.
 
-- [ ] **Struct assignment (`a = b`) in `ckcl`:** When assigning structs/unions (`TypeKind::t_struct`), evaluate RHS address into `SI` (preserving `SI`/`DI` if live in register variables!), LHS address into `ES:DI` (`push ds; pop es` for near data), and emit `cld; mov cx, sz/2; rep movsw` (+ `movsb` if `sz & 1`), leaving LHS address in `AX` if `need_value` is true.
-- [ ] **Struct pass-by-value & return-by-value:**
+- [x] **Struct assignment (`a = b`) in `ckcl`:** When assigning structs/unions (`TypeKind::t_struct`), evaluate RHS address into `SI` (preserving `SI`/`DI` if live in register variables!), LHS address into `ES:DI` (`push ds; pop es` for near data), and emit `cld; mov cx, sz/2; rep movsw` (+ `movsb` if `sz & 1`), leaving LHS address in `AX` if `need_value` is true.
+- [x] **Struct pass-by-value & return-by-value:**
   - Push struct arguments onto the stack (even-aligned byte count via `sub sp, aligned_sz` + `rep movsw`) in `ExprKind::call`.
   - Support functions returning structs > 4 bytes via a hidden caller-allocated buffer pointer matching MS C small/medium model conventions.
-- [ ] **Coalescing free-list `malloc` / `free` / `realloc` in `runtime/crt/crt_mem.c`:**
+- [x] **Coalescing free-list `malloc` / `free` / `realloc` in `runtime/crt/crt_mem.c`:**
   - Replace the bump-only allocator (`free()` no-op) with a 4-byte block header (`size_and_flags` + free-list links or boundary tags) over `_heap_ptr.._heap_limit` (with the static `crt_heap` fallback when `_heap_ptr == 0`).
   - Split oversized free blocks on `malloc`, coalesce adjacent free blocks on `free()`, and shrink/expand blocks in-place in `realloc()` before falling back to allocate-copy-free.
-- [ ] **End-to-end size/speed audit & small-model check:**
+- [x] **End-to-end size/speed audit & small-model check:**
   - Measure before/after binary sizes across MS-DOS 4 C utilities (`ATTRIB.EXE`, `MEM.EXE`, `FC.EXE`, `FDISK.EXE`, `BACKUP.COM`, `RESTORE.COM`) and `build_dos_tools.py` outputs (check if `CKLINK.EXE` now fits in `-AS` small model!).
   - Add a DOS heap churn stress test to `scripts/verify_self_host.py` (allocating and freeing > 200 KB total across many iterations inside a 64 KB `DGROUP` process), update `docs/build-manifest.json`, and run all verification gates.
+
+### Phase 2 Binary Size Audit (WP-9 Baseline vs. Post-WP-15)
+
+| Target | WP-9 Baseline | Post-WP-15 | Delta | Change |
+|---|---:|---:|---:|---:|
+| `CMD/MEM/MEM.EXE` | 33,808 B | 21,600 B | -12,208 B | -36.1% |
+| `CMD/FDISK/FDISK.EXE` | 105,312 B | 71,779 B | -33,533 B | -31.8% |
+| `CMD/RESTORE/RESTORE.COM` | 65,355 B | 45,115 B | -20,240 B | -31.0% |
+| `CMD/FC/FC.EXE` | 21,568 B | 15,792 B | -5,776 B | -26.8% |
+| `CMD/BACKUP/BACKUP.COM` | 50,555 B | 37,611 B | -12,944 B | -25.6% |
+| `CMD/ATTRIB/ATTRIB.EXE` | 28,859 B | 21,882 B | -6,977 B | -24.2% |
+| `CKLINK.EXE` (`-AM` -> `-AS`) | 84,368 B | 54,096 B | -30,272 B | -35.9% |
+| `CKNMAKE.EXE` (`-AS`) | 29,664 B | 19,392 B | -10,272 B | -34.6% |
+| `CKLIB.EXE` (`-AS`) | 38,592 B | 25,424 B | -13,168 B | -34.1% |
+| `CKEXEFIX.EXE` (`-AS`) | 21,328 B | 14,528 B | -6,800 B | -31.9% |
+| `CKNOSRV.EXE` (`-AS`) | 37,600 B | 25,760 B | -11,840 B | -31.5% |
+| `CKBLDMSG.EXE` (`-AS`) | 37,648 B | 25,808 B | -11,840 B | -31.4% |
+| `CKEXE2BN.EXE` (`-AS`) | 21,184 B | 14,720 B | -6,464 B | -30.5% |
+| `CKCONV.EXE` (`-AS`) | 18,624 B | 13,248 B | -5,376 B | -28.9% |
+| `CKCMPRSS.EXE` (`-AS`) | 19,024 B | 13,664 B | -5,360 B | -28.2% |
 

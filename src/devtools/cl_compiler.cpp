@@ -453,6 +453,10 @@ bool is_byte_scalar(const TypePtr& t) {
     return t && (t->kind == TypeKind::t_char || t->kind == TypeKind::t_uchar);
 }
 
+bool is_aggregate_type(const TypePtr& t) {
+    return t && (t->kind == TypeKind::t_struct || t->kind == TypeKind::t_union);
+}
+
 // ---------------------------------------------------------------------------
 // 3. AST
 // ---------------------------------------------------------------------------
@@ -485,6 +489,7 @@ struct Expr {
     std::shared_ptr<Expr> rhs;
     std::shared_ptr<Expr> third;
     std::vector<std::shared_ptr<Expr>> args;
+    int temp_bp_offset = 0;
 };
 
 using ExprPtr = std::shared_ptr<Expr>;
@@ -1359,6 +1364,9 @@ private:
                 // Bind parameters at positive BP offsets
                 int arg_off = type->is_far ? 6 : 4;
                 if (type->is_interrupt) arg_off = 4;
+                if (is_aggregate_type(type->base) && type_size(type->base) > 4) {
+                    arg_off += 2;  // hidden caller-allocated return buffer pointer
+                }
                 if (type->is_pascal) {
                     // Pascal pushes left-to-right, so last param is at lowest offset
                     for (auto it = fn.params.rbegin(); it != fn.params.rend(); ++it) {
@@ -1941,6 +1949,12 @@ private:
                     if (!match(Tok::comma)) break;
                 }
                 consume(Tok::rparen, "expected ')'");
+                if (is_aggregate_type(call->type) && !local_scopes_.empty()) {
+                    std::size_t rsz = std::max<std::size_t>(2, type_size(call->type));
+                    if (rsz % 2 != 0) ++rsz;
+                    next_local_offset_ -= static_cast<int>(rsz);
+                    call->temp_bp_offset = next_local_offset_;
+                }
                 e = std::move(call);
             } else if (at(Tok::dot) || at(Tok::arrow)) {
                 const bool arrow = match(Tok::arrow);
@@ -2208,6 +2222,8 @@ private:
     std::unordered_map<int, RegVar> reg_by_bp_off_;
     bool use_si_ = false;
     bool use_di_ = false;
+    bool has_hidden_sret_ = false;
+    int sret_bp_off_ = 4;
     std::size_t effective_frame_size_ = 0;
     std::vector<LabelId> break_stack_;
     std::vector<LabelId> continue_stack_;
@@ -2873,9 +2889,9 @@ private:
     }
 
     static bool is_reg_eligible_type(const TypePtr& t) {
-        if (!t || is_byte_scalar(t) || is_32bit_scalar(t)) return false;
+        if (!t || is_byte_scalar(t) || is_32bit_scalar(t) || is_aggregate_type(t)) return false;
         if (t->kind == TypeKind::t_array || t->kind == TypeKind::t_func ||
-            t->kind == TypeKind::t_struct || t->kind == TypeKind::t_void) {
+            t->kind == TypeKind::t_void) {
             return false;
         }
         return type_size(t) == 2;
@@ -2966,6 +2982,9 @@ private:
         };
 
         int arg_off = fn.type->is_far ? 6 : 4;
+        if (is_aggregate_type(fn.type->base) && type_size(fn.type->base) > 4) {
+            arg_off += 2;
+        }
         auto seed_param = [&](const ParamDecl& p) {
             std::size_t sz = std::max<std::size_t>(2, type_size(p.type));
             if (sz % 2 != 0) ++sz;
@@ -2989,6 +3008,7 @@ private:
         }
 
         bool calls_setjmp = false;
+        bool has_call_temps = false;
 
         auto unwrap_base_ptr_var = [&](const ExprPtr& pexpr) -> std::optional<int> {
             const Expr* cur = pexpr.get();
@@ -3098,6 +3118,7 @@ private:
                         walk_expr(e->third, loop_depth, false);
                         break;
                     case ExprKind::call:
+                        if (e->temp_bp_offset != 0) has_call_temps = true;
                         if (e->lhs && e->lhs->kind == ExprKind::var &&
                             (e->lhs->name == "setjmp" || e->lhs->name == "_setjmp")) {
                             calls_setjmp = true;
@@ -3201,7 +3222,7 @@ private:
             use_di_ = true;
         }
 
-        if (!all_local_offs.empty()) {
+        if (!all_local_offs.empty() && !has_call_temps) {
             bool all_promoted = true;
             for (int loff : all_local_offs) {
                 if (reg_by_bp_off_.find(loff) == reg_by_bp_off_.end()) {
@@ -3213,8 +3234,65 @@ private:
         }
     }
 
+    // Copies sz bytes from src (BX, or CX:BX if src_far) to dst (AX, or DX:AX if dst_far).
+    // Always preserves callee-saved SI/DI, DS, and ES=DS; leaves AX = dst offset.
+    void emit_copy_agg(std::size_t sz, bool dst_far, bool src_far) {
+        if (sz == 0) return;
+        emit_u8(0x56);  // push si
+        emit_u8(0x57);  // push di
+        if (src_far) emit_u8(0x1E);  // push ds
+        if (dst_far) {
+            emit_u8(0x8E); emit_u8(0xC2);  // mov es, dx
+        } else {
+            emit_u8(0x1E); emit_u8(0x07);  // push ds; pop es
+        }
+        emit_u8(0x8B); emit_u8(0xF3);  // mov si, bx
+        emit_u8(0x8B); emit_u8(0xF8);  // mov di, ax
+        if (src_far) {
+            emit_u8(0x8E); emit_u8(0xD9);  // mov ds, cx
+        }
+        emit_u8(0xFC);  // cld
+        const std::size_t words = sz / 2;
+        if (words == 1) {
+            emit_u8(0xA5);  // movsw
+        } else if (words == 2) {
+            emit_u8(0xA5); emit_u8(0xA5);  // movsw; movsw
+        } else if (words >= 3) {
+            emit_u8(0xB9); emit_u16(static_cast<std::uint16_t>(words));  // mov cx, words
+            emit_u8(0xF3); emit_u8(0xA5);                                // rep movsw
+        }
+        if ((sz & 1U) != 0U) {
+            emit_u8(0xA4);  // movsb
+        }
+        if (src_far) emit_u8(0x1F);                  // pop ds
+        if (dst_far) { emit_u8(0x1E); emit_u8(0x07); }  // push ds; pop es
+        emit_u8(0x5F);  // pop di
+        emit_u8(0x5E);  // pop si
+    }
+
+    void emit_agg_addr_to_bx(const ExprPtr& e, bool& out_far) {
+        out_far = false;
+        if (!e) return;
+        if (e->kind == ExprKind::var || e->kind == ExprKind::member ||
+            (e->kind == ExprKind::unary && e->op == Tok::star) ||
+            e->kind == ExprKind::cast) {
+            emit_lvalue_addr(e, out_far);
+            return;
+        }
+        emit_expr(e, true);
+        emit_u8(0x8B); emit_u8(0xD8);  // mov bx, ax
+    }
+
     void emit_local_init(const LocalVar& lv) {
         if (!lv.init) return;
+        if (is_aggregate_type(lv.type)) {
+            bool src_far = false;
+            emit_agg_addr_to_bx(lv.init, src_far);
+            if (src_far) { emit_u8(0x8C); emit_u8(0xC1); }  // mov cx, es
+            emit_u8(0x8D); emit_bp_rm(0, lv.bp_offset);     // lea ax, [bp+d]
+            emit_copy_agg(type_size(lv.type), false, src_far);
+            return;
+        }
         auto rit = reg_by_bp_off_.find(lv.bp_offset);
         if (rit != reg_by_bp_off_.end()) {
             if (lv.init->kind == ExprKind::int_lit) {
@@ -3234,6 +3312,9 @@ private:
         fold_stmt(fn.body);
         analyze_and_allocate_reg_vars(fn);
         cur_func_ = &fn;
+        has_hidden_sret_ =
+            fn.type && is_aggregate_type(fn.type->base) && type_size(fn.type->base) > 4;
+        sret_bp_off_ = (fn.type && fn.type->is_far) ? 6 : 4;
         fn_code_start_ = omf_.code.data.size();
         const std::size_t pf_start = pending_fixups_.size();
         const std::size_t cf_start = omf_.code.fixups.size();
@@ -3257,6 +3338,7 @@ private:
         std::vector<std::pair<int, RegVar>> param_reg_inits;
         int arg_off = fn.type->is_far ? 6 : 4;
         if (fn.type->is_interrupt) arg_off = 4;
+        if (has_hidden_sret_) arg_off += 2;
         auto bind_param = [&](const ParamDecl& p) {
             std::size_t sz = std::max<std::size_t>(2, type_size(p.type));
             if (sz % 2 != 0) ++sz;
@@ -3276,8 +3358,8 @@ private:
         }
 
         // Prologue
-        const bool need_bp =
-            effective_frame_size_ > 0 || !fn.params.empty() || fn.type->is_interrupt;
+        const bool need_bp = effective_frame_size_ > 0 || !fn.params.empty() ||
+                             has_hidden_sret_ || fn.type->is_interrupt;
         if (fn.type->is_interrupt) {
             // push ax, bx, cx, dx, es, ds, si, di, bp
             for (std::uint8_t op : {0x50, 0x53, 0x51, 0x52, 0x06, 0x1E, 0x56, 0x57, 0x55}) {
@@ -3331,7 +3413,7 @@ private:
             }
             if (need_bp) emit_u8(0x5D);  // pop bp
             if (fn.type->is_pascal) {
-                std::size_t param_bytes = 0;
+                std::size_t param_bytes = has_hidden_sret_ ? 2U : 0U;
                 for (const ParamDecl& p : fn.params) {
                     std::size_t sz = std::max<std::size_t>(2, type_size(p.type));
                     if (sz % 2 != 0) ++sz;
@@ -3676,7 +3758,42 @@ private:
                 if (!continue_stack_.empty()) emit_jmp(continue_stack_.back());
                 break;
             case StmtKind::return_stmt:
-                if (s->expr) emit_expr(s->expr);
+                if (s->expr) {
+                    const TypePtr ret_type =
+                        (cur_func_ && cur_func_->type) ? cur_func_->type->base : nullptr;
+                    if (is_aggregate_type(ret_type)) {
+                        const std::size_t rsz = type_size(ret_type);
+                        bool src_far = false;
+                        emit_agg_addr_to_bx(s->expr, src_far);
+                        if (rsz <= 4) {
+                            if (rsz == 1) {
+                                if (src_far) emit_u8(0x26);
+                                emit_u8(0x8A); emit_u8(0x07);
+                                emit_u8(0x32); emit_u8(0xE4);
+                            } else if (rsz == 2) {
+                                if (src_far) emit_u8(0x26);
+                                emit_u8(0x8B); emit_u8(0x07);
+                            } else if (rsz == 3) {
+                                if (src_far) emit_u8(0x26);
+                                emit_u8(0x8B); emit_u8(0x07);
+                                if (src_far) emit_u8(0x26);
+                                emit_u8(0x8A); emit_u8(0x57); emit_u8(0x02);
+                                emit_u8(0x32); emit_u8(0xF6);
+                            } else if (rsz == 4) {
+                                if (src_far) emit_u8(0x26);
+                                emit_u8(0x8B); emit_u8(0x07);
+                                if (src_far) emit_u8(0x26);
+                                emit_u8(0x8B); emit_u8(0x57); emit_u8(0x02);
+                            }
+                        } else {
+                            if (src_far) { emit_u8(0x8C); emit_u8(0xC1); }  // mov cx, es
+                            emit_u8(0x8B); emit_bp_rm(0, sret_bp_off_);     // mov ax, [bp+sret]
+                            emit_copy_agg(rsz, false, src_far);
+                        }
+                    } else {
+                        emit_expr(s->expr);
+                    }
+                }
                 emit_jmp(epilogue_label_);
                 break;
             case StmtKind::goto_stmt:
@@ -3821,9 +3938,11 @@ private:
 
     bool try_resolve_word_mem(const ExprPtr& e, DirectMem& out) const {
         if (!e || !e->type) return false;
-        if (is_byte_scalar(e->type) || is_32bit_scalar(e->type)) return false;
+        if (is_byte_scalar(e->type) || is_32bit_scalar(e->type) || is_aggregate_type(e->type)) {
+            return false;
+        }
         if (e->type->kind == TypeKind::t_array || e->type->kind == TypeKind::t_func ||
-            e->type->kind == TypeKind::t_struct || e->type->kind == TypeKind::t_void) {
+            e->type->kind == TypeKind::t_void) {
             return false;
         }
         if (type_size(e->type) != 2) return false;
@@ -4048,6 +4167,11 @@ private:
             emit_ptr_to_idx(e->lhs, out_base, out_far, out_disp);
             return;
         }
+        if (e->kind == ExprKind::call && is_aggregate_type(e->type)) {
+            emit_expr(e, true);
+            emit_u8(0x8B); emit_u8(0xD8);  // mov bx, ax
+            return;
+        }
         throw FormatError(0, "expression is not assignable");
     }
 
@@ -4167,16 +4291,21 @@ private:
                     }
                     break;
                 }
+                if (is_aggregate_type(e->type)) {
+                    bool is_far = false;
+                    emit_lvalue_addr(e, is_far);
+                    emit_u8(0x8B); emit_u8(0xC3);  // mov ax, bx
+                    if (is_far) { emit_u8(0x8C); emit_u8(0xC2); }
+                    break;
+                }
                 if (const RegVar rv = find_reg_var(e->name); rv != RegVar::none) {
                     emit_mov_ax_regvar(rv);
                     break;
                 }
-                if (!(e->type && e->type->kind == TypeKind::t_struct)) {
-                    DirectMem dm;
-                    if (try_resolve_direct_mem(e, dm)) {
-                        load_direct_mem(e->type, dm);
-                        break;
-                    }
+                DirectMem dm;
+                if (try_resolve_direct_mem(e, dm)) {
+                    load_direct_mem(e->type, dm);
+                    break;
                 }
                 PtrBase base = PtrBase::bx;
                 bool is_far = false;
@@ -4187,25 +4316,23 @@ private:
             }
 
             case ExprKind::member: {
-                if (!(e->type && e->type->kind == TypeKind::t_struct)) {
-                    DirectMem dm;
-                    if (try_resolve_direct_mem(e, dm)) {
-                        load_direct_mem(e->type, dm);
-                        break;
-                    }
-                }
-                if (e->type && e->type->kind == TypeKind::t_array) {
+                if (is_aggregate_type(e->type) || (e->type && e->type->kind == TypeKind::t_array)) {
                     bool is_far = false;
                     emit_lvalue_addr(e, is_far);
                     emit_u8(0x8B); emit_u8(0xC3);  // mov ax, bx
                     if (is_far) { emit_u8(0x8C); emit_u8(0xC2); }  // mov dx, es
-                } else {
-                    PtrBase base = PtrBase::bx;
-                    bool is_far = false;
-                    int disp = 0;
-                    emit_lvalue_idx_disp(e, base, is_far, disp);
-                    load_from_bx(e->type, is_far, disp, base);
+                    break;
                 }
+                DirectMem dm;
+                if (try_resolve_direct_mem(e, dm)) {
+                    load_direct_mem(e->type, dm);
+                    break;
+                }
+                PtrBase base = PtrBase::bx;
+                bool is_far = false;
+                int disp = 0;
+                emit_lvalue_idx_disp(e, base, is_far, disp);
+                load_from_bx(e->type, is_far, disp, base);
                 break;
             }
 
@@ -4255,6 +4382,20 @@ private:
             }
 
             case ExprKind::assign: {
+                if (is_aggregate_type(e->type)) {
+                    bool src_far = false;
+                    emit_agg_addr_to_bx(e->rhs, src_far);
+                    if (src_far) emit_u8(0x06);  // push es
+                    emit_u8(0x53);              // push bx
+                    bool dst_far = false;
+                    emit_lvalue_addr(e->lhs, dst_far);
+                    emit_u8(0x8B); emit_u8(0xC3);  // mov ax, bx (dst off)
+                    if (dst_far) { emit_u8(0x8C); emit_u8(0xC2); }  // mov dx, es (dst seg)
+                    emit_u8(0x5B);                 // pop bx (src off)
+                    if (src_far) emit_u8(0x59);    // pop cx (src seg)
+                    emit_copy_agg(type_size(e->type), dst_far, src_far);
+                    break;
+                }
                 if (const RegVar rv = find_expr_reg_var(e->lhs); rv != RegVar::none) {
                     if (!need_value && e->rhs->kind == ExprKind::int_lit) {
                         emit_mov_regvar_imm(rv, static_cast<std::uint16_t>(e->rhs->int_val));
@@ -4266,20 +4407,18 @@ private:
                 }
                 emit_expr(e->rhs);
                 if (is_32bit_scalar(e->type)) emit_widen_dxax(e->rhs->type);
-                if (!(e->type && e->type->kind == TypeKind::t_struct)) {
-                    DirectMem dm;
-                    if (try_resolve_direct_mem(e->lhs, dm)) {
-                        store_direct_mem(e->type, dm);
-                        break;
-                    }
-                    if (can_emit_lvalue_bx_preserving_ax_dx(e->lhs)) {
-                        PtrBase base = PtrBase::bx;
-                        bool is_far = false;
-                        int disp = 0;
-                        emit_lvalue_idx_disp(e->lhs, base, is_far, disp);
-                        store_to_bx(e->type, is_far, disp, base);
-                        break;
-                    }
+                DirectMem dm;
+                if (try_resolve_direct_mem(e->lhs, dm)) {
+                    store_direct_mem(e->type, dm);
+                    break;
+                }
+                if (can_emit_lvalue_bx_preserving_ax_dx(e->lhs)) {
+                    PtrBase base = PtrBase::bx;
+                    bool is_far = false;
+                    int disp = 0;
+                    emit_lvalue_idx_disp(e->lhs, base, is_far, disp);
+                    store_to_bx(e->type, is_far, disp, base);
+                    break;
                 }
                 emit_u8(0x50);  // push ax
                 if (is_32bit_scalar(e->type)) emit_u8(0x52);  // push dx
@@ -4531,17 +4670,16 @@ private:
                 }
                 if (e->op == Tok::star) {
                     if (!need_value) { emit_expr(e->lhs, false); break; }
-                    if (e->type && (e->type->kind == TypeKind::t_array ||
-                                    e->type->kind == TypeKind::t_func)) {
+                    if ((e->type && (e->type->kind == TypeKind::t_array ||
+                                     e->type->kind == TypeKind::t_func)) ||
+                        is_aggregate_type(e->type)) {
                         emit_expr(e->lhs);
                         break;
                     }
-                    if (!(e->type && e->type->kind == TypeKind::t_struct)) {
-                        DirectMem dm;
-                        if (try_resolve_direct_mem(e, dm)) {
-                            load_direct_mem(e->type, dm);
-                            break;
-                        }
+                    DirectMem dm;
+                    if (try_resolve_direct_mem(e, dm)) {
+                        load_direct_mem(e->type, dm);
+                        break;
                     }
                     PtrBase base = PtrBase::bx;
                     bool is_far = false;
@@ -5012,9 +5150,38 @@ private:
                 }
                 const bool is_far = fn_type && fn_type->is_far;
                 const bool is_pascal = fn_type && fn_type->is_pascal;
+                const bool ret_agg = is_aggregate_type(e->type);
+                const std::size_t ret_sz = ret_agg ? type_size(e->type) : 0;
+                const bool call_hidden_sret = ret_agg && ret_sz > 4;
 
                 std::size_t arg_bytes = 0;
+                auto push_sret_ptr = [&]() {
+                    emit_u8(0x8D);
+                    emit_bp_rm(0, e->temp_bp_offset);  // lea ax, [bp+temp]
+                    emit_u8(0x50);                     // push ax
+                    arg_bytes += 2;
+                };
                 auto push_arg = [&](std::size_t idx, const ExprPtr& arg) {
+                    if (is_aggregate_type(arg->type)) {
+                        const std::size_t sz = type_size(arg->type);
+                        const std::size_t aligned_sz =
+                            std::max<std::size_t>(2, (sz + 1U) & ~std::size_t(1U));
+                        bool src_far = false;
+                        emit_agg_addr_to_bx(arg, src_far);
+                        if (src_far) { emit_u8(0x8C); emit_u8(0xC1); }  // mov cx, es
+                        if (aligned_sz <= 127) {
+                            emit_u8(0x83); emit_u8(0xEC);
+                            emit_u8(static_cast<std::uint8_t>(aligned_sz));
+                        } else {
+                            emit_u8(0x81); emit_u8(0xEC);
+                            emit_u16(static_cast<std::uint16_t>(aligned_sz));
+                        }
+                        emit_u8(0x8B); emit_u8(0xC4);  // mov ax, sp
+                        emit_u8(0x8C); emit_u8(0xD2);  // mov dx, ss
+                        emit_copy_agg(sz, true, src_far);
+                        arg_bytes += aligned_sz;
+                        return;
+                    }
                     emit_expr(arg);
                     bool want32 = is_32bit_scalar(arg->type);
                     if (fn_type && idx < fn_type->params.size() && fn_type->params[idx].type) {
@@ -5032,8 +5199,10 @@ private:
                 };
                 if (is_pascal) {
                     for (std::size_t i = 0; i < e->args.size(); ++i) push_arg(i, e->args[i]);
+                    if (call_hidden_sret) push_sret_ptr();
                 } else {
                     for (std::size_t i = e->args.size(); i > 0; --i) push_arg(i - 1, e->args[i - 1]);
+                    if (call_hidden_sret) push_sret_ptr();
                 }
 
                 if (e->lhs->kind == ExprKind::var && !find_local(e->lhs->name).has_value()) {
@@ -5078,6 +5247,21 @@ private:
                     } else {
                         emit_u8(0x81); emit_u8(0xC4); emit_u16(static_cast<std::uint16_t>(arg_bytes));
                     }
+                }
+
+                if (ret_agg && !call_hidden_sret && need_value) {
+                    if (ret_sz == 1) {
+                        emit_u8(0x88); emit_bp_rm(0, e->temp_bp_offset);
+                    } else if (ret_sz == 2) {
+                        emit_u8(0x89); emit_bp_rm(0, e->temp_bp_offset);
+                    } else if (ret_sz == 3) {
+                        emit_u8(0x89); emit_bp_rm(0, e->temp_bp_offset);
+                        emit_u8(0x88); emit_bp_rm(2, e->temp_bp_offset + 2);
+                    } else if (ret_sz == 4) {
+                        emit_u8(0x89); emit_bp_rm(0, e->temp_bp_offset);
+                        emit_u8(0x89); emit_bp_rm(2, e->temp_bp_offset + 2);
+                    }
+                    emit_u8(0x8D); emit_bp_rm(0, e->temp_bp_offset);  // lea ax, [bp+temp]
                 }
                 break;
             }

@@ -4,6 +4,8 @@
 
 #include "dosbase/devtools/cl_compiler.hpp"
 #include "dosbase/devtools/cl_preproc.hpp"
+#include "dosbase/devtools/link_image.hpp"
+#include "dosbase/devtools/omf_module.hpp"
 #include "dosbase/devtools/omf_record.hpp"
 
 #include <algorithm>
@@ -569,5 +571,72 @@ DOSBASE_TEST(cl_wp14_si_di_register_allocation) {
         const auto obj = compile_c_to_omf(src, CompileOptions{});
         const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
         DOSBASE_TEST_EXPECT(!code.empty());
+    }
+}
+
+DOSBASE_TEST(cl_wp15_struct_value_abi) {
+    // 1. Odd-sized packed struct assignment (7 bytes = 3 words + 1 byte) with live SI/DI register vars
+    {
+        const char* src =
+            "struct Odd7 { int a; int b; int c; char d; };\n"
+            "int copy_odd7(struct Odd7 *dst, struct Odd7 *src) {\n"
+            "    register int acc = 0;\n"
+            "    register int cnt = 4;\n"
+            "    while (cnt > 0) {\n"
+            "        acc += cnt;\n"
+            "        cnt--;\n"
+            "    }\n"
+            "    *dst = *src;\n"
+            "    return acc;\n"
+            "}\n";
+        CompileOptions opts;
+        opts.pack_structs = true;
+        const auto obj = compile_c_to_omf(src, opts);
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        // Preserves SI/DI around block copy: push si; push di (56 57) and pop di; pop si (5F 5E)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x56, 0x57}));
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x5F, 0x5E}));
+        // cld (FC), mov cx, 3 (B9 03 00), rep movsw (F3 A5), movsb (A4)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0xFC, 0xB9, 0x03, 0x00, 0xF3, 0xA5, 0xA4}));
+    }
+
+    // 2. Struct pass-by-value & return-by-value (<= 4B in DX:AX and > 4B via hidden [bp+4] sret pointer)
+    {
+        const char* src =
+            "struct Pair { int x; int y; };\n"
+            "struct Big  { int a; int b; int c; int d; };\n"
+            "struct Pair make_pair(int x, int y) {\n"
+            "    struct Pair p;\n"
+            "    p.x = x; p.y = y;\n"
+            "    return p;\n"
+            "}\n"
+            "struct Big make_big(int base) {\n"
+            "    struct Big b;\n"
+            "    b.a = base; b.b = base + 1; b.c = base + 2; b.d = base + 3;\n"
+            "    return b;\n"
+            "}\n"
+            "int sum_big(struct Big v, int extra) {\n"
+            "    return v.a + v.b + v.c + v.d + extra;\n"
+            "}\n"
+            "void main(void) {\n"
+            "    struct Pair p = make_pair(3, 4);\n"
+            "    struct Big b = make_big(10);\n"
+            "    int total = sum_big(b, p.x + p.y);\n"
+            "    (void)total;\n"
+            "}\n";
+        CompileOptions opts;
+        opts.omit_default_lib = true;
+        const auto obj = compile_c_to_omf(src, opts);
+        const auto records = parse_omf_records(obj, 0, true);
+        const auto code = extract_code_bytes(records);
+        // Passing 8-byte struct Big by value reserves 8 stack bytes: sub sp, 8 (83 EC 08)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x83, 0xEC, 0x08}));
+        // Returning >4B struct Big loads hidden sret pointer from [bp+4]: mov ax, [bp+4] (8B 46 04)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x8B, 0x46, 0x04}));
+
+        const auto mod = dosbase::devtools::parse_module(records);
+        const auto linked = dosbase::devtools::link_modules({mod});
+        DOSBASE_TEST_EXPECT(linked.errors.empty());
+        DOSBASE_TEST_EXPECT(!linked.exe.empty());
     }
 }

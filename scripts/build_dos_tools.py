@@ -85,8 +85,6 @@ def build_all_dos_tools(repo_root: pathlib.Path, tool_dir: pathlib.Path, out_dir
     obj_dir = out_dir / "obj"
     obj_dir.mkdir(parents=True, exist_ok=True)
     med_dir = out_dir / "obj_m"
-    slibc = build_slibc(repo_root, tool_dir, obj_dir, "S")
-    mlibc = build_slibc(repo_root, tool_dir, med_dir, "M")
 
     core_dir = repo_root / "src" / "devtools" / "core"
     dos_dir = repo_root / "src" / "devtools" / "dos"
@@ -99,9 +97,12 @@ def build_all_dos_tools(repo_root: pathlib.Path, tool_dir: pathlib.Path, out_dir
         ("CKBLDMSG.EXE", [core_dir / "msgtools_core.c", dos_dir / "ckbldmsg.c"], "S"),
         ("CKNOSRV.EXE", [core_dir / "msgtools_core.c", dos_dir / "cknosrv.c"], "S"),
         ("CKLIB.EXE", [core_dir / "omf_core.c", core_dir / "lib_core.c", dos_dir / "cklib.c"], "S"),
-        ("CKLINK.EXE", [core_dir / "omf_core.c", core_dir / "link_core.c", dos_dir / "cklink.c"], "M"),
+        ("CKLINK.EXE", [core_dir / "omf_core.c", core_dir / "link_core.c", dos_dir / "cklink.c"], "S"),
         ("CKNMAKE.EXE", [core_dir / "nmake_core.c", dos_dir / "cknmake.c"], "S"),
     ]
+
+    slibc = build_slibc(repo_root, tool_dir, obj_dir, "S")
+    mlibc = build_slibc(repo_root, tool_dir, med_dir, "M") if any(m == "M" for _, _, m in tools) else slibc
 
     built = []
     for exe_name, srcs, model in tools:
