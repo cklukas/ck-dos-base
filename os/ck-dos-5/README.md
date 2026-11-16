@@ -9,15 +9,19 @@ first-party CK-DOS 5.0 kernel enhancements and full-screen utilities.
   using the native CK-DOS Base toolchain (`ckcl`, `ckmasm`, `cklink`, `cklib`,
   `cknmake`, `ckexe2bin`, `ckmkimg`, `ckdist`) and the clean-room `runtime/`
   libraries.
-- **First-party full-screen DOSUI applications:**
-  - `src/CMD/DOSUI/` — `DOSUI-0` 8086 text-mode UI, menu, modal dialog, and
+- **First-party full-screen DOSUI applications (Copyright (c) 2026 C. Klukas, clean-room MIT):**
+  - `src/CMD/DOSUI/` — `DOSUI` 8086 text-mode UI, menu, modal dialog, and
     `INT 33h` mouse framework.
-  - `src/CMD/EDIT/` — `EDIT.COM`, a clean-room full-screen ASCII text editor with
+  - `src/CMD/EDIT/` — **CK Edit** (shipped under the compatible executable name
+    `EDIT.COM`), an independent clean-room full-screen ASCII text editor with
     pull-down menus, mouse navigation, clipboard, search/replace, and embedded
     context help (`EDITHLP.ASM`).
-  - `src/CMD/HELP/` — `HELP.COM`, a clean-room full-screen command reference
-    browser built from the authored topic corpus in `src/CMD/HELP/topics.json`
-    (`HELPDATA.INC`).
+  - `src/CMD/HELP/` — **CK Help** (shipped as `HELP.COM`), an independent
+    clean-room full-screen command reference browser built from the authored
+    topic corpus in `src/CMD/HELP/topics.json` (`HELPDATA.INC`).
+  - `src/CMD/QBASIC/` — **CK Basic** (shipped under the compatible executable
+    name `QBASIC.EXE`), an independent clean-room QBasic-compatible IDE and
+    interpreter compiled with `ckcl -AM -FPa` and `MLIBCE.LIB`.
 - **Zero Microsoft MS-DOS 5.0 source or binary code:** All DOS 5.0-compatible
   features and full-screen utilities in `os/ck-dos-5` are original clean-room
   implementations authored from public specifications, built atop the MIT

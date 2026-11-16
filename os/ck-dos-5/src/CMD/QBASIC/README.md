@@ -1,25 +1,32 @@
 <!-- Copyright (c) 2026 C. Klukas. All rights reserved. -->
 <!-- SPDX-License-Identifier: MIT -->
 
-# CK-DOS QBasic (`QBASIC.EXE`)
+# CK Basic (`QBASIC.EXE`)
 
-`QBASIC.EXE` is a clean-room
-16-bit DOS QBasic-compatible interpreter and full-screen `DOSUI` IDE compiled
-natively with `ckcl -AM -FPa`, `ckmasm`, and `cklink`.
+**CK Basic** (shipped under the classic DOS 5 executable filename `QBASIC.EXE`)
+is an independent, clean-room 16-bit DOS BASIC interpreter and full-screen
+`DOSUI` IDE authored by C. Klukas (`Copyright (c) 2026 C. Klukas. All rights
+reserved.`) under the MIT License.
+
+CK Basic was developed clean-room from public QBasic / QuickBASIC language
+documentation and black-box behavioral specifications, with zero Microsoft
+QBasic source code, disassembly, or retail help data used. It compiles 100%
+from source using `ckcl -AM -FPa`, `ckmasm`, and `cklink`.
 
 ## Usage
 
-- `QBASIC` — open the interactive full-screen editor and Immediate window
+- `QBASIC` — open the interactive full-screen CK Basic editor and Immediate window
 - `QBASIC PROGRAM.BAS` — open `PROGRAM.BAS` in the IDE
 - `QBASIC /RUN PROGRAM.BAS` — execute `PROGRAM.BAS` directly and return to DOS
 - `QBASIC /MBF /RUN PROGRAM.BAS` — use Microsoft Binary Format for `MKS$`/`MKD$`/`CVS`/`CVD`
-- `QBASIC /EDITOR [FILE]` — launch standalone `EDIT.COM`
+- `QBASIC /EDITOR [FILE]` — launch standalone CK Edit (`EDIT.COM`)
+- `QBASIC /?` — print command-line usage and copyright notice
 
 ## Language & IDE Capabilities
 
-- Full-screen `DOSUI` editor, menu bar, mouse support, Immediate window (`F6`),
-  single-stepping (`F8` / `F10`), breakpoints (`F9`), output screen toggle (`F4`),
-  and `F5` run/continue.
+- Full-screen `DOSUI` editor, menu bar, `Help -> About...` dialog, mouse
+  support, Immediate window (`F6`), single-stepping (`F8` / `F10`), breakpoints
+  (`F9`), output screen toggle (`F4`), and `F5` run/continue.
 - `INTEGER`, `LONG`, `SINGLE`, `DOUBLE`, variable-length `STRING`, fixed-length
   `STRING * n`, packed `TYPE ... END TYPE` user-defined records, dynamic `REDIM`
   and multidimensional `DIM` arrays, `SUB` and `FUNCTION` procedures with

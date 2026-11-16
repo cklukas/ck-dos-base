@@ -2638,6 +2638,33 @@ static void draw_help(struct workspace *w, const struct ckb_help *h)
     else ui_cursor(0xffff);
 }
 
+static void show_about(struct workspace *w)
+{
+    static const unsigned char box[] = {7, 11, 16, 68, GRAY, GRAY};
+    unsigned long event;
+    for (;;) {
+        draw_workspace(w);
+        draw_dialog(box, " About CK Basic ");
+        center(9, 12, 56, GRAY, "CK Basic Version 1.0 (QBASIC.EXE)");
+        center(10, 12, 56, GRAY, "Copyright (c) 2026 C. Klukas. All rights reserved.");
+        center(11, 12, 56, GRAY, "Independent clean-room BASIC IDE & interpreter.");
+        center(12, 12, 56, GRAY, "MIT License - CK-DOS Project.");
+        put(14, 36, SELECTED, "<  OK  >");
+        ui_cursor(0xffff);
+        event = ui_event();
+        if (event & MOUSE_EVENT) {
+            unsigned row = (event >> 8) & 255;
+            unsigned col = event & 255;
+            if (row == 14 && col >= 36 && col < 44) return;
+            continue;
+        }
+        if ((unsigned char)event == '\r' || (unsigned char)event == ' ' ||
+            (unsigned char)event == 27) {
+            return;
+        }
+    }
+}
+
 static void show_help(struct workspace *w, unsigned topic, int menu_pending)
 {
     struct ckb_help h;
@@ -2653,15 +2680,20 @@ static void show_help(struct workspace *w, unsigned topic, int menu_pending)
         if ((unsigned char)key == 27) return;
         if (key == 0x6800) ckb_help_back(&h); /* Alt+F1 */
         else if (key == 0x2300) { /* Alt+H */
-            static const unsigned char menu[] = {1, 50, 6, 78, GRAY, GRAY};
+            static const unsigned char menu[] = {1, 50, 7, 78, GRAY, GRAY};
             ui_menu(menu);
             put(2, 51, GRAY, "Index");
             put(3, 51, GRAY, "Contents");
             put(4, 51, GRAY, "Back");
+            put(5, 51, GRAY, "About...");
             event = ui_event(); key = (unsigned)event;
             if ((unsigned char)key == 'i' || (unsigned char)key == 'I') ckb_help_open(&h, CKB_HELP_INDEX);
             else if ((unsigned char)key == 'c' || (unsigned char)key == 'C') ckb_help_open(&h, CKB_HELP_CONTENTS);
             else if ((unsigned char)key == 'b' || (unsigned char)key == 'B') ckb_help_back(&h);
+            else if ((unsigned char)key == 'a' || (unsigned char)key == 'A') {
+                show_about(w);
+                return;
+            }
         } else if ((unsigned char)key == '\t') ckb_help_move(&h, 1);
         else if (key == 0x0f00) ckb_help_move(&h, -1);
         else if ((unsigned char)key == '\r') ckb_help_follow(&h);
@@ -2715,6 +2747,7 @@ int ckb_ide(const char *path)
             else if (!row && col >= 28 && col <= 32) run_menu(&w);
             else if (!row && col >= 33 && col <= 38) dispatch_debug(&w);
             else if (!row && col >= 39 && col <= 47) options_menu(&w);
+            else if (!row && col >= 74 && col <= 78) show_help(&w, CKB_HELP_USING, 1);
             else if (col > 0 && col < 79) {
                 if (row == 22) focus_view(&w, IMMEDIATE_VIEW);
                 else if (row >= 2 && row <= 19 && (!w.split || row <= 9 || row >= 12)) {

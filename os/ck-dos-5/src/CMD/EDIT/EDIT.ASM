@@ -2366,7 +2366,7 @@ LOAD_FILE ENDP
 ; do the loading.
 
 ; EDIT /B and /NOHI, as DOS 5 EDIT shows them on a VGA (captured under QEMU,
-; 2026-11-11; receipt docs/validation/edit-dos5-colours-2026-11-11). Every
+; 2026-11-11). Every
 ; menu, dialog, status and frame attribute DOS 5 uses in colour maps to one
 ; attribute of the mode, cell for cell over 48 screens (normal against /B,
 ; /NOHI and /B /NOHI): DOSUI recolours what EDIT draws through that table,

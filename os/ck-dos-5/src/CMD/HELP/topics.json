@@ -405,18 +405,17 @@
     {
       "topic_id": "EDIT",
       "aliases": [
-        "CKEDIT",
         "EDIT"
       ],
-      "title": "Full-screen text editor",
-      "summary": "Edits ASCII text files in the CK-DOS 5 full-screen editor.",
+      "title": "CK Edit full-screen text editor (EDIT.COM)",
+      "summary": "Starts CK Edit (EDIT.COM) to create and edit ASCII text files.",
       "syntax": [
-        "EDIT [[drive:][path]file] [/B] [/G] [/H] [/NOHI]",
-        "CKEDIT [[drive:][path]file] [/B] [/G] [/H] [/NOHI]"
+        "EDIT [[drive:][path]file] [/B] [/G] [/H] [/NOHI]"
       ],
       "details": [
-        "EDIT (also installed as CKEDIT) opens an ASCII text file in a full-screen editor with pull-down menus, dialog boxes, mouse support, clipboard commands, search, and replace.",
-        "/B selects monochrome attributes on a color adapter, /G uses fast CGA video updates, /H switches EGA/VGA displays to 43 or 50 rows, and /NOHI uses eight non-bright colors. F1 opens built-in editor help."
+        "CK Edit (shipped as EDIT.COM for DOS compatibility) opens an ASCII text file in a full-screen editor with pull-down menus, dialogs, mouse support, clipboard commands, search, and replace.",
+        "/B selects monochrome attributes, /G enables fast CGA updates, /H uses 43/50 EGA/VGA rows, and /NOHI disables bright background colors. F1 opens built-in editor help.",
+        "Copyright (c) 2026 C. Klukas. Developed clean-room in 16-bit x86 assembly under the MIT License, with zero Microsoft MS-DOS 5 EDIT or QBasic source code or help data."
       ],
       "see_also": [
         "EDLIN",
@@ -607,14 +606,15 @@
       "aliases": [
         "HELP"
       ],
-      "title": "CK-DOS 5 command help",
-      "summary": "Opens the CK-DOS 5 full-screen command reference or a named topic.",
+      "title": "CK Help command reference (HELP.COM)",
+      "summary": "Starts CK Help (HELP.COM) to browse CK-DOS 5 command topics.",
       "syntax": [
         "HELP [topic]"
       ],
       "details": [
-        "HELP opens the full-screen CK-DOS 5 command browser. Supplying a command name opens that topic directly; typing in the Search box filters topics interactively, and Tab moves between the topic list, Search field, and See also links.",
-        "Alternate command spellings resolve to the same entry, so HELP CHDIR and HELP CD open one topic. Esc clears an active search filter or exits back to DOS."
+        "CK Help (shipped as HELP.COM) opens the full-screen CK-DOS 5 command reference. Supplying a command name opens that topic directly; typing in Search filters topics interactively.",
+        "Alternate command spellings resolve to one entry (for example HELP CHDIR and HELP CD). Esc clears an active search filter or exits back to DOS.",
+        "Copyright (c) 2026 C. Klukas. Independently authored clean-room software and command reference under the MIT License; zero Microsoft DOSHELP.HLP code or text is used."
       ],
       "see_also": [
         "EDIT",
@@ -842,18 +842,17 @@
     {
       "topic_id": "QBASIC",
       "aliases": [
-        "CKBASIC",
         "QBASIC"
       ],
-      "title": "BASIC interpreter and environment",
-      "summary": "Runs BASIC programs or opens the interactive CK-DOS 5 BASIC environment.",
+      "title": "CK Basic environment & interpreter (QBASIC.EXE)",
+      "summary": "Starts CK Basic (QBASIC.EXE) to edit and run BASIC programs.",
       "syntax": [
-        "QBASIC [/B] [/G] [/H] [/MBF] [/NOHI] [[/RUN] [drive:][path]file]",
-        "CKBASIC [/B] [/G] [/H] [/MBF] [/NOHI] [[/RUN] [drive:][path]file]"
+        "QBASIC [/B] [/EDITOR] [/G] [/H] [/MBF] [/NOHI] [[/RUN] [drive:][path]file]"
       ],
       "details": [
-        "QBASIC (also invoked as CKBASIC) edits and runs structured BASIC source files (.BAS) with SUB and FUNCTION procedures, full-screen menus, and immediate expression evaluation.",
-        "/RUN loads and executes the named program immediately. /B selects monochrome attributes, /G enables fast CGA updates, /H selects 43/50-line EGA/VGA text mode, and /NOHI disables high-intensity background colors."
+        "CK Basic (shipped under the compatible executable name QBASIC.EXE) edits and runs structured BASIC programs (.BAS) with SUB and FUNCTION procedures, menus, stepping, and an Immediate window.",
+        "/RUN loads and executes the named program directly; /EDITOR chains to CK Edit (EDIT.COM); /MBF selects Microsoft Binary Format for MKS$/MKD$/CVS/CVD.",
+        "Copyright (c) 2026 C. Klukas. Developed clean-room from public specifications and behavioral testing under the MIT License, with zero Microsoft QBasic source code or help data."
       ],
       "see_also": [
         "EDIT",

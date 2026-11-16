@@ -11,12 +11,14 @@ struct topic { const char *title; const struct line *lines; unsigned char count;
 #define LINK(s, t) {s, t}
 #define COUNT(a) (sizeof(a) / sizeof((a)[0]))
 static const struct line using_lines[] = {
+    LINE("CK Basic - Copyright (c) 2026 C. Klukas (clean-room MIT implementation)."),
     LINE("Choose a link with Tab and press Enter to open it."),
     LINE("Alt+F1 returns to the previous topic; Esc closes Help."),
     LINE("Use the arrow and page keys to scroll a longer topic."),
     LINK("Contents", CKB_HELP_CONTENTS), LINK("Index", CKB_HELP_INDEX)
 };
 static const struct line contents_lines[] = {
+    LINE("CK Basic (QBASIC.EXE) - Copyright (c) 2026 C. Klukas."),
     LINE("Browse CK Basic topics:"),
     LINK("Using Help", CKB_HELP_USING), LINK("Editing a program", CKB_HELP_EDITING),
     LINK("PRINT", CKB_HELP_PRINT), LINK("INPUT", CKB_HELP_INPUT),

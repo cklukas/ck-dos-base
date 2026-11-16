@@ -53,10 +53,15 @@ runtime libraries (`SLIBCE.LIB`, `COMSUBS.LIB`, `CASSFAR.LIB`) are built from
 the first-party clean-room sources in `runtime/`.
 
 Every DOS 5.0-compatible kernel extension, memory tool, and full-screen utility
-added under `os/ck-dos-5` is an original clean-room implementation authored from
-public MS-DOS 5.0 / IBM PC BIOS / LIM EMS / XMS documentation. Zero Microsoft
-MS-DOS 5.0 source code, disassembly, or binary code is used. Licensing is
-recorded in `os/ck-dos-5/LICENSE`.
+added under `os/ck-dos-5` — including **CK Edit** (`EDIT.COM`), **CK Basic**
+(`QBASIC.EXE`), **CK Help** (`HELP.COM`), and the CK-DOS XMS/memory utilities
+(`HIMEM.SYS`, `DOSKEY.COM`, `SETVER.EXE`, `LOADFIX.COM`, `EXPAND.EXE`), all
+`Copyright (c) 2026 C. Klukas` — is an original clean-room implementation
+authored from public MS-DOS 5.0 / QBasic / IBM PC BIOS / LIM EMS / XMS
+documentation and black-box behavioral specifications, shipped under classic
+compatible executable filenames for DOS batch and CLI interoperability. Zero
+Microsoft MS-DOS 5.0 or QBasic source code, disassembly, help text, or binary
+code is used. Licensing is recorded in `os/ck-dos-5/LICENSE`.
 
 ## Clean public boundary
 

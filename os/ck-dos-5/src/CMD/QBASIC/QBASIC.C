@@ -269,7 +269,8 @@ int main(void)
         mode = argument(&cursor);
         if (strcmp(mode, "/?") == 0) {
             write_text(DOS_STDOUT,
-                "Starts the CK-DOS QBasic programming environment.\r\n\r\n"
+                "Starts CK Basic (QBASIC.EXE), the CK-DOS BASIC programming environment.\r\n"
+                "Copyright (c) 2026 C. Klukas. All rights reserved. Clean-room MIT implementation.\r\n\r\n"
                 "QBASIC [/B] [/EDITOR] [/G] [/H] [/MBF] [/NOHI] [[/RUN] [drive:][path]filename]\r\n");
             return 0;
         }
