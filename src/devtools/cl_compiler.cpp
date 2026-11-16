@@ -2167,12 +2167,24 @@ private:
     std::vector<PendingCodeFixup> pending_fixups_;
 
     // Per-function state
+    using LabelId = std::size_t;
+    struct BranchSite {
+        std::size_t raw_pos = 0;
+        std::uint8_t orig_len = 0;
+        std::uint8_t cur_len = 0;
+        bool is_cond = false;
+        std::uint8_t jcc_opcode = 0;
+        LabelId target = 0;
+    };
+
+    std::size_t fn_code_start_ = 0;
+    std::vector<std::size_t> label_raw_pos_;
+    std::vector<BranchSite> branches_;
+    LabelId epilogue_label_ = 0;
     std::vector<std::unordered_map<std::string, std::pair<TypePtr, int>>> local_vars_;
-    std::vector<std::size_t> return_jumps_;
-    std::vector<std::vector<std::size_t>> break_stack_;
-    std::vector<std::vector<std::size_t>> continue_stack_;
-    std::unordered_map<std::string, std::size_t> user_labels_;
-    std::vector<std::pair<std::size_t, std::string>> goto_patches_;
+    std::vector<LabelId> break_stack_;
+    std::vector<LabelId> continue_stack_;
+    std::unordered_map<std::string, std::pair<LabelId, bool>> user_labels_;
     const FuncDef* cur_func_ = nullptr;
 
     static void write_u16(std::vector<std::uint8_t>& buf, std::size_t at, std::uint16_t v) {
@@ -2186,23 +2198,149 @@ private:
         emit_u8(static_cast<std::uint8_t>(w >> 8));
     }
 
-    std::size_t emit_jmp_rel16() {
+    LabelId new_label() {
+        const LabelId id = label_raw_pos_.size();
+        label_raw_pos_.push_back(0);
+        return id;
+    }
+
+    void bind_label(LabelId id) {
+        label_raw_pos_[id] = omf_.code.data.size() - fn_code_start_;
+    }
+
+    LabelId get_or_create_user_label(const std::string& name) {
+        auto it = user_labels_.find(name);
+        if (it != user_labels_.end()) return it->second.first;
+        const LabelId id = new_label();
+        user_labels_.emplace(name, std::make_pair(id, false));
+        return id;
+    }
+
+    void emit_jmp(LabelId target) {
+        const std::size_t rpos = omf_.code.data.size() - fn_code_start_;
+        branches_.push_back({rpos, 3, 3, false, 0, target});
         emit_u8(0xE9);
-        std::size_t patch = omf_.code.data.size();
         emit_u16(0);
-        return patch;
     }
 
-    std::size_t emit_jcc_rel16(std::uint8_t jcc_opcode) {
-        // 8086 compatible: j<!cc> +3; jmp rel16
-        emit_u8(jcc_opcode ^ 0x01);
+    void emit_jcc(std::uint8_t jcc_opcode, LabelId target) {
+        const std::size_t rpos = omf_.code.data.size() - fn_code_start_;
+        branches_.push_back({rpos, 5, 5, true, jcc_opcode, target});
+        emit_u8(static_cast<std::uint8_t>(jcc_opcode ^ 0x01));
         emit_u8(0x03);
-        return emit_jmp_rel16();
+        emit_u8(0xE9);
+        emit_u16(0);
     }
 
-    void patch_rel16(std::size_t patch_at, std::size_t target) {
-        std::int32_t disp = static_cast<std::int32_t>(target) - static_cast<std::int32_t>(patch_at + 2);
-        write_u16(omf_.code.data, patch_at, static_cast<std::uint16_t>(disp));
+    void relax_and_finalize_function(std::size_t pf_start, std::size_t cf_start) {
+        for (const auto& [name, entry] : user_labels_) {
+            if (!entry.second) {
+                throw FormatError(0, "undefined label: " + name);
+            }
+        }
+        if (branches_.empty()) return;
+
+        const std::size_t raw_len = omf_.code.data.size() - fn_code_start_;
+        std::vector<std::uint8_t> raw_bytes(
+            omf_.code.data.begin() + static_cast<std::ptrdiff_t>(fn_code_start_),
+            omf_.code.data.end());
+
+        std::vector<std::size_t> raw_to_relaxed(raw_len + 1, 0);
+        auto build_map = [&]() {
+            std::size_t b_idx = 0;
+            std::size_t out_off = 0;
+            std::size_t r = 0;
+            while (r <= raw_len) {
+                raw_to_relaxed[r] = out_off;
+                if (b_idx < branches_.size() && r == branches_[b_idx].raw_pos) {
+                    out_off += branches_[b_idx].cur_len;
+                    r += branches_[b_idx].orig_len;
+                    ++b_idx;
+                } else {
+                    if (r == raw_len) break;
+                    ++out_off;
+                    ++r;
+                }
+            }
+            return out_off;
+        };
+
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            build_map();
+            for (BranchSite& b : branches_) {
+                if (b.cur_len == 0) continue;
+                const std::size_t b_start = raw_to_relaxed[b.raw_pos];
+                const std::size_t b_end = raw_to_relaxed[b.raw_pos + b.orig_len];
+                const std::size_t tgt_raw = label_raw_pos_[b.target];
+                const std::size_t tgt_pos = raw_to_relaxed[tgt_raw];
+
+                if (tgt_raw >= b.raw_pos + b.orig_len && tgt_pos == b_end) {
+                    b.cur_len = 0;
+                    changed = true;
+                    continue;
+                }
+                if (b.cur_len > 2) {
+                    const std::size_t ref_end =
+                        (tgt_raw <= b.raw_pos) ? (b_start + 2) : b_end;
+                    const std::ptrdiff_t disp_short =
+                        static_cast<std::ptrdiff_t>(tgt_pos) -
+                        static_cast<std::ptrdiff_t>(ref_end);
+                    if (disp_short >= -128 && disp_short <= 127) {
+                        b.cur_len = 2;
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        const std::size_t final_len = build_map();
+        std::vector<std::uint8_t> out_code;
+        out_code.reserve(final_len);
+
+        std::size_t b_idx = 0;
+        std::size_t r = 0;
+        while (r < raw_len) {
+            if (b_idx < branches_.size() && r == branches_[b_idx].raw_pos) {
+                const BranchSite& b = branches_[b_idx];
+                const std::size_t b_end = out_code.size() + b.cur_len;
+                const std::ptrdiff_t disp =
+                    static_cast<std::ptrdiff_t>(raw_to_relaxed[label_raw_pos_[b.target]]) -
+                    static_cast<std::ptrdiff_t>(b_end);
+                if (b.cur_len == 2) {
+                    out_code.push_back(b.is_cond ? b.jcc_opcode : 0xEB);
+                    out_code.push_back(static_cast<std::uint8_t>(disp & 0xFF));
+                } else if (b.cur_len == 3) {
+                    out_code.push_back(0xE9);
+                    out_code.push_back(static_cast<std::uint8_t>(disp & 0xFF));
+                    out_code.push_back(static_cast<std::uint8_t>((disp >> 8) & 0xFF));
+                } else if (b.cur_len == 5) {
+                    out_code.push_back(static_cast<std::uint8_t>(b.jcc_opcode ^ 0x01));
+                    out_code.push_back(0x03);
+                    out_code.push_back(0xE9);
+                    out_code.push_back(static_cast<std::uint8_t>(disp & 0xFF));
+                    out_code.push_back(static_cast<std::uint8_t>((disp >> 8) & 0xFF));
+                }
+                r += b.orig_len;
+                ++b_idx;
+            } else {
+                out_code.push_back(raw_bytes[r]);
+                ++r;
+            }
+        }
+
+        for (std::size_t i = pf_start; i < pending_fixups_.size(); ++i) {
+            pending_fixups_[i].code_offset =
+                fn_code_start_ + raw_to_relaxed[pending_fixups_[i].code_offset - fn_code_start_];
+        }
+        for (std::size_t i = cf_start; i < omf_.code.fixups.size(); ++i) {
+            omf_.code.fixups[i].offset =
+                fn_code_start_ + raw_to_relaxed[omf_.code.fixups[i].offset - fn_code_start_];
+        }
+
+        omf_.code.data.resize(fn_code_start_);
+        omf_.code.data.insert(omf_.code.data.end(), out_code.begin(), out_code.end());
     }
 
     std::uint16_t intern_string(const std::string& s) {
@@ -2710,15 +2848,19 @@ private:
     void emit_function(const FuncDef& fn) {
         fold_stmt(fn.body);
         cur_func_ = &fn;
-        return_jumps_.clear();
+        fn_code_start_ = omf_.code.data.size();
+        const std::size_t pf_start = pending_fixups_.size();
+        const std::size_t cf_start = omf_.code.fixups.size();
+        label_raw_pos_.clear();
+        branches_.clear();
+        epilogue_label_ = new_label();
         break_stack_.clear();
         continue_stack_.clear();
         user_labels_.clear();
-        goto_patches_.clear();
         local_vars_.clear();
         local_vars_.emplace_back();
 
-        std::uint16_t fn_off = static_cast<std::uint16_t>(omf_.code.data.size());
+        std::uint16_t fn_off = static_cast<std::uint16_t>(fn_code_start_);
         global_locs_[fn.name] = {1, fn_off};
         if (!fn.is_static) omf_.add_pub(fn.name, 1, fn_off);
         if (fn.name == "_main" && fn.params.size() != 1 && !opts_.omit_default_lib) {
@@ -2765,15 +2907,7 @@ private:
         emit_stmt(fn.body);
 
         // Epilogue
-        std::size_t epilogue = omf_.code.data.size();
-        for (std::size_t j : return_jumps_) patch_rel16(j, epilogue);
-        for (const auto& [j, lbl] : goto_patches_) {
-            auto it = user_labels_.find(lbl);
-            if (it == user_labels_.end()) {
-                throw FormatError(0, "undefined label: " + lbl);
-            }
-            patch_rel16(j, it->second);
-        }
+        bind_label(epilogue_label_);
 
         if (fn.frame_size > 0 || fn.type->is_interrupt) {
             emit_u8(0x8B); emit_u8(0xE5);  // mov sp, bp
@@ -2801,47 +2935,165 @@ private:
             }
         }
 
+        relax_and_finalize_function(pf_start, cf_start);
+
         local_vars_.clear();
         cur_func_ = nullptr;
     }
 
-    std::size_t emit_jump_if_false(const ExprPtr& cond) {
-        if (cond && cond->kind == ExprKind::binary &&
-            (cond->op == Tok::eq || cond->op == Tok::ne || cond->op == Tok::lt ||
-             cond->op == Tok::le || cond->op == Tok::gt || cond->op == Tok::ge) &&
-            !is_32bit_scalar(cond->lhs->type) && !is_32bit_scalar(cond->rhs->type)) {
-            if (cond->rhs->kind == ExprKind::int_lit) {
-                const std::uint16_t imm = static_cast<std::uint16_t>(cond->rhs->int_val);
-                emit_expr(cond->lhs);
-                if (imm == 0) {
-                    emit_u8(0x85); emit_u8(0xC0);  // test ax, ax
-                } else {
-                    emit_u8(0x3D); emit_u16(imm);   // cmp ax, imm16
-                }
-            } else if (DirectMem dm; try_resolve_word_mem(cond->rhs, dm)) {
-                emit_expr(cond->lhs);
-                emit_op_ax_direct_mem(0x3B, dm);  // cmp ax, [bp+d] / [sym+d]
+    void emit_branch(const ExprPtr& cond, LabelId target, bool jump_on_true) {
+        if (!cond) return;
+        if (cond->kind == ExprKind::int_lit) {
+            const bool truthy = is_32bit_scalar(cond->type)
+                                    ? (static_cast<std::uint32_t>(cond->int_val) != 0U)
+                                    : (static_cast<std::uint16_t>(cond->int_val) != 0U);
+            if (truthy == jump_on_true) emit_jmp(target);
+            return;
+        }
+        if (cond->kind == ExprKind::unary && cond->op == Tok::bang) {
+            emit_branch(cond->lhs, target, !jump_on_true);
+            return;
+        }
+        if (cond->kind == ExprKind::comma) {
+            emit_expr(cond->lhs, false);
+            emit_branch(cond->rhs, target, jump_on_true);
+            return;
+        }
+        if (cond->kind == ExprKind::binary && cond->op == Tok::land) {
+            if (!jump_on_true) {
+                emit_branch(cond->lhs, target, false);
+                emit_branch(cond->rhs, target, false);
             } else {
+                const LabelId skip = new_label();
+                emit_branch(cond->lhs, skip, false);
+                emit_branch(cond->rhs, target, true);
+                bind_label(skip);
+            }
+            return;
+        }
+        if (cond->kind == ExprKind::binary && cond->op == Tok::lor) {
+            if (jump_on_true) {
+                emit_branch(cond->lhs, target, true);
+                emit_branch(cond->rhs, target, true);
+            } else {
+                const LabelId skip = new_label();
+                emit_branch(cond->lhs, skip, true);
+                emit_branch(cond->rhs, target, false);
+                bind_label(skip);
+            }
+            return;
+        }
+        if (cond->kind == ExprKind::binary &&
+            (cond->op == Tok::eq || cond->op == Tok::ne || cond->op == Tok::lt ||
+             cond->op == Tok::le || cond->op == Tok::gt || cond->op == Tok::ge)) {
+            const bool lhs_ptr = cond->lhs->type && (cond->lhs->type->kind == TypeKind::t_ptr ||
+                                                     cond->lhs->type->kind == TypeKind::t_array);
+            const bool rhs_ptr = cond->rhs->type && (cond->rhs->type->kind == TypeKind::t_ptr ||
+                                                     cond->rhs->type->kind == TypeKind::t_array);
+            if (!is_32bit_scalar(cond->lhs->type) && !is_32bit_scalar(cond->rhs->type)) {
+                if (cond->rhs->kind == ExprKind::int_lit) {
+                    const std::uint16_t imm = static_cast<std::uint16_t>(cond->rhs->int_val);
+                    emit_expr(cond->lhs);
+                    if (imm == 0) {
+                        emit_u8(0x85); emit_u8(0xC0);  // test ax, ax
+                    } else {
+                        emit_u8(0x3D); emit_u16(imm);   // cmp ax, imm16
+                    }
+                } else if (DirectMem dm; try_resolve_word_mem(cond->rhs, dm)) {
+                    emit_expr(cond->lhs);
+                    emit_op_ax_direct_mem(0x3B, dm);  // cmp ax, [bp+d] / [sym+d]
+                } else {
+                    emit_expr(cond->lhs);
+                    emit_u8(0x50);  // push ax
+                    emit_expr(cond->rhs);
+                    emit_u8(0x8B); emit_u8(0xC8);  // mov cx, ax
+                    emit_u8(0x58);                 // pop ax
+                    emit_u8(0x3B); emit_u8(0xC1);  // cmp ax, cx
+                }
+                const bool is_signed =
+                    is_signed_type(cond->lhs->type) && is_signed_type(cond->rhs->type);
+                std::uint8_t jcc = 0x74;
+                if (cond->op == Tok::eq) jcc = 0x74;
+                else if (cond->op == Tok::ne) jcc = 0x75;
+                else if (cond->op == Tok::lt) jcc = is_signed ? 0x7C : 0x72;
+                else if (cond->op == Tok::le) jcc = is_signed ? 0x7E : 0x76;
+                else if (cond->op == Tok::gt) jcc = is_signed ? 0x7F : 0x77;
+                else if (cond->op == Tok::ge) jcc = is_signed ? 0x7D : 0x73;
+                emit_jcc(jump_on_true ? jcc : static_cast<std::uint8_t>(jcc ^ 0x01), target);
+                return;
+            }
+            if (!lhs_ptr && !rhs_ptr &&
+                (is_32bit_scalar(cond->lhs->type) || is_32bit_scalar(cond->rhs->type))) {
+                const bool is_signed =
+                    is_signed_type(cond->lhs->type) && is_signed_type(cond->rhs->type);
+                Tok eff_op = cond->op;
+                if (!jump_on_true) {
+                    if (eff_op == Tok::eq) eff_op = Tok::ne;
+                    else if (eff_op == Tok::ne) eff_op = Tok::eq;
+                    else if (eff_op == Tok::lt) eff_op = Tok::ge;
+                    else if (eff_op == Tok::ge) eff_op = Tok::lt;
+                    else if (eff_op == Tok::le) eff_op = Tok::gt;
+                    else if (eff_op == Tok::gt) eff_op = Tok::le;
+                }
+                if ((eff_op == Tok::eq || eff_op == Tok::ne) &&
+                    cond->rhs->kind == ExprKind::int_lit &&
+                    static_cast<std::uint32_t>(cond->rhs->int_val) == 0U) {
+                    emit_expr(cond->lhs);
+                    emit_widen_dxax(cond->lhs->type);
+                    emit_u8(0x0B); emit_u8(0xC2);  // or ax, dx
+                    emit_jcc(eff_op == Tok::ne ? 0x75 : 0x74, target);
+                    return;
+                }
                 emit_expr(cond->lhs);
+                emit_widen_dxax(cond->lhs->type);
+                emit_u8(0x52);  // push dx
                 emit_u8(0x50);  // push ax
                 emit_expr(cond->rhs);
-                emit_u8(0x8B); emit_u8(0xC8);  // mov cx, ax
-                emit_u8(0x58);                 // pop ax
-                emit_u8(0x3B); emit_u8(0xC1);  // cmp ax, cx
+                emit_widen_dxax(cond->rhs->type);
+                emit_u8(0x8B); emit_u8(0xD8);  // mov bx, ax (rhs lo)
+                emit_u8(0x8B); emit_u8(0xCA);  // mov cx, dx (rhs hi)
+                emit_u8(0x58);                 // pop ax (lhs lo)
+                emit_u8(0x5A);                 // pop dx (lhs hi)
+                if (eff_op == Tok::eq) {
+                    const LabelId skip = new_label();
+                    emit_u8(0x3B); emit_u8(0xD1);  // cmp dx, cx
+                    emit_jcc(0x75, skip);
+                    emit_u8(0x3B); emit_u8(0xC3);  // cmp ax, bx
+                    emit_jcc(0x74, target);
+                    bind_label(skip);
+                } else if (eff_op == Tok::ne) {
+                    emit_u8(0x3B); emit_u8(0xD1);  // cmp dx, cx
+                    emit_jcc(0x75, target);
+                    emit_u8(0x3B); emit_u8(0xC3);  // cmp ax, bx
+                    emit_jcc(0x75, target);
+                } else {
+                    const LabelId skip = new_label();
+                    const std::uint8_t hi_jcc =
+                        (eff_op == Tok::lt || eff_op == Tok::le)
+                            ? (is_signed ? 0x7C : 0x72)
+                            : (is_signed ? 0x7F : 0x77);
+                    const std::uint8_t lo_jcc = eff_op == Tok::lt   ? 0x72
+                                                : eff_op == Tok::le ? 0x76
+                                                : eff_op == Tok::gt ? 0x77
+                                                                    : 0x73;
+                    emit_u8(0x3B); emit_u8(0xD1);  // cmp dx, cx
+                    emit_jcc(hi_jcc, target);
+                    emit_jcc(0x75, skip);
+                    emit_u8(0x3B); emit_u8(0xC3);  // cmp ax, bx
+                    emit_jcc(lo_jcc, target);
+                    bind_label(skip);
+                }
+                return;
             }
-            const bool is_signed = is_signed_type(cond->lhs->type) && is_signed_type(cond->rhs->type);
-            std::uint8_t jcc = 0x74;
-            if (cond->op == Tok::eq) jcc = 0x74;
-            else if (cond->op == Tok::ne) jcc = 0x75;
-            else if (cond->op == Tok::lt) jcc = is_signed ? 0x7C : 0x72;
-            else if (cond->op == Tok::le) jcc = is_signed ? 0x7E : 0x76;
-            else if (cond->op == Tok::gt) jcc = is_signed ? 0x7F : 0x77;
-            else if (cond->op == Tok::ge) jcc = is_signed ? 0x7D : 0x73;
-            return emit_jcc_rel16(static_cast<std::uint8_t>(jcc ^ 0x01));
         }
+
         emit_expr(cond);
-        test_ax_or_dxax(cond->type);
-        return emit_jcc_rel16(0x74);  // jz
+        if (is_32bit_scalar(cond->type)) {
+            emit_u8(0x0B); emit_u8(0xC2);  // or ax, dx
+        } else {
+            emit_u8(0x85); emit_u8(0xC0);  // test ax, ax
+        }
+        emit_jcc(jump_on_true ? 0x75 : 0x74, target);
     }
 
     void emit_stmt(const StmtPtr& s) {
@@ -2866,70 +3118,65 @@ private:
                 local_vars_.pop_back();
                 break;
             case StmtKind::if_stmt: {
-                std::size_t j_false = emit_jump_if_false(s->cond);
+                const LabelId l_false = new_label();
+                emit_branch(s->cond, l_false, false);
                 emit_stmt(s->body);
                 if (s->else_body) {
-                    std::size_t j_end = emit_jmp_rel16();
-                    patch_rel16(j_false, omf_.code.data.size());
+                    const LabelId l_end = new_label();
+                    emit_jmp(l_end);
+                    bind_label(l_false);
                     emit_stmt(s->else_body);
-                    patch_rel16(j_end, omf_.code.data.size());
+                    bind_label(l_end);
                 } else {
-                    patch_rel16(j_false, omf_.code.data.size());
+                    bind_label(l_false);
                 }
                 break;
             }
             case StmtKind::while_stmt: {
-                std::size_t top = omf_.code.data.size();
-                break_stack_.emplace_back();
-                continue_stack_.emplace_back();
-                std::size_t j_exit = emit_jump_if_false(s->cond);
+                const LabelId l_top = new_label();
+                const LabelId l_after = new_label();
+                bind_label(l_top);
+                break_stack_.push_back(l_after);
+                continue_stack_.push_back(l_top);
+                emit_branch(s->cond, l_after, false);
                 emit_stmt(s->body);
-                std::size_t cont_target = top;
-                for (std::size_t c : continue_stack_.back()) patch_rel16(c, cont_target);
-                std::size_t j_back = emit_jmp_rel16();
-                patch_rel16(j_back, top);
-                std::size_t after = omf_.code.data.size();
-                patch_rel16(j_exit, after);
-                for (std::size_t b : break_stack_.back()) patch_rel16(b, after);
+                emit_jmp(l_top);
+                bind_label(l_after);
                 break_stack_.pop_back();
                 continue_stack_.pop_back();
                 break;
             }
             case StmtKind::do_while_stmt: {
-                std::size_t top = omf_.code.data.size();
-                break_stack_.emplace_back();
-                continue_stack_.emplace_back();
+                const LabelId l_top = new_label();
+                const LabelId l_cond = new_label();
+                const LabelId l_after = new_label();
+                bind_label(l_top);
+                break_stack_.push_back(l_after);
+                continue_stack_.push_back(l_cond);
                 emit_stmt(s->body);
-                std::size_t cond_pos = omf_.code.data.size();
-                for (std::size_t c : continue_stack_.back()) patch_rel16(c, cond_pos);
-                emit_expr(s->cond);
-                test_ax_or_dxax(s->cond->type);
-                std::size_t j_top = emit_jcc_rel16(0x75);  // jnz
-                patch_rel16(j_top, top);
-                std::size_t after = omf_.code.data.size();
-                for (std::size_t b : break_stack_.back()) patch_rel16(b, after);
+                bind_label(l_cond);
+                emit_branch(s->cond, l_top, true);
+                bind_label(l_after);
                 break_stack_.pop_back();
                 continue_stack_.pop_back();
                 break;
             }
             case StmtKind::for_stmt: {
+                const LabelId l_cond = new_label();
+                const LabelId l_post = new_label();
+                const LabelId l_after = new_label();
                 if (s->expr) emit_expr(s->expr, false);
-                std::size_t cond_pos = omf_.code.data.size();
-                std::optional<std::size_t> j_exit;
+                bind_label(l_cond);
                 if (s->cond) {
-                    j_exit = emit_jump_if_false(s->cond);
+                    emit_branch(s->cond, l_after, false);
                 }
-                break_stack_.emplace_back();
-                continue_stack_.emplace_back();
+                break_stack_.push_back(l_after);
+                continue_stack_.push_back(l_post);
                 emit_stmt(s->body);
-                std::size_t post_pos = omf_.code.data.size();
-                for (std::size_t c : continue_stack_.back()) patch_rel16(c, post_pos);
+                bind_label(l_post);
                 if (s->post) emit_expr(s->post, false);
-                std::size_t j_back = emit_jmp_rel16();
-                patch_rel16(j_back, cond_pos);
-                std::size_t after = omf_.code.data.size();
-                if (j_exit.has_value()) patch_rel16(*j_exit, after);
-                for (std::size_t b : break_stack_.back()) patch_rel16(b, after);
+                emit_jmp(l_cond);
+                bind_label(l_after);
                 break_stack_.pop_back();
                 continue_stack_.pop_back();
                 break;
@@ -2937,27 +3184,30 @@ private:
             case StmtKind::switch_stmt: {
                 emit_expr(s->cond);
                 emit_u8(0x50);  // push ax
-                std::size_t j_dispatch = emit_jmp_rel16();
-                break_stack_.emplace_back();
-                std::vector<std::pair<std::int64_t, std::size_t>> cases;
-                std::optional<std::size_t> def_pos;
-                emit_switch_body(s->body, cases, def_pos);
-                std::size_t j_end = emit_jmp_rel16();
+                const LabelId l_dispatch = new_label();
+                const LabelId l_after = new_label();
+                emit_jmp(l_dispatch);
+                break_stack_.push_back(l_after);
+                std::vector<std::pair<std::int64_t, LabelId>> cases;
+                std::optional<LabelId> def_lbl;
+                emit_switch_body(s->body, cases, def_lbl);
+                emit_jmp(l_after);
 
-                patch_rel16(j_dispatch, omf_.code.data.size());
+                bind_label(l_dispatch);
                 emit_u8(0x58);  // pop ax
-                for (const auto& [val, target] : cases) {
-                    emit_u8(0x3D); emit_u16(static_cast<std::uint16_t>(val));  // cmp ax, imm16
-                    std::size_t jc = emit_jcc_rel16(0x74);
-                    patch_rel16(jc, target);
+                for (const auto& [val, target_lbl] : cases) {
+                    const std::uint16_t uval = static_cast<std::uint16_t>(val);
+                    if (uval == 0) {
+                        emit_u8(0x85); emit_u8(0xC0);  // test ax, ax
+                    } else {
+                        emit_u8(0x3D); emit_u16(uval);  // cmp ax, imm16
+                    }
+                    emit_jcc(0x74, target_lbl);
                 }
-                if (def_pos.has_value()) {
-                    std::size_t jd = emit_jmp_rel16();
-                    patch_rel16(jd, *def_pos);
+                if (def_lbl.has_value()) {
+                    emit_jmp(*def_lbl);
                 }
-                std::size_t after = omf_.code.data.size();
-                patch_rel16(j_end, after);
-                for (std::size_t b : break_stack_.back()) patch_rel16(b, after);
+                bind_label(l_after);
                 break_stack_.pop_back();
                 break;
             }
@@ -2966,39 +3216,54 @@ private:
                 emit_stmt(s->body);
                 break;
             case StmtKind::break_stmt:
-                if (!break_stack_.empty()) break_stack_.back().push_back(emit_jmp_rel16());
+                if (!break_stack_.empty()) emit_jmp(break_stack_.back());
                 break;
             case StmtKind::continue_stmt:
-                if (!continue_stack_.empty()) continue_stack_.back().push_back(emit_jmp_rel16());
+                if (!continue_stack_.empty()) emit_jmp(continue_stack_.back());
                 break;
             case StmtKind::return_stmt:
                 if (s->expr) emit_expr(s->expr);
-                return_jumps_.push_back(emit_jmp_rel16());
+                emit_jmp(epilogue_label_);
                 break;
             case StmtKind::goto_stmt:
-                goto_patches_.emplace_back(emit_jmp_rel16(), s->label);
+                emit_jmp(get_or_create_user_label(s->label));
                 break;
-            case StmtKind::label_stmt:
-                user_labels_[s->label] = omf_.code.data.size();
+            case StmtKind::label_stmt: {
+                const LabelId lbl = get_or_create_user_label(s->label);
+                user_labels_[s->label].second = true;
+                bind_label(lbl);
                 emit_stmt(s->body);
                 break;
+            }
         }
     }
 
     void emit_switch_body(const StmtPtr& s,
-                          std::vector<std::pair<std::int64_t, std::size_t>>& cases,
-                          std::optional<std::size_t>& def_pos) {
+                          std::vector<std::pair<std::int64_t, LabelId>>& cases,
+                          std::optional<LabelId>& def_lbl) {
         if (!s) return;
         if (s->kind == StmtKind::block) {
             local_vars_.emplace_back();
-            for (const StmtPtr& sub : s->stmts) emit_switch_body(sub, cases, def_pos);
+            for (const LocalVar& lv : s->locals) {
+                local_vars_.back()[lv.name] = {lv.type, lv.bp_offset};
+                if (lv.init) {
+                    emit_expr(lv.init);
+                    if (is_32bit_scalar(lv.type)) emit_widen_dxax(lv.init->type);
+                    store_local(lv.type, lv.bp_offset);
+                }
+            }
+            for (const StmtPtr& sub : s->stmts) emit_switch_body(sub, cases, def_lbl);
             local_vars_.pop_back();
         } else if (s->kind == StmtKind::case_stmt) {
-            cases.emplace_back(s->case_val, omf_.code.data.size());
-            emit_switch_body(s->body, cases, def_pos);
+            const LabelId lbl = new_label();
+            bind_label(lbl);
+            cases.emplace_back(s->case_val, lbl);
+            emit_switch_body(s->body, cases, def_lbl);
         } else if (s->kind == StmtKind::default_stmt) {
-            def_pos = omf_.code.data.size();
-            emit_switch_body(s->body, cases, def_pos);
+            const LabelId lbl = new_label();
+            bind_label(lbl);
+            def_lbl = lbl;
+            emit_switch_body(s->body, cases, def_lbl);
         } else {
             emit_stmt(s);
         }
@@ -3497,16 +3762,16 @@ private:
                 break;
 
             case ExprKind::ternary: {
-                emit_expr(e->lhs);
-                test_ax_or_dxax(e->lhs->type);
-                std::size_t j_false = emit_jcc_rel16(0x74);
+                const LabelId l_false = new_label();
+                const LabelId l_end = new_label();
+                emit_branch(e->lhs, l_false, false);
                 emit_expr(e->rhs, need_value);
                 if (need_value && is_32bit_scalar(e->type)) emit_widen_dxax(e->rhs->type);
-                std::size_t j_end = emit_jmp_rel16();
-                patch_rel16(j_false, omf_.code.data.size());
+                emit_jmp(l_end);
+                bind_label(l_false);
                 emit_expr(e->third, need_value);
                 if (need_value && is_32bit_scalar(e->type)) emit_widen_dxax(e->third->type);
-                patch_rel16(j_end, omf_.code.data.size());
+                bind_label(l_end);
                 break;
             }
 
@@ -3901,45 +4166,39 @@ private:
 
             case ExprKind::binary: {
                 if (e->op == Tok::land) {
-                    emit_expr(e->lhs);
-                    test_ax_or_dxax(e->lhs->type);
-                    std::size_t j_false1 = emit_jcc_rel16(0x74);
                     if (!need_value) {
+                        const LabelId l_done = new_label();
+                        emit_branch(e->lhs, l_done, false);
                         emit_expr(e->rhs, false);
-                        patch_rel16(j_false1, omf_.code.data.size());
+                        bind_label(l_done);
                         break;
                     }
-                    emit_expr(e->rhs);
-                    test_ax_or_dxax(e->rhs->type);
-                    std::size_t j_false2 = emit_jcc_rel16(0x74);
-                    emit_u8(0xB8); emit_u16(1);
-                    std::size_t j_end = emit_jmp_rel16();
-                    std::size_t f_pos = omf_.code.data.size();
-                    patch_rel16(j_false1, f_pos);
-                    patch_rel16(j_false2, f_pos);
-                    emit_u8(0xB8); emit_u16(0);
-                    patch_rel16(j_end, omf_.code.data.size());
+                    const LabelId l_false = new_label();
+                    const LabelId l_end = new_label();
+                    emit_branch(e, l_false, false);
+                    emit_u8(0xB8); emit_u16(1);     // mov ax, 1
+                    emit_jmp(l_end);
+                    bind_label(l_false);
+                    emit_u8(0x33); emit_u8(0xC0);  // xor ax, ax
+                    bind_label(l_end);
                     break;
                 }
                 if (e->op == Tok::lor) {
-                    emit_expr(e->lhs);
-                    test_ax_or_dxax(e->lhs->type);
-                    std::size_t j_true1 = emit_jcc_rel16(0x75);
                     if (!need_value) {
+                        const LabelId l_done = new_label();
+                        emit_branch(e->lhs, l_done, true);
                         emit_expr(e->rhs, false);
-                        patch_rel16(j_true1, omf_.code.data.size());
+                        bind_label(l_done);
                         break;
                     }
-                    emit_expr(e->rhs);
-                    test_ax_or_dxax(e->rhs->type);
-                    std::size_t j_true2 = emit_jcc_rel16(0x75);
-                    emit_u8(0xB8); emit_u16(0);
-                    std::size_t j_end = emit_jmp_rel16();
-                    std::size_t t_pos = omf_.code.data.size();
-                    patch_rel16(j_true1, t_pos);
-                    patch_rel16(j_true2, t_pos);
-                    emit_u8(0xB8); emit_u16(1);
-                    patch_rel16(j_end, omf_.code.data.size());
+                    const LabelId l_true = new_label();
+                    const LabelId l_end = new_label();
+                    emit_branch(e, l_true, true);
+                    emit_u8(0x33); emit_u8(0xC0);  // xor ax, ax
+                    emit_jmp(l_end);
+                    bind_label(l_true);
+                    emit_u8(0xB8); emit_u16(1);     // mov ax, 1
+                    bind_label(l_end);
                     break;
                 }
                 if (!need_value) {

@@ -437,3 +437,73 @@ DOSBASE_TEST(cl_wp12_direct_mem_and_folded_addressing) {
         DOSBASE_TEST_EXPECT(!contains_seq(code, {0x50}));
     }
 }
+
+DOSBASE_TEST(cl_wp13_short_circuit_branches_and_jump_relaxation) {
+    // 1. Short-circuit && / || / ! and rel8 relaxation: zero mov ax,1 and zero E9 long jumps
+    {
+        const char* src =
+            "int short_branches(int a, int b, int c) {\n"
+            "    if (!(a < b && c != 0)) {\n"
+            "        a += 3;\n"
+            "    } else {\n"
+            "        a -= 3;\n"
+            "    }\n"
+            "    return a;\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        // Zero boolean materialization (mov ax, 1 = B8 01 00) and zero 16-bit jmp (E9)
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0xB8, 0x01, 0x00}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0xE9}));
+        // Uses 2-byte jmp rel8 (0xEB) across else branch, and final return jmp +0 is eliminated
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0xEB}));
+        // Epilogue ends with pop bp (0x5D), ret (0xC3) immediately after mov ax, [bp+4] (8B 46 04)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x8B, 0x46, 0x04, 0x5D, 0xC3}));
+    }
+
+    // 2. Long >128-byte branch preserves rel16 jump while adjusting subsequent OMF fixups accurately
+    {
+        std::string src =
+            "int g_sink = 0;\n"
+            "int g_val = 42;\n"
+            "int callee(int v) { return v + 1; }\n"
+            "int mixed_jumps(int x) {\n"
+            "    if (x == 0) {\n";
+        for (int i = 0; i < 32; ++i) {
+            src += "        g_sink += 5;\n";
+        }
+        src +=
+            "    }\n"
+            "    if (x == 1) {\n"
+            "        goto done;\n"
+            "    }\n"
+            "    switch (x) {\n"
+            "        case 2: g_sink = g_val; break;\n"
+            "        default: g_sink = callee(x); break;\n"
+            "    }\n"
+            "done:\n"
+            "    return g_sink;\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto recs = parse_omf_records(obj, 0, true);
+        const auto code = extract_code_bytes(recs);
+        // Long branch over >128B loop of g_sink += 5 (if x == 0 -> jump if != 0 = 0x75, inverted = 0x74)
+        // keeps 5-byte je +3; jmp rel16 (74 03 E9 ...)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x74, 0x03, 0xE9}));
+        // Self-relative near call to callee(0) at offset 0 of _TEXT must point back to offset 0!
+        // Find 0xE8 (call rel16) and verify target == 0
+        bool found_valid_call = false;
+        for (std::size_t i = 0; i + 2 < code.size(); ++i) {
+            if (code[i] == 0xE8) {
+                const auto rel = static_cast<std::int16_t>(
+                    code[i + 1] | (static_cast<std::uint16_t>(code[i + 2]) << 8));
+                const std::ptrdiff_t target = static_cast<std::ptrdiff_t>(i + 3) + rel;
+                if (target == 0) {
+                    found_valid_call = true;
+                    break;
+                }
+            }
+        }
+        DOSBASE_TEST_EXPECT(found_valid_call);
+    }
+}

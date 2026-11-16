@@ -208,17 +208,17 @@ Eliminate redundant stack `push`/`pop` pairs and `lea bx` + `add bx` address cal
 
 Eliminate 5-byte long conditional jump thunks on short branches and boolean `0`/`1` materialization inside control-flow conditions.
 
-- [ ] **Direct short-circuit branch lowering (`emit_branch`):** Implement `emit_branch(cond, LabelId target, bool jump_on_true)` used by `if`, `while`, `do-while`, `for`, and `?:`:
+- [x] **Direct short-circuit branch lowering (`emit_branch`):** Implement `emit_branch(cond, LabelId target, bool jump_on_true)` used by `if`, `while`, `do-while`, `for`, and `?:`:
   - `!x` flips `jump_on_true` with zero instructions emitted.
   - `a && b` and `a || b` emit direct short-circuit conditional jumps to `false_lbl` / `true_lbl` without `mov ax, 1 / jmp / mov ax, 0 / test ax, ax`.
   - Relational operators (`==`, `!=`, `<`, `<=`, `>`, `>=`, both 16-bit and 32-bit) jump directly on the condition flags.
-- [ ] **Symbolic labels & `rel8` jump relaxation pass:**
+- [x] **Symbolic labels & `rel8` jump relaxation pass:**
   - Record basic-block/branch instructions and OMF fixup offsets relative to logical labels in `emit_function`.
   - Run an iterative relaxation pass before serializing the function's `LEDATA`:
     - Shrink `jmp rel16` (`E9 xx xx`, 3 bytes) -> `jmp rel8` (`EB xx`, 2 bytes) when displacement fits in `[-128, +127]`, and delete `jmp +0` fall-throughs (e.g., `return` at the very end of a function).
     - Shrink `j<!cc> +3; jmp rel16` (5 bytes) -> `j<cc> rel8` (2 bytes) when displacement fits in `[-128, +127]`.
   - Adjust local function offsets, `PUBDEF` offsets, and `FIXUPP` offsets accurately after relaxation.
-- [ ] **Unit & QEMU verification:** Add branch-relaxation tests (covering both `< 127`-byte short jumps and `> 128`-byte long jumps + `goto` + `switch` + OMF fixups inside relaxed functions) and verify all 60 MS-DOS 4 directories and QEMU tests pass.
+- [x] **Unit & QEMU verification:** Add branch-relaxation tests (covering both `< 127`-byte short jumps and `> 128`-byte long jumps + `goto` + `switch` + OMF fixups inside relaxed functions) and verify all 60 MS-DOS 4 directories and QEMU tests pass.
 
 ---
 
