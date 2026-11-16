@@ -1,14 +1,15 @@
 # Copyright (c) 2026 C. Klukas
 # SPDX-License-Identifier: MIT
 #
-# Automated zero-Python CI/CD and release pipeline on ckgit@rpi4:
+# Automated CI/CD, Dual-OS media verification, and ckdocs portal publication on ckgit@rpi4:
 #   - Every push to main builds all native C/C++20 tools, runs unit tests,
-#     builds all 60 MS-DOS 4.00 directories (verifying all 654 SHA-256 manifest
-#     hashes), builds CK-DOS 5.0 from os/ck-dos-5 + 10 16-bit self-hosting DOS
-#     tools (including CKMKIMG.EXE), packages all Option B DOS media for both
-#     CK-DOS 4.0 and CK-DOS 5.0 (1.44M floppy, 2x720K floppy set, 32M fixed VHD,
-#     El-Torito ISO, files.zip) + native SDK archives, boot-tests all 8 bootable
-#     images in headless QEMU, and updates ck-pages.
+#     verifies auto-generated Markdown docs (ckdist gen-docs --check), builds all
+#     60 MS-DOS 4.00 directories (verifying all 654 SHA-256 manifest hashes),
+#     builds CK-DOS 5.0 (including CK Basic QBASIC.EXE, CK Edit EDIT.COM, CK Help
+#     HELP.COM, HIMEM.SYS, DOSKEY.COM) + 10 16-bit self-hosting DOS tools,
+#     packages all release media + native SDK archives, boot-tests all 8 bootable
+#     images in headless QEMU, builds the two-site ckdocs portal (CK-DOS 5.0 &
+#     CK-DOS 4.0) with --strict, and publishes ck-pages.
 #   - Pushing a tag vMAJOR.MINOR.PATCH matching VERSION publishes durable
 #     release bundles across Linux arm64 and Windows x64.
 version: 2
@@ -35,6 +36,7 @@ jobs:
           cmake -G Ninja -S "$PWD" -B "$TMPDIR/build" -DCMAKE_BUILD_TYPE=Release
           cmake --build "$TMPDIR/build" --config Release --parallel 4
           ctest --test-dir "$TMPDIR/build" --output-on-failure
+          "$TMPDIR/build/ckdist" gen-docs --repo-root "$PWD" --check
       - name: package-dos-and-sdk
         script: |
           set -eu
@@ -45,13 +47,23 @@ jobs:
             --tool-dir "$TMPDIR/build" \
             --verify-manifest "$PWD/docs/build-manifest.json" \
             --output "$PWD/dist" \
-            --pages-out "$PWD/public" \
             --version "$version" \
             --platform linux-arm64
       - name: verify-boot-media-in-qemu
         script: |
           set -eu
           "$TMPDIR/build/ckdist" verify-boot --os all --dist-dir "$PWD/dist"
+      - name: build-ckdocs-portal
+        script: |
+          set -eu
+          rm -rf "$PWD/public"
+          ckdocs build --root "$PWD" --out "$PWD/public" --clean --strict
+          mkdir -p "$PWD/public/downloads"
+          for asset in ckdos-5.00-floppy-1440k.img ckdos-5.00-files.zip ckdos-4.00-floppy-1440k.img ckdos-4.00-files.zip SHA256SUMS; do
+            if [ -f "$PWD/dist/$asset" ]; then
+              cp "$PWD/dist/$asset" "$PWD/public/downloads/$asset"
+            fi
+          done
     artifacts:
       name: dos-media-and-linux-arm64-sdk
       paths: [dist]

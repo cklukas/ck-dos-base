@@ -6,13 +6,17 @@ operating-system distributions built completely from source without proprietary
 compilers, assemblers, or Python build scripts:
 
 - **CK-DOS 4.0 (`third_party/ms-dos-4`)** — Frozen, reproducible MS-DOS
-  4.00/4.01 reference tree verified against all 654 SHA-256 hashes in
-  `docs/build-manifest.json` (`ckdos-4.00-*` release media).
+  4.00/4.01 reference tree verified byte-for-byte against all 654 SHA-256 hashes
+  in `docs/build-manifest.json` (`ckdos-4.00-*` release media).
 - **CK-DOS 5.0 (`os/ck-dos-5`)** — Independent MIT-licensed evolution of the
   open-source MS-DOS 4.00 codebase combined with clean-room, first-party
-  CK-DOS 5.0 kernel enhancements and full-screen `DOSUI` utilities (`EDIT.COM` /
-  `CKEDIT.COM` and `HELP.COM`), containing zero historical binary tools and zero
-  Microsoft MS-DOS 5.0 code (`ckdos-5.00-*` release media).
+  CK-DOS 5.0 high-memory extensions (`HIMEM.SYS`, `DOS=HIGH,UMB` with **615.7 KB**
+  free conventional RAM, `DEVICEHIGH=`, `LOADHIGH`/`LH`), full-screen `DOSUI`
+  applications (**CK Basic** shipped as `QBASIC.EXE`, **CK Edit** shipped as
+  `EDIT.COM`, and **CK Help** shipped as `HELP.COM`), and CLI utilities
+  (`DOSKEY.COM`, `SETVER.EXE`, `LOADFIX.COM`, `EXPAND.EXE`, universal `/?`
+  switches), containing zero historical binary tools and zero Microsoft
+  MS-DOS 5.0 or QBasic code (`ckdos-5.00-*` release media).
 
 The project has no dependency on any private or downstream product. Downstream
 products may consume CK-DOS Base, while this repository remains completely
@@ -26,7 +30,7 @@ C89 cores (`src/devtools/core/*_core.c`) also compile with `ckcl` into native
 
 | Tool | Role |
 | --- | --- |
-| `ckcl` | 16-bit 8086 C89 / MS C-compatible compiler & preprocessor |
+| `ckcl` | 16-bit 8086 C89 compiler (`-AS` small & `-AM` medium model + clean-room IEEE-754 float) |
 | `ckmasm` | MASM-compatible 16-bit x86 assembler |
 | `cklink` | Microsoft-compatible OMF linker (`DOSSEG`, communals, `/EXEPACK`) |
 | `cklib` | OMF object library builder |
@@ -85,15 +89,23 @@ add_subdirectory(external/ck-dos-base)
 target_link_libraries(my_target PRIVATE dosbase::devtools)
 ```
 
+## Documentation Portal (`ckdocs`) & Auto-Generated Reference
+
+Documentation is built with [`ckdocs`](https://github.com/cklukas/ck-git-hosting) as a **two-site portal** (`ckdocs.yml`) — one site for **CK-DOS 5.0** (`docs/dos5/`) and one site for **CK-DOS 4.0 & SDK** (`docs/dos4/`) — and published automatically on both `ckgit` Pages and GitHub Pages:
+
+```sh
+# Regenerate (or verify with --check) the 63-command CK-DOS 5.0 reference
+# and 654-hash CK-DOS 4.0 manifest summary from topics.json & build-manifest.json:
+./build/ckdist gen-docs --repo-root .
+
+# Validate and preview the two-site documentation portal locally:
+ckdocs check --root .
+ckdocs serve --root .
+```
+
 ## Continuous integration and releases
 
-Every push runs native builds, unit tests, full 654-hash `CK-DOS 4.0` manifest
-verification, full `CK-DOS 5.0` clean-room source compilation, dual-OS release
-media packaging, and headless QEMU boot checks for both OS lines on both `ckgit`
-(`.ckgit/ci.yml`, publishing `ck-pages`) and GitHub Actions
-(`.github/workflows/build.yml`). Pushing an annotated version tag (`v*`
-matching `VERSION`) publishes durable multi-platform SDK and dual-OS media
-releases on both channels.
+Every push runs native builds, unit tests, `ckdist gen-docs --check`, `ckdocs --strict` portal validation, full 654-hash `CK-DOS 4.0` manifest verification, full `CK-DOS 5.0` clean-room source compilation (including **CK Basic** `QBASIC.EXE`, **CK Edit** `EDIT.COM`, **CK Help** `HELP.COM`, and `HIMEM.SYS`), dual-OS release media packaging, headless QEMU boot checks for both OS lines, and automatic `ckdocs` Pages deployment on both `ckgit@rpi4` (`.ckgit/ci.yml`) and GitHub Actions (`.github/workflows/build.yml` & `.github/workflows/pages.yml`). Pushing an annotated version tag (`v*` matching `VERSION`) publishes durable multi-platform SDK and dual-OS media releases on both channels.
 
 ## Independence and trademarks
 

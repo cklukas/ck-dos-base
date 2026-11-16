@@ -1,0 +1,73 @@
+# Copyright (c) 2026 C. Klukas
+# SPDX-License-Identifier: MIT
+#
+# Publishes the two-site ckdocs portal (CK-DOS 5.0 and CK-DOS 4.0 & SDK) to
+# GitHub Pages whenever the `Build and verify` workflow succeeds on `main`.
+name: pages
+
+on:
+  workflow_run:
+    workflows: [Build and verify]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  CKDOCS_REPOSITORY: cklukas/ck-git-hosting
+  CKDOCS_VERSION: 0.11.0
+  CKDOCS_SHA256: f3166afa2f12b69503e248a08b8c0313a1331f3e481b7c5f380db03eef64c8a6
+
+jobs:
+  build:
+    name: Build ckdocs portal
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Install ckdocs
+        run: |
+          deb="$RUNNER_TEMP/ckdocs_${CKDOCS_VERSION}_amd64.deb"
+          curl --fail --location --silent --show-error --retry 3 --output "$deb" \
+            "https://github.com/$CKDOCS_REPOSITORY/releases/download/v$CKDOCS_VERSION/ckdocs_${CKDOCS_VERSION}_amd64.deb"
+          echo "$CKDOCS_SHA256  $deb" | sha256sum --check --strict
+          sudo dpkg --install "$deb"
+          ckdocs --version | grep -F "ckdocs $CKDOCS_VERSION"
+
+      - name: Build two-site documentation portal
+        run: |
+          ckdocs build \
+            --root "$PWD" \
+            --out "$RUNNER_TEMP/site" \
+            --site-url "https://cklukas.github.io/ck-dos-base/" \
+            --strict
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: ${{ runner.temp }}/site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v5

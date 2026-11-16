@@ -1,0 +1,33 @@
+/* Retro IBM PC / DOS inspired styling for CK-DOS documentation */
+:root {
+  --accent: #0058c6;
+  --tint: #eaf2ff;
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme=light]) {
+    --bg: #0b0f17;
+    --panel: #131a26;
+    --line: #253247;
+    --accent: #39c5ff;
+    --tint: #13283d;
+  }
+}
+
+:root[data-theme=dark] {
+  --bg: #0b0f17;
+  --panel: #131a26;
+  --line: #253247;
+  --accent: #39c5ff;
+  --tint: #13283d;
+}
+
+header.site img {
+  border-radius: 5px;
+}
+
+.layout-home img {
+  border-radius: 10px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.34);
+  border: 1px solid var(--line);
+}

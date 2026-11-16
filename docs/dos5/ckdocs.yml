@@ -1,0 +1,34 @@
+# Copyright (c) 2026 C. Klukas
+# SPDX-License-Identifier: MIT
+version: 1
+site:
+  title: CK-DOS 5.0
+  brand: CK-DOS 5.0
+  description: High-memory 16-bit DOS operating system with DOS=HIGH,UMB, CK Basic (QBASIC.EXE), CK Edit (EDIT.COM), CK Help (HELP.COM), HIMEM.SYS, and DOSKEY.
+  logo: docs/images/logo.png
+  favicon: docs/images/favicon.png
+  stylesheet: docs/styles/retro-dos.css
+  footer: "© 2026 C. Klukas · MIT License · CK-DOS 5.0 Manual"
+  links:
+    - title: Releases & Media
+      url: https://github.com/cklukas/ck-dos-base/releases
+    - title: GitHub
+      url: https://github.com/cklukas/ck-dos-base
+      icon: github
+source: docs/dos5
+search: true
+nav:
+  - title: Home
+    page: docs/dos5/index.md
+  - title: Getting Started
+    page: docs/dos5/getting-started.md
+  - title: Applications
+    pages:
+      - docs/dos5/ck-basic.md
+      - docs/dos5/ck-edit-and-help.md
+  - title: System & Memory
+    pages:
+      - docs/dos5/memory-management.md
+      - docs/dos5/command-reference.md
+  - title: Provenance
+    page: docs/dos5/provenance.md

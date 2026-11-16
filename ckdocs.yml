@@ -1,0 +1,36 @@
+# Copyright (c) 2026 C. Klukas
+# SPDX-License-Identifier: MIT
+#
+# CK-DOS Base two-site documentation portal, built with ckdocs and published
+# automatically on both ckgit@rpi4 Pages (.ckgit/ci.yml) and GitHub Pages
+# (.github/workflows/pages.yml).
+version: 1
+site:
+  title: CK-DOS
+  brand: CK-DOS
+  description: Clean-room 16-bit DOS operating systems (CK-DOS 5.0 & CK-DOS 4.0) and self-hosting C/MASM cross-toolchain.
+  url: https://cklukas.github.io/ck-dos-base/
+  logo: docs/images/logo.png
+  favicon: docs/images/favicon.png
+  stylesheet: docs/styles/retro-dos.css
+  footer: "© 2026 C. Klukas · MIT License · Clean-Room 16-Bit DOS & Toolchain"
+  links:
+    - title: Releases & Downloads
+      url: https://github.com/cklukas/ck-dos-base/releases
+    - title: GitHub
+      url: https://github.com/cklukas/ck-dos-base
+      icon: github
+home: docs/_portal.md
+llms: true
+sites:
+  - id: dos5
+    title: CK-DOS 5.0
+    description: High-memory 16-bit operating system (DOS=HIGH,UMB, 615+ KB free RAM) with full-screen CK Basic (QBASIC.EXE), CK Edit (EDIT.COM), CK Help (HELP.COM), HIMEM.SYS, and DOSKEY.
+    config: docs/dos5/ckdocs.yml
+    icon: docs/images/logo.png
+    redirect_from_root: true
+  - id: dos4
+    title: CK-DOS 4.0 & SDK
+    description: Frozen 654-hash byte-exact MS-DOS 4.00 reference distribution and the clean-room native + self-hosting 16-bit C/MASM cross-toolchain.
+    config: docs/dos4/ckdocs.yml
+    icon: docs/images/logo.png

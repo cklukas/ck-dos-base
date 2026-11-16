@@ -1,41 +1,12 @@
-# Compatibility status
+# Compatibility & Verification Status
 
-CK-DOS Base focuses on the historical build formats and behavior exercised by
-the preserved MS-DOS 4 source tree. Compatibility claims are deliberately
-tree-scoped unless a broader behavior has its own test.
+`CK-DOS Base` builds and verifies both **`CK-DOS 5.0`** (`os/ck-dos-5`) and **`CK-DOS 4.0`** (`third_party/ms-dos-4`) 100% from source on Linux, macOS, and Windows with zero historical DOS binary dependencies.
 
-## Available natively
+## Completed Native & Self-Hosting Capabilities
 
-- MASM-compatible assembly and OMF object generation (`ckmasm`)
-- OMF linking and map generation (`cklink`)
-- OMF library creation (`cklib`)
-- MZ-to-binary conversion (`ckexe2bin`)
-- DBOF and message-generation utilities
-- MZ, OMF, and library inspection tools
-- NMAKE macro parsing and dependency planning (`cknmake /N`)
-
-The automated test suite contains isolated format and behavior fixtures. The
-assembler has additionally been checked against all 311 standalone assembly
-objects in the preserved source tree, with byte-identical output for that set.
-
-## Not complete yet
-
-- The Microsoft C compiler (`CL`) is not reimplemented.
-- `cknmake` does not execute recipes; it emits the planned command sequence.
-- The complete MS-DOS 4 build has not yet been promoted to a portable,
-  byte-identical CI gate.
-- Compatibility outside the exercised MS-DOS 4 inputs is not implied.
-
-## Road to a complete source build
-
-1. Add a reproducible replacement for the C compiler behavior used by the tree.
-2. Promote the command planner into a safely sandboxed build executor.
-3. Run the complete source build on all supported hosts.
-4. Compare every produced object, library, executable, and final image with a
-   recorded reference manifest.
-5. Publish only artifacts whose manifest passes the byte-for-byte gate.
-
-Until those steps are complete, GitHub Actions publishes the native tool suite,
-not a claimed rebuilt MS-DOS distribution.
-
-For the prioritized, task-level breakdown, see [docs/WORK_PACKAGES.md](WORK_PACKAGES.md).
+- **C89 Compiler (`ckcl`):** Small (`-AS`) and Medium (`-AM`) memory models, software IEEE-754 single/double floating-point (`-FPa`), `__far` / `__near` / `__interrupt` qualifiers, and clean-room `SLIBCE.LIB` + `MLIBCE.LIB` + 21 standard headers.
+- **MASM-Compatible Assembler (`ckmasm`):** Full 8086/286/386 OMF object generation verified byte-for-byte across all 311 standalone MS-DOS 4.00 assembly objects plus all `CK-DOS 5.0` kernel/driver/DOSUI modules.
+- **OMF Linker, Librarian & Converters (`cklink`, `cklib`, `ckexe2bin`, `cknmake`):** `.DOSSEG` segment ordering, `.LIB` dictionary generation, flat `.COM`/`.SYS` conversion, and `MAKEFILE` execution.
+- **Disk & Release Media Packager (`ckmkimg`, `ckdist`):** Bootable FAT12 floppies (`360k`–`1440k`), MBR-partitioned Fixed `.VHD` hard disks, El-Torito bootable `.ISO` images, `.ZIP` archives, and deterministic reference documentation generation (`ckdist gen-docs`).
+- **`CK-DOS 4.0` Byte-Exact Gate:** All **654** SHA-256 checksums in `docs/build-manifest.json` are verified byte-for-byte on every CI push across Ubuntu, macOS, Windows, and `ckgit@rpi4`.
+- **`CK-DOS 5.0` High-Memory & TUI Suite:** Clean-room `HIMEM.SYS`, `DOS=HIGH,UMB` (`630,480` bytes / `615.7 KB` free conventional RAM), `DEVICEHIGH=`, `LOADHIGH` (`LH`), **CK Basic** (`QBASIC.EXE`), **CK Edit** (`EDIT.COM`), **CK Help** (`HELP.COM`), `DOSKEY.COM`, `SETVER.EXE`, `LOADFIX.COM`, `EXPAND.EXE`, and universal `/?` switches, verified in headless QEMU on every CI run.

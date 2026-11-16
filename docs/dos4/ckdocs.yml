@@ -1,0 +1,32 @@
+# Copyright (c) 2026 C. Klukas
+# SPDX-License-Identifier: MIT
+version: 1
+site:
+  title: CK-DOS 4.0 & SDK
+  brand: CK-DOS 4.0
+  description: 654-hash byte-exact MS-DOS 4.00 reference build and the clean-room native + self-hosting 16-bit C/MASM cross-toolchain.
+  logo: docs/images/logo.png
+  favicon: docs/images/favicon.png
+  stylesheet: docs/styles/retro-dos.css
+  footer: "© 2026 C. Klukas · MIT License · CK-DOS 4.0 & SDK Manual"
+  links:
+    - title: Releases & Media
+      url: https://github.com/cklukas/ck-dos-base/releases
+    - title: GitHub
+      url: https://github.com/cklukas/ck-dos-base
+      icon: github
+source: docs/dos4
+search: true
+nav:
+  - title: Home
+    page: docs/dos4/index.md
+  - title: Getting Started
+    page: docs/dos4/getting-started.md
+  - title: Toolchain & SDK
+    pages:
+      - docs/dos4/toolchain-and-sdk.md
+      - docs/dos4/self-hosting.md
+  - title: Reference Build
+    pages:
+      - docs/dos4/manifest-summary.md
+      - docs/dos4/provenance.md

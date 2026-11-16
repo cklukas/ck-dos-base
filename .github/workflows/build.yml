@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+env:
+  CKDOCS_REPOSITORY: cklukas/ck-git-hosting
+  CKDOCS_VERSION: 0.11.0
+  CKDOCS_SHA256: f3166afa2f12b69503e248a08b8c0313a1331f3e481b7c5f380db03eef64c8a6
+
 jobs:
   build:
     name: ${{ matrix.os }}
@@ -33,7 +38,7 @@ jobs:
       - name: Unit tests
         run: ctest --test-dir build --build-config Release --output-on-failure
 
-      - name: Full CK-DOS 4.0 & 5.0 build & manifest verification (native ckdist)
+      - name: Verify generated documentation & Full CK-DOS 4.0 / 5.0 build
         shell: bash
         env:
           TMPDIR: ${{ runner.temp }}
@@ -47,6 +52,7 @@ jobs:
           else
             CKDIST=build/ckdist
           fi
+          "$CKDIST" gen-docs --repo-root . --check
           "$CKDIST" verify-build --os all --repo-root . --verify-manifest docs/build-manifest.json
 
       - name: Install native package
@@ -60,16 +66,25 @@ jobs:
           if-no-files-found: error
 
   dos-release-media:
-    name: DOS release media & QEMU boot
-    runs-on: ubuntu-latest
+    name: DOS release media, QEMU boot & ckdocs check
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out source
         uses: actions/checkout@v7.0.1
 
-      - name: Install QEMU x86
+      - name: Install QEMU x86 & ckdocs
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends qemu-system-x86
+          deb="$RUNNER_TEMP/ckdocs_${CKDOCS_VERSION}_amd64.deb"
+          curl --fail --location --silent --show-error --retry 3 --output "$deb" \
+            "https://github.com/$CKDOCS_REPOSITORY/releases/download/v$CKDOCS_VERSION/ckdocs_${CKDOCS_VERSION}_amd64.deb"
+          echo "$CKDOCS_SHA256  $deb" | sha256sum --check --strict
+          sudo dpkg --install "$deb"
+          ckdocs --version
+
+      - name: Validate two-site ckdocs documentation portal (--strict)
+        run: ckdocs check --root "$PWD"
 
       - name: Build native tools
         run: |
@@ -80,6 +95,7 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
         run: |
+          ./build/ckdist gen-docs --repo-root . --check
           ./build/ckdist release \
             --os all \
             --repo-root . \

@@ -14,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -2148,12 +2149,317 @@ void stage_vm_boot_dir(const fs::path& stage,
               << boot_out.string() << " (" << (cmd_files.size() + dev_files.size()) << " DOS/* payloads)\n";
 }
 
+// ---------------------------------------------------------------------------
+// Deterministic Markdown Reference Generator (ckdist gen-docs [--check])
+// ---------------------------------------------------------------------------
+
+struct HelpTopicDoc {
+    std::string topic_id;
+    std::vector<std::string> aliases;
+    std::string title;
+    std::string summary;
+    std::vector<std::string> syntax;
+    std::vector<std::string> details;
+    std::vector<std::string> see_also;
+};
+
+std::vector<HelpTopicDoc> parse_help_topics_json(const fs::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) throw std::runtime_error("cannot open topics.json: " + path.string());
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::size_t p = 0;
+
+    auto skip_ws = [&]() {
+        while (p < text.size() && std::isspace(static_cast<unsigned char>(text[p]))) ++p;
+    };
+    auto parse_str = [&]() -> std::string {
+        skip_ws();
+        if (p >= text.size() || text[p] != '"') throw std::runtime_error("expected JSON string in topics.json");
+        ++p;
+        std::string out;
+        while (p < text.size() && text[p] != '"') {
+            if (text[p] == '\\' && p + 1 < text.size()) {
+                ++p;
+                switch (text[p]) {
+                    case 'n': out.push_back('\n'); break;
+                    case 'r': out.push_back('\r'); break;
+                    case 't': out.push_back('\t'); break;
+                    default: out.push_back(text[p]); break;
+                }
+                ++p;
+            } else {
+                out.push_back(text[p++]);
+            }
+        }
+        if (p < text.size() && text[p] == '"') ++p;
+        return out;
+    };
+    auto parse_str_array = [&]() -> std::vector<std::string> {
+        skip_ws();
+        std::vector<std::string> arr;
+        if (p >= text.size() || text[p] != '[') throw std::runtime_error("expected JSON array in topics.json");
+        ++p;
+        while (p < text.size()) {
+            skip_ws();
+            if (p < text.size() && text[p] == ']') { ++p; break; }
+            arr.push_back(parse_str());
+            skip_ws();
+            if (p < text.size() && text[p] == ',') ++p;
+        }
+        return arr;
+    };
+    std::function<void()> skip_value = [&]() {
+        skip_ws();
+        if (p >= text.size()) return;
+        if (text[p] == '"') { (void)parse_str(); return; }
+        if (text[p] == '{') {
+            ++p;
+            while (p < text.size()) {
+                skip_ws();
+                if (p < text.size() && text[p] == '}') { ++p; break; }
+                (void)parse_str();
+                skip_ws();
+                if (p < text.size() && text[p] == ':') ++p;
+                skip_value();
+                skip_ws();
+                if (p < text.size() && text[p] == ',') ++p;
+            }
+            return;
+        }
+        if (text[p] == '[') {
+            ++p;
+            while (p < text.size()) {
+                skip_ws();
+                if (p < text.size() && text[p] == ']') { ++p; break; }
+                skip_value();
+                skip_ws();
+                if (p < text.size() && text[p] == ',') ++p;
+            }
+            return;
+        }
+        while (p < text.size() && text[p] != ',' && text[p] != '}' && text[p] != ']' &&
+               !std::isspace(static_cast<unsigned char>(text[p]))) ++p;
+    };
+
+    std::vector<HelpTopicDoc> topics;
+    skip_ws();
+    if (p >= text.size() || text[p] != '{') throw std::runtime_error("expected root object in topics.json");
+    ++p;
+    while (p < text.size()) {
+        skip_ws();
+        if (p < text.size() && text[p] == '}') { ++p; break; }
+        const std::string key = parse_str();
+        skip_ws();
+        if (p < text.size() && text[p] == ':') ++p;
+        if (key == "topics") {
+            skip_ws();
+            if (p >= text.size() || text[p] != '[') throw std::runtime_error("expected topics array");
+            ++p;
+            while (p < text.size()) {
+                skip_ws();
+                if (p < text.size() && text[p] == ']') { ++p; break; }
+                if (text[p] != '{') throw std::runtime_error("expected topic object");
+                ++p;
+                HelpTopicDoc doc;
+                while (p < text.size()) {
+                    skip_ws();
+                    if (p < text.size() && text[p] == '}') { ++p; break; }
+                    const std::string tkey = parse_str();
+                    skip_ws();
+                    if (p < text.size() && text[p] == ':') ++p;
+                    if (tkey == "topic_id") doc.topic_id = parse_str();
+                    else if (tkey == "title") doc.title = parse_str();
+                    else if (tkey == "summary") doc.summary = parse_str();
+                    else if (tkey == "aliases") doc.aliases = parse_str_array();
+                    else if (tkey == "syntax") doc.syntax = parse_str_array();
+                    else if (tkey == "details") doc.details = parse_str_array();
+                    else if (tkey == "see_also") doc.see_also = parse_str_array();
+                    else skip_value();
+                    skip_ws();
+                    if (p < text.size() && text[p] == ',') ++p;
+                }
+                topics.push_back(std::move(doc));
+                skip_ws();
+                if (p < text.size() && text[p] == ',') ++p;
+            }
+        } else {
+            skip_value();
+        }
+        skip_ws();
+        if (p < text.size() && text[p] == ',') ++p;
+    }
+    std::sort(topics.begin(), topics.end(),
+              [](const HelpTopicDoc& a, const HelpTopicDoc& b) { return a.topic_id < b.topic_id; });
+    return topics;
+}
+
+std::string slug_lower(std::string s) {
+    for (char& c : s) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return s;
+}
+
+std::string render_dos5_command_reference(const std::vector<HelpTopicDoc>& topics,
+                                          const std::string& topics_sha) {
+    std::ostringstream md;
+    md << "---\n"
+       << "title: Command Reference\n"
+       << "description: Auto-generated encyclopedia of all " << topics.size()
+       << " CK-DOS 5.0 commands, full-screen DOSUI applications, and memory utilities.\n"
+       << "---\n"
+       << "# CK-DOS 5.0 Command Reference\n\n"
+       << "> [!NOTE]\n"
+       << "> Auto-generated deterministically by `ckdist gen-docs` from `os/ck-dos-5/src/CMD/HELP/topics.json` "
+       << "(`" << topics_sha.substr(0, 12) << "`, " << topics.size() << " topics). "
+       << "Run `ckdist gen-docs --check` in CI to verify synchronization.\n\n"
+       << "Every CK-DOS 5.0 internal command and external utility supports `COMMAND /?` for concise inline usage "
+       << "and `HELP [topic]` for the full-screen **CK Help** (`HELP.COM`) hyperlinked browser.\n\n"
+       << "## Quick Index\n\n"
+       << "| Command | Summary |\n"
+       << "|---|---|\n";
+    for (const auto& t : topics) {
+        md << "| [`" << t.topic_id << "`](#" << slug_lower(t.topic_id) << ")";
+        if (t.aliases.size() > 1) {
+            md << " (";
+            bool first = true;
+            for (const auto& a : t.aliases) {
+                if (a == t.topic_id) continue;
+                if (!first) md << ", ";
+                md << "`" << a << "`";
+                first = false;
+            }
+            md << ")";
+        }
+        md << " | " << t.summary << " |\n";
+    }
+    md << "\n## Detailed Command Entries\n\n";
+    for (const auto& t : topics) {
+        md << "### " << t.topic_id << "\n\n";
+        md << "**" << t.title << "** — " << t.summary << "\n\n";
+        if (t.aliases.size() > 1) {
+            md << "- **Spellings:** ";
+            for (std::size_t i = 0; i < t.aliases.size(); ++i) {
+                if (i > 0) md << ", ";
+                md << "`" << t.aliases[i] << "`";
+            }
+            md << "\n\n";
+        }
+        md << "```text\n";
+        for (const auto& line : t.syntax) {
+            md << line << "\n";
+        }
+        md << "```\n\n";
+        for (const auto& para : t.details) {
+            md << para << "\n\n";
+        }
+        if (!t.see_also.empty()) {
+            md << "**See also:** ";
+            for (std::size_t i = 0; i < t.see_also.size(); ++i) {
+                if (i > 0) md << " · ";
+                md << "[`" << t.see_also[i] << "`](#" << slug_lower(t.see_also[i]) << ")";
+            }
+            md << "\n\n";
+        }
+    }
+    return md.str();
+}
+
+std::string render_dos4_manifest_summary(const std::map<std::string, ManifestEntry>& manifest,
+                                         const std::string& manifest_sha) {
+    struct GroupStat {
+        std::size_t count = 0;
+        std::uint64_t bytes = 0;
+    };
+    std::map<std::string, GroupStat> by_top;
+    std::uint64_t total_bytes = 0;
+    std::vector<std::pair<std::string, ManifestEntry>> shipped;
+
+    for (const auto& [rel, entry] : manifest) {
+        const auto slash = rel.find('/');
+        const std::string top = (slash == std::string::npos) ? rel : rel.substr(0, slash);
+        by_top[top].count += 1;
+        by_top[top].bytes += entry.size;
+        total_bytes += entry.size;
+
+        const std::string ext = upper_ascii(fs::path(rel).extension().string());
+        if ((ext == ".SYS" || ext == ".COM" || ext == ".EXE" || ext == ".BIN") &&
+            top != "TOOLS" && top != "MESSAGES" && top != "MAPPER") {
+            shipped.emplace_back(rel, entry);
+        }
+    }
+
+    std::ostringstream md;
+    md << "---\n"
+       << "title: 654-Hash Build Manifest\n"
+       << "description: Auto-generated directory breakdown and SHA-256 checksums for all "
+       << manifest.size() << " byte-for-byte verified CK-DOS 4.00 build outputs.\n"
+       << "---\n"
+       << "# CK-DOS 4.0 Reproducible Build Manifest\n\n"
+       << "> [!IMPORTANT]\n"
+       << "> Auto-generated deterministically by `ckdist gen-docs` from `docs/build-manifest.json` "
+       << "(`" << manifest_sha.substr(0, 12) << "`). Every CI run rebuilds all 60 MS-DOS 4.00 directories "
+       << "from source with the clean-room native toolchain and verifies all **" << manifest.size()
+       << "** object, library, driver, kernel, and utility outputs byte-for-byte.\n\n"
+       << "## Subsystem Breakdown\n\n"
+       << "| Source Tree Subsystem | Verified Artifacts | Total Size (Bytes) |\n"
+       << "|---|---:|---:|\n";
+    for (const auto& [top, st] : by_top) {
+        md << "| `" << top << "/` | " << st.count << " | " << st.bytes << " |\n";
+    }
+    md << "| **Total (`third_party/ms-dos-4/src`)** | **" << manifest.size()
+       << "** | **" << total_bytes << "** |\n\n"
+       << "## Shipped Executables, Kernel & Device Drivers (" << shipped.size() << " Binaries)\n\n"
+       << "| Relative Build Path | Size (Bytes) | Pinned SHA-256 |\n"
+       << "|---|---:|---|\n";
+    for (const auto& [rel, info] : shipped) {
+        md << "| `" << rel << "` | " << info.size << " | `" << info.sha256 << "` |\n";
+    }
+    return md.str();
+}
+
+void generate_or_check_docs(const fs::path& repo_root, bool check_only) {
+    const fs::path topics_path = repo_root / "os" / "ck-dos-5" / "src" / "CMD" / "HELP" / "topics.json";
+    const fs::path manifest_path = repo_root / "docs" / "build-manifest.json";
+    const auto topics = parse_help_topics_json(topics_path);
+    const auto manifest = parse_manifest_json(manifest_path);
+
+    const std::string dos5_cmd_md = render_dos5_command_reference(topics, sha256_file(topics_path));
+    const std::string dos4_man_md = render_dos4_manifest_summary(manifest, sha256_file(manifest_path));
+
+    const std::vector<std::pair<fs::path, std::string>> targets = {
+        {repo_root / "docs" / "dos5" / "command-reference.md", dos5_cmd_md},
+        {repo_root / "docs" / "dos4" / "manifest-summary.md", dos4_man_md},
+    };
+
+    for (const auto& [out_path, expected] : targets) {
+        if (check_only) {
+            std::ifstream in(out_path, std::ios::binary);
+            if (!in) {
+                throw std::runtime_error("missing generated documentation file: " + out_path.string() +
+                                         " (run 'ckdist gen-docs --repo-root .')");
+            }
+            const std::string actual((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            if (actual != expected) {
+                throw std::runtime_error("generated documentation is out of date: " + out_path.string() +
+                                         " (run 'ckdist gen-docs --repo-root .')");
+            }
+            std::cout << "Verified generated doc: " << fs::relative(out_path, repo_root).generic_string() << "\n";
+        } else {
+            write_text_file(out_path, expected);
+            std::cout << "Generated doc: " << fs::relative(out_path, repo_root).generic_string()
+                      << " (" << expected.size() << " bytes)\n";
+        }
+    }
+}
+
 void print_usage() {
     std::cerr << "Usage:\n"
               << "  ckdist verify-build [--os dos4|dos5|all] [--repo-root DIR] [--tool-dir DIR]\n"
               << "                      [--verify-manifest JSON] [--write-manifest JSON]\n"
               << "  ckdist stage-vm [--os dos4|dos5|all] [--repo-root DIR] [--tool-dir DIR] --output DIR\n"
               << "                  [--verify-manifest JSON]\n"
+              << "  ckdist gen-docs [--repo-root DIR] [--check]\n"
               << "  ckdist build-dos-tools [--repo-root DIR] [--tool-dir DIR] --out-dir DIR\n"
               << "  ckdist release [--os dos4|dos5|all] [--repo-root DIR] [--tool-dir DIR] --output DIR\n"
               << "                 [--version VER] [--platform PLAT] [--verify-manifest JSON]\n"
@@ -2182,6 +2488,7 @@ int main(int argc, char** argv) {
         OsTarget os_target = OsTarget::All;
         bool os_explicit = false;
         bool sdk_only = false;
+        bool check_only = false;
 
         for (int i = 2; i < argc; ++i) {
             const std::string a = argv[i];
@@ -2198,6 +2505,7 @@ int main(int argc, char** argv) {
             else if (a == "--platform" && i + 1 < argc) platform = argv[++i];
             else if (a == "--qemu" && i + 1 < argc) qemu_bin = argv[++i];
             else if (a == "--sdk-only") sdk_only = true;
+            else if (a == "--check") check_only = true;
             else {
                 std::cerr << "ckdist: unrecognized option: " << a << "\n";
                 print_usage();
@@ -2212,6 +2520,11 @@ int main(int argc, char** argv) {
         }
         if (!os_explicit && !write_manifest.empty()) {
             os_target = OsTarget::Dos4;
+        }
+
+        if (subcmd == "gen-docs") {
+            generate_or_check_docs(repo_root, check_only);
+            return 0;
         }
 
         if (subcmd == "verify-build") {
