@@ -181,13 +181,13 @@ Eliminate expensive 8086 `MUL`/`IMUL`/`DIV`/`IDIV` instructions (118–165 cycle
 
 Stop computing and preserving unused expression results in `AX`/`DX:AX`, and emit direct memory-modifying 8086 instructions for `++`, `--`, and compound assignments (`+=`, `-=`, `&=`, `|=`, `^=`).
 
-- [ ] **Thread `bool need_value` through `emit_expr`:** Pass `need_value = false` from `StmtKind::expr`, `for`-loop init and post expressions (`for (init; cond; post)`), and the left-hand side of `ExprKind::comma` in [`cl_compiler.cpp`](file:///Volumes/PRO-BLADE/git/ck-dos-base/src/devtools/cl_compiler.cpp#L2354-L2455).
-- [ ] **In-place `++` / `--` for 8-bit & 16-bit lvalues:**
+- [x] **Thread `bool need_value` through `emit_expr`:** Pass `need_value = false` from `StmtKind::expr`, `for`-loop init and post expressions (`for (init; cond; post)`), and the left-hand side of `ExprKind::comma` in [`cl_compiler.cpp`](file:///Volumes/PRO-BLADE/git/ck-dos-base/src/devtools/cl_compiler.cpp#L2354-L2455).
+- [x] **In-place `++` / `--` for 8-bit & 16-bit lvalues:**
   - When `need_value == false`, treat postfix `x++` / `x--` identically to prefix `++x` / `--x` (eliminating `push ax` / `pop ax`).
   - For scalar locals (`[bp+d]`), globals (`[_sym]`), and simple dereferences (`[bx]`): emit `inc`/`dec byte|word ptr [mem]` (`FE`/`FF /0` or `/1`, 3–4 bytes instead of 12+ bytes) when `step == 1`, or `add`/`sub word ptr [mem], step` when `step > 1` (pointer increments).
-- [ ] **In-place 32-bit `long` `++` / `--` (`need_value == false`):** For 32-bit locals/globals, emit `add word ptr [mem], step; adc word ptr [mem+2], 0` (or `sub`/`sbb`) without loading `DX:AX`.
-- [ ] **In-place compound assignments (`+=`, `-=`, `&=`, `|=`, `^=`):** When `need_value == false` and the RHS is an immediate constant on an 8/16-bit local or global, emit `add`/`sub`/`and`/`or`/`xor [bp+d], imm` directly.
-- [ ] **Unit & QEMU verification:** Verify code-size reduction across `build_dos_tools.py` outputs and pass full manifest + QEMU gates.
+- [x] **In-place 32-bit `long` `++` / `--` (`need_value == false`):** For 32-bit locals/globals, emit `add word ptr [mem], step; adc word ptr [mem+2], 0` (or `sub`/`sbb`) without loading `DX:AX`.
+- [x] **In-place compound assignments (`+=`, `-=`, `&=`, `|=`, `^=`):** When `need_value == false` and the RHS is an immediate constant on an 8/16-bit local or global, emit `add`/`sub`/`and`/`or`/`xor [bp+d], imm` directly.
+- [x] **Unit & QEMU verification:** Verify code-size reduction across `build_dos_tools.py` outputs and pass full manifest + QEMU gates.
 
 ---
 

@@ -303,3 +303,65 @@ DOSBASE_TEST(cl_wp10_const_folding_and_strength_reduction) {
         DOSBASE_TEST_EXPECT(!contains_seq(code, {0xB9, 0x20, 0x00}));
     }
 }
+
+DOSBASE_TEST(cl_wp11_inplace_memory_ops_and_discarded_values) {
+    // 1. 16-bit local/param ++, --, += emit direct memory instructions with zero push/pop/lea
+    {
+        const char* src =
+            "void step_16(int x, int *p) {\n"
+            "    x++;\n"
+            "    --x;\n"
+            "    x += 5;\n"
+            "    p++;\n"
+            "    (void)x;\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        // inc word ptr [bp+4] (FF 46 04), dec word ptr [bp+4] (FF 4E 04), add word ptr [bp+4], 5 (83 46 04 05)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0xFF, 0x46, 0x04}));
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0xFF, 0x4E, 0x04}));
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x83, 0x46, 0x04, 0x05}));
+        // p++ on int* adds 2 in place: add word ptr [bp+6], 2 (83 46 06 02)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x83, 0x46, 0x06, 0x02}));
+        // Zero push ax (0x50), pop ax (0x58), or lea bx (0x8D)
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x50}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x58}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x8D}));
+    }
+
+    // 2. 32-bit long ++ and += in statement context emit add/adc [bp+d] in place
+    {
+        const char* src =
+            "void step_32(unsigned long n) {\n"
+            "    n++;\n"
+            "    n += 16UL;\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        // add word ptr [bp+4], 1 (83 46 04 01) ; adc word ptr [bp+6], 0 (83 56 06 00)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x83, 0x46, 0x04, 0x01, 0x83, 0x56, 0x06, 0x00}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x50}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x52}));
+    }
+
+    // 3. Global 16-bit += and 32-bit ++ emit direct memory [sym] / [sym+2] operations
+    {
+        const char* src =
+            "int g16 = 1;\n"
+            "unsigned long g32 = 2UL;\n"
+            "void step_globals(void) {\n"
+            "    g16++;\n"
+            "    g16 += 7;\n"
+            "    g32++;\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        // inc word ptr [0] (FF 06 00 00), add word ptr [0], 7 (83 06 00 00 07)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0xFF, 0x06, 0x00, 0x00}));
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x83, 0x06, 0x00, 0x00, 0x07}));
+        // g32 at _DATA+2: add word ptr [2], 1 (83 06 02 00 01); adc word ptr [4], 0 (83 16 04 00 00)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x83, 0x06, 0x02, 0x00, 0x01, 0x83, 0x16, 0x04, 0x00, 0x00}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x50}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0xBB}));
+    }
+}

@@ -182,7 +182,8 @@ next_ws:
 args_done:
         xor     ax, ax
         mov     [di], ax
-        mov     es, __psp
+        push    ds
+        pop     es
 
         ; Call _main(argc, argv, envp)
         mov     ax, OFFSET DGROUP:__env_empty

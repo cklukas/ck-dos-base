@@ -34,6 +34,7 @@ ENDIF
         PUBLIC  _unlink
         PUBLIC  _remove
         PUBLIC  _rename
+        PUBLIC  _strcpy
         PUBLIC  __dos_exec
 
 ; void segread(struct SREGS *sregs)
@@ -748,6 +749,40 @@ exec_done:
         pop     bp
         ret
 __dos_exec ENDP
+
+; char *strcpy(char *dst, const char *src)
+; Restores ES = DS like MS C 5.1 STRCPY.ASM (relied on by MS-DOS 4 fix_es_reg).
+IFDEF FARCODE
+_strcpy PROC FAR
+ELSE
+_strcpy PROC NEAR
+ENDIF
+        push    bp
+        mov     bp, sp
+        push    si
+        push    di
+        push    ds
+        pop     es
+        cld
+        mov     di, [bp+4+AP]
+        mov     dx, di
+        mov     si, [bp+6+AP]
+        or      si, si
+        jnz     strcpy_lp
+        mov     BYTE PTR [di], 0
+        jmp     strcpy_dn
+strcpy_lp:
+        lodsb
+        stosb
+        or      al, al
+        jnz     strcpy_lp
+strcpy_dn:
+        mov     ax, dx
+        pop     di
+        pop     si
+        pop     bp
+        ret
+_strcpy ENDP
 
 IFDEF FARCODE
 DOS_IO_TEXT ENDS

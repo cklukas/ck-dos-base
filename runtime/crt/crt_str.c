@@ -40,17 +40,6 @@ unsigned int strlen(const char *s) {
     return n;
 }
 
-char *strcpy(char *dst, const char *src) {
-    char *d = dst;
-    if (src == (const char *)0) {
-        *d = '\0';
-        return dst;
-    }
-    while ((*d++ = *src++) != '\0') {
-    }
-    return dst;
-}
-
 char *strncpy(char *dst, const char *src, unsigned int n) {
     unsigned int i = 0;
     while (i < n && src[i] != '\0') {

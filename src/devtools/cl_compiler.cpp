@@ -2847,7 +2847,7 @@ private:
             case StmtKind::empty:
                 break;
             case StmtKind::expr:
-                emit_expr(s->expr);
+                emit_expr(s->expr, false);
                 break;
             case StmtKind::block:
                 local_vars_.emplace_back();
@@ -2910,7 +2910,7 @@ private:
                 break;
             }
             case StmtKind::for_stmt: {
-                if (s->expr) emit_expr(s->expr);
+                if (s->expr) emit_expr(s->expr, false);
                 std::size_t cond_pos = omf_.code.data.size();
                 std::optional<std::size_t> j_exit;
                 if (s->cond) {
@@ -2921,7 +2921,7 @@ private:
                 emit_stmt(s->body);
                 std::size_t post_pos = omf_.code.data.size();
                 for (std::size_t c : continue_stack_.back()) patch_rel16(c, post_pos);
-                if (s->post) emit_expr(s->post);
+                if (s->post) emit_expr(s->post, false);
                 std::size_t j_back = emit_jmp_rel16();
                 patch_rel16(j_back, cond_pos);
                 std::size_t after = omf_.code.data.size();
@@ -3119,8 +3119,26 @@ private:
         }
     }
 
-    void emit_expr(const ExprPtr& e) {
+    void emit_grp1_bp_imm16(std::uint8_t subop, int bp_disp, std::uint16_t imm) {
+        const std::int16_t simm = static_cast<std::int16_t>(imm);
+        if (simm >= -128 && simm <= 127) {
+            emit_u8(0x83);
+            emit_bp_rm(subop, bp_disp);
+            emit_u8(static_cast<std::uint8_t>(simm & 0xFF));
+        } else {
+            emit_u8(0x81);
+            emit_bp_rm(subop, bp_disp);
+            emit_u16(imm);
+        }
+    }
+
+    void emit_expr(const ExprPtr& e, bool need_value = true) {
         if (!e) return;
+        if (!need_value && (e->kind == ExprKind::int_lit || e->kind == ExprKind::str_lit ||
+                            e->kind == ExprKind::var || e->kind == ExprKind::member)) {
+            if (e->kind == ExprKind::member && e->lhs) emit_expr(e->lhs, false);
+            return;
+        }
         switch (e->kind) {
             case ExprKind::int_lit: {
                 const std::uint16_t lo = static_cast<std::uint16_t>(e->int_val & 0xFFFF);
@@ -3227,6 +3245,10 @@ private:
             }
 
             case ExprKind::cast:
+                if (!need_value) {
+                    emit_expr(e->lhs, false);
+                    break;
+                }
                 emit_expr(e->lhs);
                 if (is_byte_scalar(e->type)) {
                     if (is_signed_type(e->type)) emit_u8(0x98);
@@ -3249,20 +3271,20 @@ private:
                 break;
 
             case ExprKind::comma:
-                emit_expr(e->lhs);
-                emit_expr(e->rhs);
+                emit_expr(e->lhs, false);
+                emit_expr(e->rhs, need_value);
                 break;
 
             case ExprKind::ternary: {
                 emit_expr(e->lhs);
                 test_ax_or_dxax(e->lhs->type);
                 std::size_t j_false = emit_jcc_rel16(0x74);
-                emit_expr(e->rhs);
-                if (is_32bit_scalar(e->type)) emit_widen_dxax(e->rhs->type);
+                emit_expr(e->rhs, need_value);
+                if (need_value && is_32bit_scalar(e->type)) emit_widen_dxax(e->rhs->type);
                 std::size_t j_end = emit_jmp_rel16();
                 patch_rel16(j_false, omf_.code.data.size());
-                emit_expr(e->third);
-                if (is_32bit_scalar(e->type)) emit_widen_dxax(e->third->type);
+                emit_expr(e->third, need_value);
+                if (need_value && is_32bit_scalar(e->type)) emit_widen_dxax(e->third->type);
                 patch_rel16(j_end, omf_.code.data.size());
                 break;
             }
@@ -3302,11 +3324,6 @@ private:
             }
 
             case ExprKind::compound_assign: {
-                bool is_far = false;
-                emit_lvalue_addr(e->lhs, is_far);
-                if (is_far) emit_u8(0x06);  // push es
-                emit_u8(0x53);              // push bx
-                load_from_bx(e->type, is_far);
                 Tok bin_op = Tok::plus;
                 if (e->op == Tok::minus_eq) bin_op = Tok::minus;
                 else if (e->op == Tok::star_eq) bin_op = Tok::star;
@@ -3317,7 +3334,149 @@ private:
                 else if (e->op == Tok::caret_eq) bin_op = Tok::caret;
                 else if (e->op == Tok::shl_eq) bin_op = Tok::shl;
                 else if (e->op == Tok::shr_eq) bin_op = Tok::shr;
-                if (is_32bit_scalar(e->type)) {
+
+                const bool lhs_is_ptr = e->type && e->type->kind == TypeKind::t_ptr;
+                const std::uint16_t ptr_scale =
+                    (lhs_is_ptr && (bin_op == Tok::plus || bin_op == Tok::minus) && e->type->base)
+                        ? static_cast<std::uint16_t>(std::max<std::size_t>(1, type_size(e->type->base)))
+                        : 1U;
+
+                // Fast in-place compound assignment on local variable [bp+d]
+                if (e->lhs->kind == ExprKind::var) {
+                    if (auto loc = find_local(e->lhs->name)) {
+                        const int disp = loc->second;
+                        const bool is_grp1 = (bin_op == Tok::plus || bin_op == Tok::minus ||
+                                              bin_op == Tok::amp || bin_op == Tok::pipe ||
+                                              bin_op == Tok::caret);
+                        const std::uint8_t grp1_sub = bin_op == Tok::plus    ? 0
+                                                      : bin_op == Tok::pipe  ? 1
+                                                      : bin_op == Tok::amp   ? 4
+                                                      : bin_op == Tok::minus ? 5
+                                                                             : 6;
+                        if (!is_32bit_scalar(e->type) && is_grp1 && e->rhs->kind == ExprKind::int_lit) {
+                            const std::uint16_t imm = static_cast<std::uint16_t>(
+                                static_cast<std::uint16_t>(e->rhs->int_val) * ptr_scale);
+                            if (is_byte_scalar(e->type)) {
+                                if (imm != 0 || bin_op == Tok::amp) {
+                                    emit_u8(0x80);
+                                    emit_bp_rm(grp1_sub, disp);
+                                    emit_u8(static_cast<std::uint8_t>(imm & 0xFF));
+                                }
+                            } else {
+                                if (imm == 1 && (bin_op == Tok::plus || bin_op == Tok::minus)) {
+                                    emit_u8(0xFF);
+                                    emit_bp_rm(bin_op == Tok::plus ? 0 : 1, disp);  // inc/dec word ptr [bp+d]
+                                } else if (imm != 0 || bin_op == Tok::amp) {
+                                    emit_grp1_bp_imm16(grp1_sub, disp, imm);
+                                }
+                            }
+                            if (need_value) emit_expr(e->lhs, true);
+                            break;
+                        }
+                        if (!need_value && !is_32bit_scalar(e->type) && !is_byte_scalar(e->type) && is_grp1) {
+                            emit_expr(e->rhs, true);
+                            if (ptr_scale > 1) emit_mul16_ax_const(ptr_scale, false);
+                            const std::uint8_t mr_opc = bin_op == Tok::plus    ? 0x01
+                                                        : bin_op == Tok::pipe  ? 0x09
+                                                        : bin_op == Tok::amp   ? 0x21
+                                                        : bin_op == Tok::minus ? 0x29
+                                                                               : 0x31;
+                            emit_u8(mr_opc);
+                            emit_bp_rm(0, disp);  // op [bp+d], ax
+                            break;
+                        }
+                        const bool is32_int = e->type && (e->type->kind == TypeKind::t_long ||
+                                                          e->type->kind == TypeKind::t_ulong);
+                        if (!need_value && is32_int && (bin_op == Tok::plus || bin_op == Tok::minus)) {
+                            if (e->rhs->kind == ExprKind::int_lit) {
+                                std::uint32_t uval = 0;
+                                if (is_32bit_scalar(e->rhs->type)) {
+                                    uval = static_cast<std::uint32_t>(e->rhs->int_val);
+                                } else if (is_signed_type(e->rhs->type)) {
+                                    uval = static_cast<std::uint32_t>(
+                                        static_cast<std::int32_t>(static_cast<std::int16_t>(e->rhs->int_val)));
+                                } else {
+                                    uval = static_cast<std::uint16_t>(e->rhs->int_val);
+                                }
+                                if (uval != 0) {
+                                    const std::uint16_t lo = static_cast<std::uint16_t>(uval & 0xFFFFU);
+                                    const std::uint16_t hi = static_cast<std::uint16_t>((uval >> 16) & 0xFFFFU);
+                                    if (lo == 0) {
+                                        emit_grp1_bp_imm16(bin_op == Tok::plus ? 0 : 5, disp + 2, hi);
+                                    } else {
+                                        emit_grp1_bp_imm16(bin_op == Tok::plus ? 0 : 5, disp, lo);
+                                        emit_grp1_bp_imm16(bin_op == Tok::plus ? 2 : 3, disp + 2, hi);  // adc/sbb
+                                    }
+                                }
+                            } else {
+                                emit_expr(e->rhs, true);
+                                emit_widen_dxax(e->rhs->type);
+                                emit_u8(bin_op == Tok::plus ? 0x01 : 0x29);
+                                emit_bp_rm(0, disp);      // add/sub [bp+d], ax
+                                emit_u8(bin_op == Tok::plus ? 0x11 : 0x19);
+                                emit_bp_rm(2, disp + 2);  // adc/sbb [bp+d+2], dx
+                            }
+                            break;
+                        }
+                    } else {
+                        const bool is_grp1 = (bin_op == Tok::plus || bin_op == Tok::minus ||
+                                              bin_op == Tok::amp || bin_op == Tok::pipe ||
+                                              bin_op == Tok::caret);
+                        const std::uint8_t grp1_sub = bin_op == Tok::plus    ? 0
+                                                      : bin_op == Tok::pipe  ? 1
+                                                      : bin_op == Tok::amp   ? 4
+                                                      : bin_op == Tok::minus ? 5
+                                                                             : 6;
+                        if (!is_32bit_scalar(e->type) && is_grp1 && e->rhs->kind == ExprKind::int_lit) {
+                            auto gf = parser_.global_syms.find(e->lhs->name);
+                            std::string sym = !e->lhs->resolved_asm_name.empty()
+                                                  ? e->lhs->resolved_asm_name
+                                                  : (gf != parser_.global_syms.end()
+                                                         ? gf->second.asm_name
+                                                         : ("_" + e->lhs->name));
+                            const std::uint16_t imm = static_cast<std::uint16_t>(
+                                static_cast<std::uint16_t>(e->rhs->int_val) * ptr_scale);
+                            if (is_byte_scalar(e->type)) {
+                                if (imm != 0 || bin_op == Tok::amp) {
+                                    emit_u8(0x80);
+                                    emit_u8(static_cast<std::uint8_t>((grp1_sub << 3) | 0x06));
+                                    pending_fixups_.push_back({omf_.code.data.size(), FixupKind::near_offset_dgroup, sym});
+                                    emit_u16(0);
+                                    emit_u8(static_cast<std::uint8_t>(imm & 0xFF));
+                                }
+                            } else if (imm == 1 && (bin_op == Tok::plus || bin_op == Tok::minus)) {
+                                emit_u8(0xFF);
+                                emit_u8(bin_op == Tok::plus ? 0x06 : 0x0E);
+                                pending_fixups_.push_back({omf_.code.data.size(), FixupKind::near_offset_dgroup, sym});
+                                emit_u16(0);
+                            } else if (imm != 0 || bin_op == Tok::amp) {
+                                const std::int16_t simm = static_cast<std::int16_t>(imm);
+                                if (simm >= -128 && simm <= 127) {
+                                    emit_u8(0x83);
+                                    emit_u8(static_cast<std::uint8_t>((grp1_sub << 3) | 0x06));
+                                    pending_fixups_.push_back({omf_.code.data.size(), FixupKind::near_offset_dgroup, sym});
+                                    emit_u16(0);
+                                    emit_u8(static_cast<std::uint8_t>(simm & 0xFF));
+                                } else {
+                                    emit_u8(0x81);
+                                    emit_u8(static_cast<std::uint8_t>((grp1_sub << 3) | 0x06));
+                                    pending_fixups_.push_back({omf_.code.data.size(), FixupKind::near_offset_dgroup, sym});
+                                    emit_u16(0);
+                                    emit_u16(imm);
+                                }
+                            }
+                            if (need_value) emit_expr(e->lhs, true);
+                            break;
+                        }
+                    }
+                }
+
+                bool is_far = false;
+                emit_lvalue_addr(e->lhs, is_far);
+                if (is_far) emit_u8(0x06);  // push es
+                emit_u8(0x53);              // push bx
+                load_from_bx(e->type, is_far);
+                if (is_32bit_scalar(e->type) && !lhs_is_ptr) {
                     emit_u8(0x52);  // push dx (lhs hi)
                     emit_u8(0x50);  // push ax (lhs lo)
                     emit_expr(e->rhs);
@@ -3328,10 +3487,13 @@ private:
                     emit_u8(0x5A);                 // pop dx (lhs hi)
                     emit_alu_32bit(bin_op, is_signed_type(e->type));
                 } else {
+                    if (lhs_is_ptr && e->type->is_far) emit_u8(0x52);  // preserve far seg
                     emit_u8(0x50);  // push ax (lhs value)
                     emit_expr(e->rhs);
                     emit_u8(0x8B); emit_u8(0xC8);  // mov cx, ax (rhs)
+                    if (ptr_scale > 1) emit_scale16_cx(ptr_scale);
                     emit_u8(0x58);                 // pop ax (lhs)
+                    if (lhs_is_ptr && e->type->is_far) emit_u8(0x5A);
                     emit_alu_ax_cx(bin_op, e->type);
                 }
                 emit_u8(0x5B);  // pop bx
@@ -3342,6 +3504,7 @@ private:
 
             case ExprKind::unary: {
                 if (e->op == Tok::amp) {
+                    if (!need_value) { emit_expr(e->lhs, false); break; }
                     bool is_far = false;
                     emit_lvalue_addr(e->lhs, is_far);
                     emit_u8(0x8B); emit_u8(0xC3);  // mov ax, bx
@@ -3352,6 +3515,7 @@ private:
                     break;
                 }
                 if (e->op == Tok::star) {
+                    if (!need_value) { emit_expr(e->lhs, false); break; }
                     emit_expr(e->lhs);
                     if (e->type && (e->type->kind == TypeKind::t_array ||
                                     e->type->kind == TypeKind::t_func)) {
@@ -3364,30 +3528,154 @@ private:
                     break;
                 }
                 if (e->op == Tok::inc || e->op == Tok::dec) {
-                    bool is_far = false;
-                    emit_lvalue_addr(e->lhs, is_far);
-                    load_from_bx(e->type, is_far);
+                    const bool is_inc = (e->op == Tok::inc);
                     std::uint16_t step = 1;
                     if (e->type && e->type->kind == TypeKind::t_ptr && e->type->base) {
                         step = static_cast<std::uint16_t>(std::max<std::size_t>(1, type_size(e->type->base)));
                     }
                     const bool is32 = is_32bit_scalar(e->type);
-                    if (e->is_postfix) {
+                    const bool is32_int = e->type && (e->type->kind == TypeKind::t_long ||
+                                                      e->type->kind == TypeKind::t_ulong);
+
+                    // Fast in-place ++ / -- on local [bp+d] or near global [_sym]
+                    if (e->lhs->kind == ExprKind::var && !is32) {
+                        if (auto loc = find_local(e->lhs->name)) {
+                            const int disp = loc->second;
+                            auto emit_mod = [&]() {
+                                if (is_byte_scalar(e->type)) {
+                                    emit_u8(0xFE);
+                                    emit_bp_rm(is_inc ? 0 : 1, disp);
+                                } else if (step == 1) {
+                                    emit_u8(0xFF);
+                                    emit_bp_rm(is_inc ? 0 : 1, disp);  // inc/dec word ptr [bp+d]
+                                } else {
+                                    emit_grp1_bp_imm16(is_inc ? 0 : 5, disp, step);
+                                }
+                            };
+                            if (!need_value) {
+                                emit_mod();
+                            } else if (e->is_postfix) {
+                                emit_expr(e->lhs, true);
+                                emit_mod();
+                            } else {
+                                emit_mod();
+                                emit_expr(e->lhs, true);
+                            }
+                            break;
+                        }
+                        auto gf = parser_.global_syms.find(e->lhs->name);
+                        std::string sym = !e->lhs->resolved_asm_name.empty()
+                                              ? e->lhs->resolved_asm_name
+                                              : (gf != parser_.global_syms.end()
+                                                     ? gf->second.asm_name
+                                                     : ("_" + e->lhs->name));
+                        auto emit_gmod = [&]() {
+                            if (is_byte_scalar(e->type)) {
+                                emit_u8(0xFE);
+                                emit_u8(is_inc ? 0x06 : 0x0E);
+                                pending_fixups_.push_back({omf_.code.data.size(), FixupKind::near_offset_dgroup, sym});
+                                emit_u16(0);
+                            } else if (step == 1) {
+                                emit_u8(0xFF);
+                                emit_u8(is_inc ? 0x06 : 0x0E);
+                                pending_fixups_.push_back({omf_.code.data.size(), FixupKind::near_offset_dgroup, sym});
+                                emit_u16(0);
+                            } else {
+                                emit_u8(0x81);
+                                emit_u8(is_inc ? 0x06 : 0x2E);
+                                pending_fixups_.push_back({omf_.code.data.size(), FixupKind::near_offset_dgroup, sym});
+                                emit_u16(0);
+                                emit_u16(step);
+                            }
+                        };
+                        if (!need_value) {
+                            emit_gmod();
+                        } else if (e->is_postfix) {
+                            emit_expr(e->lhs, true);
+                            emit_gmod();
+                        } else {
+                            emit_gmod();
+                            emit_expr(e->lhs, true);
+                        }
+                        break;
+                    }
+
+                    if (!need_value && is32_int && e->lhs->kind == ExprKind::var) {
+                        if (auto loc = find_local(e->lhs->name)) {
+                            emit_grp1_bp_imm16(is_inc ? 0 : 5, loc->second, step);
+                            emit_grp1_bp_imm16(is_inc ? 2 : 3, loc->second + 2, 0);
+                            break;
+                        }
+                        auto gf = parser_.global_syms.find(e->lhs->name);
+                        std::string sym = !e->lhs->resolved_asm_name.empty()
+                                              ? e->lhs->resolved_asm_name
+                                              : (gf != parser_.global_syms.end()
+                                                     ? gf->second.asm_name
+                                                     : ("_" + e->lhs->name));
+                        emit_u8(0x83);
+                        emit_u8(is_inc ? 0x06 : 0x2E);  // add/sub word ptr [sym], step
+                        pending_fixups_.push_back({omf_.code.data.size(), FixupKind::near_offset_dgroup, sym});
+                        emit_u16(0);
+                        emit_u8(static_cast<std::uint8_t>(step));
+                        emit_u8(0x83);
+                        emit_u8(is_inc ? 0x16 : 0x1E);  // adc/sbb word ptr [sym+2], 0
+                        pending_fixups_.push_back({omf_.code.data.size(), FixupKind::near_offset_dgroup, sym});
+                        emit_u16(2);
+                        emit_u8(0);
+                        break;
+                    }
+
+                    // General lvalue via [es:]bx — avoid push/pop when 8/16-bit
+                    bool is_far = false;
+                    emit_lvalue_addr(e->lhs, is_far);
+                    if (!is32) {
+                        auto emit_bx_mod = [&]() {
+                            if (is_far) emit_u8(0x26);
+                            if (is_byte_scalar(e->type)) {
+                                emit_u8(0xFE); emit_u8(is_inc ? 0x07 : 0x0F);
+                            } else if (step == 1) {
+                                emit_u8(0xFF); emit_u8(is_inc ? 0x07 : 0x0F);
+                            } else if (step <= 127) {
+                                emit_u8(0x83); emit_u8(is_inc ? 0x07 : 0x2F);
+                                emit_u8(static_cast<std::uint8_t>(step));
+                            } else {
+                                emit_u8(0x81); emit_u8(is_inc ? 0x07 : 0x2F);
+                                emit_u16(step);
+                            }
+                        };
+                        if (!need_value) {
+                            emit_bx_mod();
+                        } else if (e->is_postfix) {
+                            load_from_bx(e->type, is_far);
+                            emit_bx_mod();
+                        } else {
+                            emit_bx_mod();
+                            load_from_bx(e->type, is_far);
+                        }
+                        break;
+                    }
+
+                    load_from_bx(e->type, is_far);
+                    if (need_value && e->is_postfix) {
                         if (is32) emit_u8(0x52);  // push dx
                         emit_u8(0x50);            // push ax
                     }
-                    if (e->op == Tok::inc) {
+                    if (is_inc) {
                         emit_u8(0x05); emit_u16(step);  // add ax, step
-                        if (is32) { emit_u8(0x83); emit_u8(0xD2); emit_u8(0x00); }  // adc dx, 0
+                        if (is32_int) { emit_u8(0x83); emit_u8(0xD2); emit_u8(0x00); }  // adc dx, 0
                     } else {
                         emit_u8(0x2D); emit_u16(step);  // sub ax, step
-                        if (is32) { emit_u8(0x83); emit_u8(0xDA); emit_u8(0x00); }  // sbb dx, 0
+                        if (is32_int) { emit_u8(0x83); emit_u8(0xDA); emit_u8(0x00); }  // sbb dx, 0
                     }
                     store_to_bx(e->type, is_far);
-                    if (e->is_postfix) {
+                    if (need_value && e->is_postfix) {
                         emit_u8(0x58);            // pop ax
                         if (is32) emit_u8(0x5A);  // pop dx
                     }
+                    break;
+                }
+                if (!need_value) {
+                    emit_expr(e->lhs, false);
                     break;
                 }
                 emit_expr(e->lhs);
@@ -3409,6 +3697,11 @@ private:
                     emit_expr(e->lhs);
                     test_ax_or_dxax(e->lhs->type);
                     std::size_t j_false1 = emit_jcc_rel16(0x74);
+                    if (!need_value) {
+                        emit_expr(e->rhs, false);
+                        patch_rel16(j_false1, omf_.code.data.size());
+                        break;
+                    }
                     emit_expr(e->rhs);
                     test_ax_or_dxax(e->rhs->type);
                     std::size_t j_false2 = emit_jcc_rel16(0x74);
@@ -3425,6 +3718,11 @@ private:
                     emit_expr(e->lhs);
                     test_ax_or_dxax(e->lhs->type);
                     std::size_t j_true1 = emit_jcc_rel16(0x75);
+                    if (!need_value) {
+                        emit_expr(e->rhs, false);
+                        patch_rel16(j_true1, omf_.code.data.size());
+                        break;
+                    }
                     emit_expr(e->rhs);
                     test_ax_or_dxax(e->rhs->type);
                     std::size_t j_true2 = emit_jcc_rel16(0x75);
@@ -3435,6 +3733,11 @@ private:
                     patch_rel16(j_true2, t_pos);
                     emit_u8(0xB8); emit_u16(1);
                     patch_rel16(j_end, omf_.code.data.size());
+                    break;
+                }
+                if (!need_value) {
+                    emit_expr(e->lhs, false);
+                    emit_expr(e->rhs, false);
                     break;
                 }
 
@@ -4042,7 +4345,11 @@ private:
                     if (pf.kind == FixupKind::near_offset_dgroup ||
                         pf.kind == FixupKind::near_offset_code ||
                         pf.kind == FixupKind::far_ptr) {
-                        write_u16(omf_.code.data, pf.code_offset, it->second.offset);
+                        const std::uint16_t cur = static_cast<std::uint16_t>(
+                            omf_.code.data[pf.code_offset] |
+                            (static_cast<std::uint16_t>(omf_.code.data[pf.code_offset + 1]) << 8));
+                        write_u16(omf_.code.data, pf.code_offset,
+                                  static_cast<std::uint16_t>(cur + it->second.offset));
                     }
                     omf_.code.fixups.push_back({pf.code_offset, pf.kind, it->second.seg, 0});
                 }
