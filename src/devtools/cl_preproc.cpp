@@ -5,8 +5,10 @@
 #include "dosbase/devtools/binary.hpp"
 #include "dosbase/devtools/dos_file.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <unordered_set>

@@ -22,6 +22,7 @@ set(DOSBASE_MSDOS_SOURCE_DIR
 function(dosbase_strict target)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /permissive-)
+        target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS)
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     endif()

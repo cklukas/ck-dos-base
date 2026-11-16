@@ -311,7 +311,18 @@ int run_process(const std::vector<std::string>& args,
         cmdline += quote_win(args[i]);
     }
 
-    std::map<std::string, std::string> merged_env;
+    struct WinEnvCiLess {
+        bool operator()(const std::string& a, const std::string& b) const {
+            const std::size_t n = std::min(a.size(), b.size());
+            for (std::size_t i = 0; i < n; ++i) {
+                const unsigned char ca = static_cast<unsigned char>(std::toupper(static_cast<unsigned char>(a[i])));
+                const unsigned char cb = static_cast<unsigned char>(std::toupper(static_cast<unsigned char>(b[i])));
+                if (ca != cb) return ca < cb;
+            }
+            return a.size() < b.size();
+        }
+    };
+    std::map<std::string, std::string, WinEnvCiLess> merged_env;
     if (LPCH env_strings = GetEnvironmentStringsA()) {
         const char* p = env_strings;
         while (*p) {
@@ -325,7 +336,10 @@ int run_process(const std::vector<std::string>& args,
         FreeEnvironmentStringsA(env_strings);
     }
     if (extra_env) {
-        for (const auto& [k, v] : *extra_env) merged_env[k] = v;
+        for (const auto& [k, v] : *extra_env) {
+            merged_env.erase(k);
+            merged_env[k] = v;
+        }
     }
     std::string env_block;
     for (const auto& [k, v] : merged_env) {

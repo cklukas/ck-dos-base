@@ -236,17 +236,16 @@ DOSBASE_TEST(cl_and_link_end_to_end_c_program) {
         "int helper(int x) { return x + 1; }\n"
         "void main(void) { int y = helper(41); }\n");
 
-    const fs::path ckcl = fs::path(DOSBASE_TOOL_DIR) / "ckcl";
-    const fs::path cklink = fs::path(DOSBASE_TOOL_DIR) / "cklink";
-
-    const std::string cl_cmd =
-        "\"" + ckcl.string() + "\" -c -AS -Zl -Fo\"" + obj_file.string() + "\" \"" + c_file.string() + "\"";
-    DOSBASE_TEST_EXPECT_EQ(std::system(cl_cmd.c_str()), 0);
+    const fs::path tool_dir(DOSBASE_TOOL_DIR);
+    DOSBASE_TEST_EXPECT_EQ(
+        dosbase::bootstrap_test::run_tool(
+            tool_dir, "ckcl", {"-c", "-AS", "-Zl", "-Fo" + obj_file.string(), c_file.string()}, temp.path()),
+        0);
     DOSBASE_TEST_EXPECT(fs::is_regular_file(obj_file));
 
-    const std::string link_cmd =
-        "cd \"" + temp.path().string() + "\" && \"" + cklink.string() + "\" PROG.OBJ,PROG.EXE;";
-    DOSBASE_TEST_EXPECT_EQ(std::system(link_cmd.c_str()), 0);
+    DOSBASE_TEST_EXPECT_EQ(
+        dosbase::bootstrap_test::run_tool(tool_dir, "cklink", {"PROG.OBJ,PROG.EXE;"}, temp.path()),
+        0);
     DOSBASE_TEST_EXPECT(fs::is_regular_file(exe_file));
 }
 #endif

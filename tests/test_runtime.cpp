@@ -64,10 +64,7 @@ bool has_symbol(const OmfLibrary& lib, const std::string& name) {
 #ifdef DOSBASE_TOOL_DIR
 DOSBASE_TEST(runtime_clean_room_libs_build_package_and_link) {
     const fs::path rt_root = fs::path(DOSBASE_SOURCE_DIR) / "runtime";
-    const fs::path ckcl = fs::path(DOSBASE_TOOL_DIR) / "ckcl";
-    const fs::path ckmasm = fs::path(DOSBASE_TOOL_DIR) / "ckmasm";
-    const fs::path cklib = fs::path(DOSBASE_TOOL_DIR) / "cklib";
-    const fs::path cklink = fs::path(DOSBASE_TOOL_DIR) / "cklink";
+    const fs::path tool_dir(DOSBASE_TOOL_DIR);
 
     TemporaryDirectory temp;
     const fs::path d = temp.path();
@@ -75,17 +72,17 @@ DOSBASE_TEST(runtime_clean_room_libs_build_package_and_link) {
     auto run_asm = [&](const fs::path& src, const std::string& obj) {
         const fs::path local_asm = d / src.filename();
         fs::copy_file(src, local_asm, fs::copy_options::overwrite_existing);
-        const std::string cmd =
-            "cd \"" + d.string() + "\" && \"" + ckmasm.string() + "\" -Mx " +
-            src.filename().string() + "," + obj + ";";
-        DOSBASE_TEST_EXPECT_EQ(std::system(cmd.c_str()), 0);
+        DOSBASE_TEST_EXPECT_EQ(
+            dosbase::bootstrap_test::run_tool(
+                tool_dir, "ckmasm", {"-Mx", src.filename().string() + "," + obj + ";"}, d),
+            0);
     };
 
     auto run_cc = [&](const fs::path& src, const std::string& obj) {
-        const std::string cmd =
-            "cd \"" + d.string() + "\" && \"" + ckcl.string() + "\" -c -AS -Zl -Fo" +
-            obj + " \"" + src.string() + "\"";
-        DOSBASE_TEST_EXPECT_EQ(std::system(cmd.c_str()), 0);
+        DOSBASE_TEST_EXPECT_EQ(
+            dosbase::bootstrap_test::run_tool(
+                tool_dir, "ckcl", {"-c", "-AS", "-Zl", "-Fo" + obj, src.string()}, d),
+            0);
     };
 
     auto run_lib = [&](const std::string& libname, const std::vector<std::string>& objs) {
@@ -96,9 +93,9 @@ DOSBASE_TEST(runtime_clean_room_libs_build_package_and_link) {
         }
         const std::string rsp_name = libname + ".RSP";
         write_text_file(d / rsp_name, rsp.str());
-        const std::string cmd =
-            "cd \"" + d.string() + "\" && \"" + cklib.string() + "\" @" + rsp_name;
-        DOSBASE_TEST_EXPECT_EQ(std::system(cmd.c_str()), 0);
+        DOSBASE_TEST_EXPECT_EQ(
+            dosbase::bootstrap_test::run_tool(tool_dir, "cklib", {"@" + rsp_name}, d),
+            0);
     };
 
     run_asm(rt_root / "crt" / "crt0.asm", "CRT0.OBJ");
@@ -156,10 +153,10 @@ DOSBASE_TEST(runtime_clean_room_libs_build_package_and_link) {
         "}\n");
     run_cc(d / "APP.C", "APP.OBJ");
 
-    const std::string link_cmd =
-        "cd \"" + d.string() + "\" && \"" + cklink.string() +
-        "\" APP.OBJ,APP.EXE,,SLIBCE.LIB+COMSUBS.LIB;";
-    DOSBASE_TEST_EXPECT_EQ(std::system(link_cmd.c_str()), 0);
+    DOSBASE_TEST_EXPECT_EQ(
+        dosbase::bootstrap_test::run_tool(
+            tool_dir, "cklink", {"APP.OBJ,APP.EXE,,SLIBCE.LIB+COMSUBS.LIB;"}, d),
+        0);
     DOSBASE_TEST_EXPECT(fs::is_regular_file(d / "APP.EXE"));
 
     const auto exe_bytes = read_binary_file(d / "APP.EXE");

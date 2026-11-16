@@ -16,7 +16,7 @@ on:
   tags: [v*]
 jobs:
   - name: linux-arm64
-    runs_on: [linux, arm64]
+    runs_on: [linux]
     steps:
       - name: build-and-test
         script: |
