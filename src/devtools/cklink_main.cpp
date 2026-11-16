@@ -97,10 +97,14 @@ int main(int argc, char** argv) {
                                                          : remaining.substr(cut + 1);
                     if (directory.empty()) continue;
                     if (directory.size() >= 2 && directory[1] == ':') {
-                        const char* root = std::getenv("DOSBASE_DOS_ROOT");
-                        directory = (root != nullptr ? std::string(root)
-                                                     : std::string(".")) +
-                                    directory.substr(2);
+                        if (const char* root = std::getenv("DOSBASE_DOS_ROOT"); root != nullptr) {
+                            directory = std::string(root) + directory.substr(2);
+                        }
+#if !defined(_WIN32)
+                        else {
+                            directory = std::string(".") + directory.substr(2);
+                        }
+#endif
                     }
                     const std::filesystem::path candidate =
                         resolve_dos_input(directory + "\\" + name);

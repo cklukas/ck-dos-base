@@ -224,7 +224,28 @@ int main(int argc, char** argv) {
                 std::string inc_str(env_inc);
                 std::size_t start = 0;
                 while (start <= inc_str.size()) {
-                    std::size_t sep = inc_str.find_first_of(";:", start);
+#if defined(_WIN32)
+                    std::size_t sep = inc_str.find(';', start);
+#else
+                    std::size_t sep = std::string::npos;
+                    for (std::size_t k = start; k < inc_str.size(); ++k) {
+                        if (inc_str[k] == ';') {
+                            sep = k;
+                            break;
+                        }
+                        if (inc_str[k] == ':') {
+                            const bool is_drive =
+                                (k == start + 1) &&
+                                std::isalpha(static_cast<unsigned char>(inc_str[start])) &&
+                                (k + 1 < inc_str.size() &&
+                                 (inc_str[k + 1] == '\\' || inc_str[k + 1] == '/'));
+                            if (!is_drive) {
+                                sep = k;
+                                break;
+                            }
+                        }
+                    }
+#endif
                     std::string part = (sep == std::string::npos) ? inc_str.substr(start)
                                                                   : inc_str.substr(start, sep - start);
                     if (!part.empty()) {

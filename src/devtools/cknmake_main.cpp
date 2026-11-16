@@ -76,9 +76,14 @@ int main(int argc, char** argv) {
             // DOS filesystem root the harness exports.
             std::string init_dir = init;
             if (init_dir.size() >= 2 && init_dir[1] == ':') {
-                const char* root = std::getenv("DOSBASE_DOS_ROOT");
-                init_dir = (root != nullptr ? std::string(root) : std::string(".")) +
-                           init_dir.substr(2);
+                if (const char* root = std::getenv("DOSBASE_DOS_ROOT"); root != nullptr) {
+                    init_dir = std::string(root) + init_dir.substr(2);
+                }
+#if !defined(_WIN32)
+                else {
+                    init_dir = std::string(".") + init_dir.substr(2);
+                }
+#endif
             }
             const std::filesystem::path tools_ini =
                 resolve_dos_input(init_dir + "\\TOOLS.INI");
