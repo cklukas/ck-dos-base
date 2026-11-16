@@ -143,6 +143,7 @@ jobs:
           fi
           "$CKDIST" release \
             --repo-root . \
+            --tool-dir "$RUNNER_TEMP/build" \
             --verify-manifest docs/build-manifest.json \
             --output "$RUNNER_TEMP/dist" \
             --version "$version" \
@@ -160,7 +161,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: actions/download-artifact@v7.0.1
+      - uses: actions/download-artifact@v7
         with:
           path: ${{ runner.temp }}/artifacts
           merge-multiple: true
