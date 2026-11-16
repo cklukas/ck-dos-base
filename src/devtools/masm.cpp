@@ -3492,6 +3492,12 @@ class Assembler {
     }
 
     Value parse_primary(std::vector<Token>& tokens, std::size_t& at) {
+        if (at >= tokens.size() || tokens[at].kind == Token::end) {
+            if (pass_ == 2 && at < tokens.size()) {
+                fail("unparsable expression at " + tokens[at].text);
+            }
+            return {0, false};
+        }
         const Token& token = tokens[at];
         if (token.kind == Token::ident && token.text == "$") {
             // `$` is the location counter (_MSGRET's `JMP $+3`).
@@ -3560,6 +3566,7 @@ class Assembler {
             const std::string word = upper(token.text);
             if (word == "MASK" || word == "WIDTH") {
                 ++at;
+                if (at >= tokens.size() || tokens[at].kind == Token::end) return {0, false};
                 const auto field = record_fields_.find(upper(tokens[at].text));
                 ++at;
                 if (field == record_fields_.end()) return {0, false};
@@ -3569,6 +3576,7 @@ class Assembler {
             }
             if (word == "SIZE" || word == "TYPE" || word == "LENGTH") {
                 ++at;
+                if (at >= tokens.size() || tokens[at].kind == Token::end) return {0, false};
                 const std::string target = upper(tokens[at].text);
                 ++at;
                 // SIZE/TYPE of a STRUC name is its byte length -- IOCTL_REQ's
@@ -3617,7 +3625,8 @@ class Assembler {
                 ++at;
                 // A group/segment qualifier adds nothing to the VALUE
                 // (MSDOSME's `[BP+OFFSET DOSGROUP:ESCFUNC]`).
-                if (tokens[at].kind == Token::ident &&
+                if (at + 1 < tokens.size() &&
+                    tokens[at].kind == Token::ident &&
                     tokens[at + 1].kind == Token::punct &&
                     tokens[at + 1].text == ":" &&
                     (segment_index_for(upper(tokens[at].text)) > 0 ||
@@ -3632,7 +3641,8 @@ class Assembler {
                 // OFFSET of a struc TYPE selector is zero-based -- the
                 // type's symbol carries its size, which is not an offset.
                 Value inner;
-                if (tokens[at].kind == Token::ident &&
+                if (at < tokens.size() &&
+                    tokens[at].kind == Token::ident &&
                     symbols_.contains(upper(tokens[at].text)) &&
                     symbols_.at(upper(tokens[at].text)).kind ==
                         Symbol::struc_type) {
@@ -3643,7 +3653,8 @@ class Assembler {
                 }
                 // `.field` chains add their offsets (PATH2 subtracts
                 // `OFFSET arg_unit.argbuf` to cancel a field addend).
-                while (tokens[at].kind == Token::punct && tokens[at].text == "." &&
+                while (at + 1 < tokens.size() &&
+                       tokens[at].kind == Token::punct && tokens[at].text == "." &&
                        tokens[at + 1].kind == Token::ident) {
                     const auto field = symbols_.find(upper(tokens[at + 1].text));
                     if (field == symbols_.end()) break;
@@ -3655,6 +3666,7 @@ class Assembler {
             // A bare type name is its size in bytes: DEBUG's
             // `[DISADD+WORD]` and PARSE.ASM's `[si+byte]` step by 2 and 1.
             if ((word == "BYTE" || word == "WORD" || word == "DWORD") &&
+                at + 1 < tokens.size() &&
                 tokens[at + 1].kind == Token::ident &&
                 upper(tokens[at + 1].text) == "PTR") {
                 // A PTR cast passes the value through in numeric context
@@ -3664,7 +3676,8 @@ class Assembler {
             }
             if (word == "BYTE" || word == "WORD" || word == "DWORD" ||
                 word == "QWORD" || word == "TBYTE") {
-                if (!(tokens[at + 1].kind == Token::ident &&
+                if (!(at + 1 < tokens.size() &&
+                      tokens[at + 1].kind == Token::ident &&
                       upper(tokens[at + 1].text) == "PTR") &&
                     !symbols_.contains(word)) {
                     ++at;
