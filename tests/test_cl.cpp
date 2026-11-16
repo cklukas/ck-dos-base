@@ -365,3 +365,75 @@ DOSBASE_TEST(cl_wp11_inplace_memory_ops_and_discarded_values) {
         DOSBASE_TEST_EXPECT(!contains_seq(code, {0xBB}));
     }
 }
+
+DOSBASE_TEST(cl_wp12_direct_mem_and_folded_addressing) {
+    // 1. Direct memory RHS in 16-bit binary ALU and comparisons (zero push/pop)
+    {
+        const char* src =
+            "int direct_rhs(int a, int b, int c) {\n"
+            "    if (a < b) {\n"
+            "        return ((a + b) - c) ^ b;\n"
+            "    }\n"
+            "    return a & c;\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        // cmp ax, [bp+6] (3B 46 06), add ax, [bp+6] (03 46 06), sub ax, [bp+8] (2B 46 08), and ax, [bp+8] (23 46 08)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x3B, 0x46, 0x06}));
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x03, 0x46, 0x06}));
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x2B, 0x46, 0x08}));
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x23, 0x46, 0x08}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x50}));
+    }
+
+    // 2. Folded [bp+disp] on local struct fields (zero lea bx / add bx)
+    {
+        const char* src =
+            "struct Pair { int a; int b; };\n"
+            "int local_struct(int x, int y) {\n"
+            "    struct Pair s;\n"
+            "    s.a = x;\n"
+            "    s.b = y;\n"
+            "    s.b++;\n"
+            "    return s.a + s.b;\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x8D}));         // no lea bx
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x81, 0xC3}));   // no add bx, imm16
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x50}));         // no push ax
+    }
+
+    // 3. [bx+disp8] addressing for p->field and p[const_idx] (zero add bx / push ax)
+    {
+        const char* src =
+            "struct Pair { int a; int b; };\n"
+            "int ptr_disp(struct Pair *p, int *arr, int v) {\n"
+            "    p->b = v;\n"
+            "    return p->b + arr[3];\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        // mov bx, [bp+4] (8B 5E 04) ; mov [bx+2], ax (89 47 02)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x8B, 0x5E, 0x04, 0x89, 0x47, 0x02}));
+        // mov bx, [bp+6] (8B 5E 06) ; mov ax, [bx+6] (8B 47 06)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x8B, 0x5E, 0x06, 0x8B, 0x47, 0x06}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x81, 0xC3}));
+    }
+
+    // 4. Fast 6-byte [bp+d] load/store for 32-bit long and far pointer locals
+    {
+        const char* src =
+            "long copy_long(long x) {\n"
+            "    long tmp;\n"
+            "    tmp = x;\n"
+            "    return tmp;\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        // mov ax, [bp+4] (8B 46 04) ; mov dx, [bp+6] (8B 56 06) ; mov [bp-4], ax (89 46 FC) ; mov [bp-2], dx (89 56 FE)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x8B, 0x46, 0x04, 0x8B, 0x56, 0x06, 0x89, 0x46, 0xFC, 0x89, 0x56, 0xFE}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x8D}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x50}));
+    }
+}
