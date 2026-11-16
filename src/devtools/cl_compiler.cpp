@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -2247,6 +2248,14 @@ private:
     LabelId epilogue_label_ = 0;
     std::vector<std::unordered_map<std::string, LocalBinding>> local_vars_;
     std::unordered_map<int, RegVar> reg_by_var_id_;
+    std::unordered_set<int> unsafe_cache_var_ids_;
+    bool bx_cache_active_ = false;
+    int bx_cache_var_id_ = 0;
+    int bx_cache_bp_off_ = 0;
+    std::size_t bx_cache_valid_pos_ = 0;
+    bool ax_cache_active_ = false;
+    int ax_cache_var_id_ = 0;
+    std::size_t ax_cache_valid_pos_ = 0;
     bool use_si_ = false;
     bool use_di_ = false;
     bool has_hidden_sret_ = false;
@@ -2274,7 +2283,21 @@ private:
         return id;
     }
 
+    void invalidate_reg_caches() {
+        bx_cache_active_ = false;
+        ax_cache_active_ = false;
+    }
+
+    void preserve_bx_cache_since(std::size_t prev_pos) {
+        if (bx_cache_active_ && bx_cache_valid_pos_ == prev_pos) {
+            bx_cache_valid_pos_ = omf_.code.data.size();
+        } else {
+            bx_cache_active_ = false;
+        }
+    }
+
     void bind_label(LabelId id) {
+        invalidate_reg_caches();
         label_raw_pos_[id] = omf_.code.data.size() - fn_code_start_;
     }
 
@@ -2287,6 +2310,7 @@ private:
     }
 
     void emit_jmp(LabelId target) {
+        invalidate_reg_caches();
         const std::size_t rpos = omf_.code.data.size() - fn_code_start_;
         branches_.push_back({rpos, 3, 3, false, 0, target});
         emit_u8(0xE9);
@@ -2294,12 +2318,15 @@ private:
     }
 
     void emit_jcc(std::uint8_t jcc_opcode, LabelId target) {
+        const std::size_t prev_pos = omf_.code.data.size();
+        ax_cache_active_ = false;
         const std::size_t rpos = omf_.code.data.size() - fn_code_start_;
         branches_.push_back({rpos, 5, 5, true, jcc_opcode, target});
         emit_u8(static_cast<std::uint8_t>(jcc_opcode ^ 0x01));
         emit_u8(0x03);
         emit_u8(0xE9);
         emit_u16(0);
+        preserve_bx_cache_since(prev_pos);
     }
 
     void relax_and_finalize_function(std::size_t pf_start, std::size_t cf_start) {
@@ -2979,10 +3006,15 @@ private:
 
     void analyze_and_allocate_reg_vars(const FuncDef& fn) {
         reg_by_var_id_.clear();
+        unsafe_cache_var_ids_.clear();
+        invalidate_reg_caches();
         use_si_ = false;
         use_di_ = false;
         effective_frame_size_ = fn.frame_size;
-        if (fn.type->is_interrupt || !fn.body) return;
+        if (fn.type->is_interrupt || !fn.body) {
+            unsafe_cache_var_ids_.insert(-1);
+            return;
+        }
 
         struct RegCand {
             int var_id = 0;
@@ -3018,6 +3050,7 @@ private:
             if (sz % 2 != 0) ++sz;
             if (!p.name.empty() && p.var_id != 0) {
                 sim_scopes.back()[p.name] = p.var_id;
+                if (p.is_volatile) unsafe_cache_var_ids_.insert(p.var_id);
                 cands[p.var_id] = {p.var_id,
                                    arg_off,
                                    true,
@@ -3181,6 +3214,7 @@ private:
                         for (const LocalVar& lv : s->locals) {
                             all_locals.emplace_back(lv.var_id, lv.bp_offset);
                             sim_scopes.back()[lv.name] = lv.var_id;
+                            if (lv.is_volatile) unsafe_cache_var_ids_.insert(lv.var_id);
                             cands[lv.var_id] = {
                                 lv.var_id,
                                 lv.bp_offset,
@@ -3237,7 +3271,13 @@ private:
             };
 
         walk_stmt(fn.body, 0);
-        if (calls_setjmp) return;
+        for (const auto& [vid, c] : cands) {
+            if (c.addr_taken) unsafe_cache_var_ids_.insert(vid);
+        }
+        if (calls_setjmp) {
+            unsafe_cache_var_ids_.insert(-1);
+            return;
+        }
 
         std::function<bool(const StmtPtr&)> subtree_has_jump_target = [&](const StmtPtr& s) -> bool {
             if (!s) return false;
@@ -3821,10 +3861,12 @@ private:
                             bool is_far = false;
                             int disp = 0;
                             emit_lvalue_idx_disp(cond->lhs, base, is_far, disp);
+                            const std::size_t prev_pos = omf_.code.data.size();
                             if (is_far) emit_u8(0x26);
                             emit_u8(0x80);
                             emit_idx_rm(base, 7, disp);  // cmp byte ptr [base+disp], imm8
                             emit_u8(imm8);
+                            preserve_bx_cache_since(prev_pos);
                         } else {
                             emit_expr(cond->lhs);
                             if (imm8 == 0) {
@@ -3944,6 +3986,7 @@ private:
                         bool is_far = false;
                         int disp = 0;
                         emit_lvalue_idx_disp(cond->lhs, base, is_far, disp);
+                        const std::size_t prev_pos = omf_.code.data.size();
                         if (is_far) emit_u8(0x26);
                         if (simm >= -128 && simm <= 127) {
                             emit_u8(0x83); emit_idx_rm(base, 7, disp);
@@ -3952,6 +3995,7 @@ private:
                             emit_u8(0x81); emit_idx_rm(base, 7, disp);
                             emit_u16(imm);
                         }
+                        preserve_bx_cache_since(prev_pos);
                     } else {
                         emit_expr(cond->lhs);
                         if (imm == 0) {
@@ -4433,7 +4477,35 @@ private:
         }
     }
 
+    bool is_safe_cache_local(const ExprPtr& e, LocalBinding& out_lb) const {
+        if (!e || e->kind != ExprKind::var) return false;
+        if (unsafe_cache_var_ids_.count(-1) > 0) return false;
+        if (find_reg_var(e->name) != RegVar::none) return false;
+        auto loc = find_local(e->name);
+        if (!loc || loc->var_id == 0) return false;
+        if (unsafe_cache_var_ids_.count(loc->var_id) > 0) return false;
+        out_lb = *loc;
+        return true;
+    }
+
+    void preserve_bx_cache_across_dm_write(std::size_t prev_pos, const DirectMem& dm, std::size_t write_sz) {
+        if (!bx_cache_active_ || bx_cache_valid_pos_ != prev_pos) {
+            bx_cache_active_ = false;
+            return;
+        }
+        if (dm.kind == DirectMem::bp_rel) {
+            const int w_lo = dm.disp;
+            const int w_hi = dm.disp + static_cast<int>(std::max<std::size_t>(1, write_sz));
+            if (!(w_hi <= bx_cache_bp_off_ || bx_cache_bp_off_ + 2 <= w_lo)) {
+                bx_cache_active_ = false;
+                return;
+            }
+        }
+        bx_cache_valid_pos_ = omf_.code.data.size();
+    }
+
     void load_direct_mem(const TypePtr& t, const DirectMem& dm) {
+        const std::size_t prev_pos = omf_.code.data.size();
         if (t && t->kind == TypeKind::t_array) {
             if (dm.kind == DirectMem::bp_rel) {
                 emit_u8(0x8D); emit_bp_rm(0, dm.disp);  // lea ax, [bp+d]
@@ -4442,6 +4514,7 @@ private:
                 emit_dgroup_disp(dm.sym, dm.disp);
             }
             if (t->is_far) { emit_u8(0x8C); emit_u8(0xDA); }
+            preserve_bx_cache_since(prev_pos);
             return;
         }
         if (is_byte_scalar(t)) {
@@ -4471,9 +4544,11 @@ private:
                 emit_dgroup_disp(dm.sym, dm.disp);
             }
         }
+        preserve_bx_cache_since(prev_pos);
     }
 
     void store_direct_mem(const TypePtr& t, const DirectMem& dm) {
+        const std::size_t prev_pos = omf_.code.data.size();
         if (is_byte_scalar(t)) {
             if (dm.kind == DirectMem::bp_rel) {
                 emit_u8(0x88); emit_bp_rm(0, dm.disp);  // mov [bp+d], al
@@ -4499,6 +4574,7 @@ private:
                 emit_dgroup_disp(dm.sym, dm.disp);
             }
         }
+        preserve_bx_cache_across_dm_write(prev_pos, dm, is_32bit_scalar(t) ? 4 : (is_byte_scalar(t) ? 1 : 2));
     }
 
     void emit_idx_rm(PtrBase base, std::uint8_t reg_or_op, int disp) {
@@ -4519,7 +4595,7 @@ private:
     static bool can_scale_bx_no_ax(std::size_t elem_sz) {
         if (elem_sz <= 1) return true;
         if ((elem_sz & (elem_sz - 1)) == 0) return true;
-        // Popcount 2: (1 << a) + (1 << b) with a <= 3 and (b - a) <= 3
+        // Popcount 2: (1 << a) + (1 << b) with a <= 3 and (b - a) <= 4 (includes 17 = 16 + 1!)
         const std::size_t lo_bit = elem_sz & (~elem_sz + 1);
         const std::size_t hi_bit = elem_sz ^ lo_bit;
         if (hi_bit != 0 && (hi_bit & (hi_bit - 1)) == 0) {
@@ -4527,7 +4603,7 @@ private:
             while ((std::size_t(1) << a) < lo_bit) ++a;
             int b = a;
             while ((std::size_t(1) << b) < hi_bit) ++b;
-            return a <= 3 && (b - a) <= 3;
+            return a <= 3 && (b - a) <= 4;
         }
         return false;
     }
@@ -4766,6 +4842,7 @@ private:
                 out_base = PtrBase::bx;
                 out_far = ptr_expr->type->is_far;
                 if (out_far) {
+                    bx_cache_active_ = false;
                     if (dm.kind == DirectMem::bp_rel) {
                         emit_u8(0xC4); emit_bp_rm(3, dm.disp);  // les bx, [bp+d]
                     } else {
@@ -4773,9 +4850,22 @@ private:
                         emit_dgroup_disp(dm.sym, dm.disp);
                     }
                 } else {
-                    if (dm.kind == DirectMem::bp_rel) {
+                    LocalBinding lb;
+                    if (dm.kind == DirectMem::bp_rel && is_safe_cache_local(ptr_expr, lb)) {
+                        if (bx_cache_active_ && bx_cache_valid_pos_ == omf_.code.data.size() &&
+                            bx_cache_var_id_ == lb.var_id) {
+                            return;  // BX already holds [bp+d]!
+                        }
+                        emit_u8(0x8B); emit_bp_rm(3, dm.disp);  // mov bx, [bp+d]
+                        bx_cache_active_ = true;
+                        bx_cache_var_id_ = lb.var_id;
+                        bx_cache_bp_off_ = lb.bp_offset;
+                        bx_cache_valid_pos_ = omf_.code.data.size();
+                    } else if (dm.kind == DirectMem::bp_rel) {
+                        bx_cache_active_ = false;
                         emit_u8(0x8B); emit_bp_rm(3, dm.disp);  // mov bx, [bp+d]
                     } else {
+                        bx_cache_active_ = false;
                         emit_u8(0x8B); emit_u8(0x1E);           // mov bx, [sym+d]
                         emit_dgroup_disp(dm.sym, dm.disp);
                     }
@@ -4853,6 +4943,7 @@ private:
     }
 
     void load_from_bx(const TypePtr& t, bool is_far, int disp = 0, PtrBase base = PtrBase::bx) {
+        const std::size_t prev_pos = omf_.code.data.size();
         if (is_far) emit_u8(0x26);  // es:
         if (is_byte_scalar(t)) {
             emit_u8(0x8A); emit_idx_rm(base, 0, disp);  // mov al, [base+disp]
@@ -4865,9 +4956,11 @@ private:
         } else {
             emit_u8(0x8B); emit_idx_rm(base, 0, disp);  // mov ax, [base+disp]
         }
+        preserve_bx_cache_since(prev_pos);
     }
 
     void store_to_bx(const TypePtr& t, bool is_far, int disp = 0, PtrBase base = PtrBase::bx) {
+        const std::size_t prev_pos = omf_.code.data.size();
         if (is_far) emit_u8(0x26);  // es:
         if (is_byte_scalar(t)) {
             emit_u8(0x88); emit_idx_rm(base, 0, disp);  // mov [base+disp], al
@@ -4878,6 +4971,7 @@ private:
         } else {
             emit_u8(0x89); emit_idx_rm(base, 0, disp);  // mov [base+disp], ax
         }
+        preserve_bx_cache_since(prev_pos);
     }
 
     void emit_grp1_bp_imm16(std::uint8_t subop, int bp_disp, std::uint16_t imm) {
@@ -4902,6 +4996,7 @@ private:
         }
         switch (e->kind) {
             case ExprKind::int_lit: {
+                const std::size_t prev_pos = omf_.code.data.size();
                 const std::uint16_t lo = static_cast<std::uint16_t>(e->int_val & 0xFFFF);
                 if (lo == 0) {
                     emit_u8(0x33); emit_u8(0xC0);  // xor ax, ax
@@ -4916,6 +5011,7 @@ private:
                         emit_u8(0xBA); emit_u16(hi);   // mov dx, imm16
                     }
                 }
+                preserve_bx_cache_since(prev_pos);
                 break;
             }
 
@@ -4967,8 +5063,18 @@ private:
                     break;
                 }
                 if (const RegVar rv = find_reg_var(e->name); rv != RegVar::none) {
+                    const std::size_t prev_pos = omf_.code.data.size();
                     emit_mov_ax_regvar(rv);
+                    preserve_bx_cache_since(prev_pos);
                     break;
+                }
+                {
+                    LocalBinding lb;
+                    if (is_reg_eligible_type(e->type) && is_safe_cache_local(e, lb) &&
+                        ax_cache_active_ && ax_cache_valid_pos_ == omf_.code.data.size() &&
+                        ax_cache_var_id_ == lb.var_id) {
+                        break;  // AX already holds this 16-bit local!
+                    }
                 }
                 DirectMem dm;
                 if (try_resolve_direct_mem(e, dm)) {
@@ -5131,6 +5237,7 @@ private:
                         bool is_far = false;
                         int disp = 0;
                         emit_lvalue_idx_disp(e->lhs, base, is_far, disp);
+                        const std::size_t prev_pos = omf_.code.data.size();
                         if (is_byte_scalar(e->type)) {
                             if (is_far) emit_u8(0x26);
                             emit_u8(0xC6);
@@ -5157,6 +5264,7 @@ private:
                             emit_idx_rm(base, 0, disp);
                             emit_u16(static_cast<std::uint16_t>(e->rhs->int_val));
                         }
+                        preserve_bx_cache_since(prev_pos);
                         break;
                     }
                 }
@@ -5165,6 +5273,12 @@ private:
                 DirectMem dm;
                 if (try_resolve_direct_mem(e->lhs, dm)) {
                     store_direct_mem(e->type, dm);
+                    LocalBinding lb;
+                    if (is_reg_eligible_type(e->type) && is_safe_cache_local(e->lhs, lb)) {
+                        ax_cache_active_ = true;
+                        ax_cache_var_id_ = lb.var_id;
+                        ax_cache_valid_pos_ = omf_.code.data.size();
+                    }
                     break;
                 }
                 if (can_emit_lvalue_bx_preserving_ax_dx(e->lhs)) {
@@ -5417,6 +5531,15 @@ private:
             case ExprKind::unary: {
                 if (e->op == Tok::amp) {
                     if (!need_value) { emit_expr(e->lhs, false); break; }
+                    if (e->lhs && e->lhs->kind == ExprKind::unary && e->lhs->op == Tok::star &&
+                        e->lhs->lhs) {
+                        emit_expr(e->lhs->lhs, true);
+                        if (e->type && e->type->is_far &&
+                            !(e->lhs->lhs->type && e->lhs->lhs->type->is_far)) {
+                            emit_u8(0x8C); emit_u8(0xDA);  // mov dx, ds
+                        }
+                        break;
+                    }
                     DirectMem dm;
                     if (try_resolve_direct_mem(e->lhs, dm)) {
                         if (dm.kind == DirectMem::bp_rel) {
@@ -5853,6 +5976,65 @@ private:
                             emit_op_ax_direct_mem(0x3B, dm);
                             emit_cmp_setcc(e->op, is_signed_type(e->lhs->type) &&
                                                       is_signed_type(e->rhs->type));
+                            break;
+                        }
+                    }
+                }
+
+                // Push/pop-free near pointer +/- scaled index fast path (including odd -Zp struct sizes!)
+                if (((e->op == Tok::plus && (lhs_ptr != rhs_ptr)) ||
+                     (e->op == Tok::minus && lhs_ptr && !rhs_ptr))) {
+                    const ExprPtr base_e = lhs_ptr ? e->lhs : e->rhs;
+                    const ExprPtr idx_e = lhs_ptr ? e->rhs : e->lhs;
+                    if (base_e && base_e->type && !base_e->type->is_far && idx_e &&
+                        !is_32bit_scalar(idx_e->type)) {
+                        const RegVar base_rv = find_expr_reg_var(base_e);
+                        DirectMem bdm;
+                        const bool has_bdm =
+                            (base_rv == RegVar::none) && try_resolve_direct_mem(base_e, bdm);
+                        if (base_rv != RegVar::none || has_bdm) {
+                            const auto elem_sz = static_cast<std::uint16_t>(
+                                std::max<std::size_t>(1, type_size(base_e->type->base)));
+                            const RegVar idx_rv = find_expr_reg_var(idx_e);
+                            DirectMem idm;
+                            const bool is_pow2_or_shift =
+                                elem_sz <= 1 || exact_log2_u32(elem_sz) >= 1 || elem_sz == 3 ||
+                                elem_sz == 5 || elem_sz == 6 || elem_sz == 9 || elem_sz == 10 ||
+                                elem_sz == 12;
+                            if (!is_pow2_or_shift && idx_rv != RegVar::none) {
+                                emit_u8(0xB8); emit_u16(elem_sz);  // mov ax, elem_sz
+                                emit_u8(0xF7);
+                                emit_u8(static_cast<std::uint8_t>(0xE0 | reg_num(idx_rv)));  // mul si/di
+                            } else if (!is_pow2_or_shift && try_resolve_word_mem(idx_e, idm)) {
+                                emit_u8(0xB8); emit_u16(elem_sz);  // mov ax, elem_sz
+                                emit_u8(0xF7);
+                                if (idm.kind == DirectMem::bp_rel) {
+                                    emit_bp_rm(4, idm.disp);  // mul word ptr [bp+d]
+                                } else {
+                                    emit_u8(0x26);
+                                    emit_dgroup_disp(idm.sym, idm.disp);  // mul word ptr [sym+d]
+                                }
+                            } else {
+                                emit_expr(idx_e);
+                                if (elem_sz > 1) emit_mul16_ax_const(elem_sz, false);
+                            }
+                            if (e->op == Tok::minus) {
+                                emit_u8(0xF7); emit_u8(0xD8);  // neg ax
+                            }
+                            if (base_rv != RegVar::none) {
+                                emit_u8(0x03);
+                                emit_u8(static_cast<std::uint8_t>(0xC0 | reg_num(base_rv)));  // add ax, si/di
+                            } else if (base_e->type->kind == TypeKind::t_array) {
+                                if (bdm.kind == DirectMem::bp_rel) {
+                                    emit_u8(0x8D); emit_bp_rm(1, bdm.disp);  // lea cx, [bp+d]
+                                    emit_u8(0x03); emit_u8(0xC1);            // add ax, cx
+                                } else {
+                                    emit_u8(0x05);
+                                    emit_dgroup_disp(bdm.sym, bdm.disp);     // add ax, offset sym+d
+                                }
+                            } else {
+                                emit_op_ax_direct_mem(0x03, bdm);            // add ax, [bp+d] / [sym+d]
+                            }
                             break;
                         }
                     }

@@ -778,3 +778,45 @@ DOSBASE_TEST(cl_two_tier_frame_and_per_block_reg_reuse) {
         DOSBASE_TEST_EXPECT(si_incs >= 2 || di_incs >= 2);
     }
 }
+
+DOSBASE_TEST(cl_odd_struct_index_and_bx_reload_cache) {
+    // 1. `&segs[i]` on 19-byte -Zp struct folds `&*` and emits `mov ax, 19; mul [bp+6]` with zero push/pop
+    {
+        const char* src =
+            "struct Seg19 { char b[19]; };\n"
+            "struct Seg19 *seg_addr(struct Seg19 * volatile segs, volatile int i) {\n"
+            "    return &segs[i];\n"
+            "}\n";
+        CompileOptions opts;
+        opts.pack_structs = true;
+        const auto obj = compile_c_to_omf(src, opts);
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        // mov ax, 19 (B8 13 00); mul word ptr [bp+6] (F7 66 06); add ax, [bp+4] (03 46 04)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0xB8, 0x13, 0x00, 0xF7, 0x66, 0x06, 0x03, 0x46, 0x04}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x50}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x8B, 0xD8, 0x8B, 0xC3}));
+    }
+
+    // 2. Basic-block BX cache avoids reloading `mov bx, [bp+4]` across consecutive `out->field = imm`
+    {
+        const char* src =
+            "struct Rec { int a; int b; int c; };\n"
+            "int fill_rec(struct Rec *out) {\n"
+            "    register int r1 = 10;\n"
+            "    register int r2 = 20;\n"
+            "    r1 += r2;\n"
+            "    r2 += r1;\n"
+            "    out->a = 1;\n"
+            "    out->b = 2;\n"
+            "    out->c = 3;\n"
+            "    return r1 + r2;\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        int bx_loads = 0;
+        for (std::size_t i = 0; i + 2 < code.size(); ++i) {
+            if (code[i] == 0x8B && code[i + 1] == 0x5E && code[i + 2] == 0x04) ++bx_loads;
+        }
+        DOSBASE_TEST_EXPECT_EQ(bx_loads, 1);
+    }
+}
