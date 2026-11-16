@@ -1,16 +1,29 @@
 # Source provenance
 
-## Native tools
+## Native tools and clean-room runtime
 
-The code under `include/dosbase`, `src/devtools`, and `tests` is an independent
-clean-room implementation. Compatibility behavior was established by comparing
-small, purpose-built inputs and outputs with legitimately obtained historical
-tools. Historical executable files are not linked into, embedded in, or needed
-at runtime by the native tools.
+The code under `include/dosbase`, `src/devtools`, `runtime`, and `tests` is an
+independent clean-room implementation. Compatibility behavior was established by
+comparing small, purpose-built inputs and outputs with legitimately obtained
+historical tools and public specifications. Historical executable files are not
+linked into, embedded in, or needed at runtime by the native tools.
 
-## MS-DOS 4 source snapshot
+## Dual-OS architecture (`CK-DOS 4.0` and `CK-DOS 5.0`)
 
-Microsoft published the MS-DOS 4.0 source at:
+CK-DOS Base builds and packages two side-by-side 16-bit DOS distributions on
+`main`:
+
+1. **`CK-DOS 4.0` (`third_party/ms-dos-4`)** — Frozen, reproducible MS-DOS
+   4.00/4.01 reference tree gated byte-for-byte against all 654 SHA-256 artifact
+   hashes in `docs/build-manifest.json`, emitting `ckdos-4.00-*` release media.
+2. **`CK-DOS 5.0` (`os/ck-dos-5`)** — Independent MIT-licensed evolution of the
+   open-source MS-DOS 4.00 codebase combined with clean-room, first-party
+   CK-DOS 5.0 kernel enhancements and utilities, emitting `ckdos-5.00-*`
+   release media.
+
+## MS-DOS 4 source snapshot (`third_party/ms-dos-4`)
+
+Microsoft published the MS-DOS 4.0 source under the MIT License at:
 
 - <https://github.com/microsoft/MS-DOS>
 
@@ -30,6 +43,20 @@ snapshot's MIT license is retained at `third_party/ms-dos-4/LICENSE`.
 The snapshot includes historical build executables because they are part of
 the licensed upstream tree. CK-DOS Base CI does not redistribute them in native
 tool packages, and the native tools do not invoke them.
+
+## CK-DOS 5.0 source tree (`os/ck-dos-5`)
+
+`os/ck-dos-5` was seeded from the MIT-licensed `third_party/ms-dos-4/src`
+sources with all historical binary tools (`.EXE`, `.COM`) and prebuilt object
+or library binaries (`.OBJ`, `.LIB`, `.SYS`) stripped prior to import. All
+runtime libraries (`SLIBCE.LIB`, `COMSUBS.LIB`, `CASSFAR.LIB`) are built from
+the first-party clean-room sources in `runtime/`.
+
+Every DOS 5.0-compatible kernel extension, memory tool, and full-screen utility
+added under `os/ck-dos-5` is an original clean-room implementation authored from
+public MS-DOS 5.0 / IBM PC BIOS / LIM EMS / XMS documentation. Zero Microsoft
+MS-DOS 5.0 source code, disassembly, or binary code is used. Licensing is
+recorded in `os/ck-dos-5/LICENSE`.
 
 ## Clean public boundary
 

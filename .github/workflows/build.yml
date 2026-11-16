@@ -33,7 +33,7 @@ jobs:
       - name: Unit tests
         run: ctest --test-dir build --build-config Release --output-on-failure
 
-      - name: Full MS-DOS 4.00 build & manifest verification (native ckdist)
+      - name: Full CK-DOS 4.0 & 5.0 build & manifest verification (native ckdist)
         shell: bash
         env:
           TMPDIR: ${{ runner.temp }}
@@ -47,7 +47,7 @@ jobs:
           else
             CKDIST=build/ckdist
           fi
-          "$CKDIST" verify-build --repo-root . --verify-manifest docs/build-manifest.json
+          "$CKDIST" verify-build --os all --repo-root . --verify-manifest docs/build-manifest.json
 
       - name: Install native package
         run: cmake --install build --config Release
@@ -76,23 +76,24 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --config Release --parallel
 
-      - name: Build all DOS media & verify QEMU boot
+      - name: Build all CK-DOS 4.0 & 5.0 media & verify QEMU boot
         env:
           TMPDIR: ${{ runner.temp }}
         run: |
           ./build/ckdist release \
+            --os all \
             --repo-root . \
             --tool-dir build \
             --verify-manifest docs/build-manifest.json \
             --output dist \
             --platform linux-x64
-          ./build/ckdist verify-boot --dist-dir dist
+          ./build/ckdist verify-boot --os all --dist-dir dist
           ls -lh dist/
           cat dist/SHA256SUMS
 
       - name: Upload DOS release media
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: ckdos-4.00-release-media
+          name: ckdos-release-media
           path: dist/
           if-no-files-found: error

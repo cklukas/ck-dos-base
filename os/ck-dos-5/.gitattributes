@@ -1,0 +1,2 @@
+# Preserve DOS CP437 encodings, Ctrl-Z markers, and exact CRLF bytes across platforms.
+src/** -text

@@ -1,10 +1,18 @@
 # CK-DOS Base
 
-CK-DOS Base preserves the MS-DOS 4.00 source code and provides a complete,
-100% clean-room native C/C++20 cross-compilation and packaging toolchain that
-builds all 60 MS-DOS 4.00 directories from source, self-hosts natively inside
-16-bit real-mode DOS, and produces bootable/installable release media without
-relying on proprietary compilers, assemblers, or Python build scripts.
+CK-DOS Base provides a complete, 100% clean-room native C/C++20
+cross-compilation and packaging toolchain alongside two side-by-side 16-bit DOS
+operating-system distributions built completely from source without proprietary
+compilers, assemblers, or Python build scripts:
+
+- **CK-DOS 4.0 (`third_party/ms-dos-4`)** — Frozen, reproducible MS-DOS
+  4.00/4.01 reference tree verified against all 654 SHA-256 hashes in
+  `docs/build-manifest.json` (`ckdos-4.00-*` release media).
+- **CK-DOS 5.0 (`os/ck-dos-5`)** — Independent MIT-licensed evolution of the
+  open-source MS-DOS 4.00 codebase combined with clean-room, first-party
+  CK-DOS 5.0 kernel enhancements and utilities, containing zero historical
+  binary tools and zero Microsoft MS-DOS 5.0 code (`ckdos-5.00-*` release
+  media).
 
 The project has no dependency on any private or downstream product. Downstream
 products may consume CK-DOS Base, while this repository remains completely
@@ -14,7 +22,7 @@ standalone.
 
 The native C/C++20 tools run directly on macOS, Linux, and Windows; portable
 C89 cores (`src/devtools/core/*_core.c`) also compile with `ckcl` into native
-16-bit MS-DOS `.EXE` binaries (`C:\DEVTOOLS`).
+16-bit DOS `.EXE` binaries (`C:\DEVTOOLS`).
 
 | Tool | Role |
 | --- | --- |
@@ -25,13 +33,13 @@ C89 cores (`src/devtools/core/*_core.c`) also compile with `ckcl` into native
 | `cknmake` | NMAKE-compatible build planner and recipe executor |
 | `ckexe2bin`, `ckconvert`, `ckexefix` | MZ executable to `.BIN`/`.COM` converters and header fixer |
 | `ckcompress`, `ckmenubld`, `ckasc2hlp` | `SELECT` installer RLE compressor, menu builder, and help compiler |
-| `ckbuildidx`, `cknosrvbld`, `ckbuildmsg`, `ckdbof` | MS-DOS message & boot-sector build utilities |
+| `ckbuildidx`, `cknosrvbld`, `ckbuildmsg`, `ckdbof` | DOS message & boot-sector build utilities |
 | `ckmkimg` (`CKMKIMG.EXE` on DOS) | Portable C89 FAT12/FAT16 floppy, MBR/VHD hard-disk, El-Torito ISO, and ZIP image builder |
-| `ckdist` | Zero-Python full-tree MS-DOS 4.00 builder, SHA-256 manifest verifier, and release media packager |
+| `ckdist` | Zero-Python dual-OS (`CK-DOS 4.0` + `CK-DOS 5.0`) builder, SHA-256 manifest verifier, and release media packager |
 | `ckmzdump`, `ckomfdump`, `cklibdump` | MZ, OMF, and library binary inspectors |
 
-The MS-DOS 4.00 source snapshot is under `third_party/ms-dos-4`. Its provenance
-and licensing are recorded in [docs/PROVENANCE.md](docs/PROVENANCE.md).
+Provenance and licensing for both `third_party/ms-dos-4` and `os/ck-dos-5` are
+documented in [docs/PROVENANCE.md](docs/PROVENANCE.md).
 
 ## Build, verify, and package release media
 
@@ -40,9 +48,11 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release --parallel
 ctest --test-dir build --build-config Release --output-on-failure
 
-# Build all 60 MS-DOS 4.00 directories, verify all 654 SHA-256 manifest hashes,
-# build 16-bit self-hosting DOS tools, and emit all release media into dist/:
+# Build both CK-DOS 4.0 (verifying all 654 SHA-256 manifest hashes) and
+# CK-DOS 5.0, build 16-bit self-hosting DOS tools, and emit all release media
+# into dist/ (--os defaults to all; pass --os dos4 or --os dos5 to select one):
 ./build/ckdist release \
+  --os all \
   --repo-root . \
   --tool-dir build \
   --verify-manifest docs/build-manifest.json \
@@ -51,11 +61,11 @@ ctest --test-dir build --build-config Release --output-on-failure
 
 ### Release artifacts (`dist/`)
 
-- `ckdos-4.00-floppy-1440k.img` — 3.5" 1.44 MB bootable & installable FAT12 floppy (`INSTALL.BAT` installs DOS onto `C:`)
-- `ckdos-4.00-floppy-720k-disk1.img` & `disk2.img` — 2×720 KB floppy set for vintage PC/XT and early PS/2 systems
-- `ckdos-4.00-hdd-32m.vhd` — Ready-to-boot 32 MB Fixed VHD hard disk with `C:\DOS` and 16-bit self-hosting `C:\DEVTOOLS`
-- `ckdos-4.00-boot.iso` — El-Torito bootable CD-ROM ISO-9660 image
-- `ckdos-4.00-files.zip` — Complete DOS + `DEVTOOLS` directory archive for DOSBox-X, XT-IDE CF, and SD cards
+- `ckdos-5.00-floppy-1440k.img` & `ckdos-4.00-floppy-1440k.img` — 3.5" 1.44 MB bootable & installable FAT12 floppies (`INSTALL.BAT` installs DOS onto `C:`)
+- `ckdos-5.00-floppy-720k-disk1.img` / `disk2.img` & `ckdos-4.00-floppy-720k-disk1.img` / `disk2.img` — 2×720 KB floppy sets for vintage PC/XT and early PS/2 systems
+- `ckdos-5.00-hdd-32m.vhd` & `ckdos-4.00-hdd-32m.vhd` — Ready-to-boot 32 MB Fixed VHD hard disks with `C:\DOS` and 16-bit self-hosting `C:\DEVTOOLS`
+- `ckdos-5.00-boot.iso` & `ckdos-4.00-boot.iso` — El-Torito bootable CD-ROM ISO-9660 images
+- `ckdos-5.00-files.zip` & `ckdos-4.00-files.zip` — Complete DOS + `DEVTOOLS` directory archives for DOSBox-X, XT-IDE CF, and SD cards
 - `ck-dos-sdk-<version>-<os>-<arch>.zip` — Host cross-compiler binaries, clean-room `runtime/`, and 16-bit `.LIB` archives
 - `SHA256SUMS` — Deterministic SHA-256 checksums
 
@@ -63,7 +73,7 @@ ctest --test-dir build --build-config Release --output-on-failure
 floppy, VHD, ISO, or ZIP images directly on host or from inside DOS:
 
 ```sh
-./build/ckmkimg floppy -s 1440k -l CKDOS400 -b MSBOOT.BIN -o boot.img IO.SYS MSDOS.SYS COMMAND.COM
+./build/ckmkimg floppy -s 1440k -l CKDOS500 -b MSBOOT.BIN -o boot.img IO.SYS MSDOS.SYS COMMAND.COM
 ```
 
 ### Use as a CMake subproject
@@ -77,19 +87,20 @@ target_link_libraries(my_target PRIVATE dosbase::devtools)
 
 ## Continuous integration and releases
 
-Every push runs native builds, unit tests, full 60-directory MS-DOS 4.00
-manifest verification, release media packaging, and headless QEMU boot checks
-on both `ckgit` (`.ckgit/ci.yml`, publishing `ck-pages`) and GitHub Actions
+Every push runs native builds, unit tests, full 654-hash `CK-DOS 4.0` manifest
+verification, full `CK-DOS 5.0` clean-room source compilation, dual-OS release
+media packaging, and headless QEMU boot checks for both OS lines on both `ckgit`
+(`.ckgit/ci.yml`, publishing `ck-pages`) and GitHub Actions
 (`.github/workflows/build.yml`). Pushing an annotated version tag (`v*`
-matching `VERSION`) publishes durable multi-platform SDK and DOS media releases
-on both channels.
+matching `VERSION`) publishes durable multi-platform SDK and dual-OS media
+releases on both channels.
 
 ## Independence and trademarks
 
 CK-DOS Base is independently developed and maintained by C. Klukas. It is not
 affiliated with, endorsed by, or sponsored by Microsoft. Microsoft, MS-DOS, and
-related names may be trademarks of Microsoft Corporation. The name “CK-DOS
-Base” identifies this independent project; it does not identify a Microsoft
-product.
+related names may be trademarks of Microsoft Corporation. The names “CK-DOS
+Base”, “CK-DOS 4.0”, and “CK-DOS 5.0” identify this independent project; they
+do not identify a Microsoft product.
 
 See [LICENSE](LICENSE) and [NOTICE](NOTICE).

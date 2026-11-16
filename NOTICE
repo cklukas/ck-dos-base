@@ -1,13 +1,19 @@
 CK-DOS Base
 Copyright (c) 2026 C. Klukas
 
-The CK-DOS Base native tools are licensed under the MIT License. See LICENSE.
+The CK-DOS Base native tools and clean-room runtime are licensed under the MIT
+License. See LICENSE.
 
-third_party/ms-dos-4 is a repaired snapshot of the Microsoft MS-DOS 4.0 source
-release and carries its own MIT license at third_party/ms-dos-4/LICENSE. The
-snapshot contains copyright notices belonging to Microsoft Corporation, IBM
-Corporation, and other identified contributors. See docs/PROVENANCE.md for the
-exact source revision and repair provenance.
+third_party/ms-dos-4 is a frozen, repaired snapshot of the Microsoft MS-DOS 4.0
+source release (CK-DOS 4.0 reference build) and carries its own MIT license at
+third_party/ms-dos-4/LICENSE. The snapshot contains copyright notices belonging
+to Microsoft Corporation, IBM Corporation, and other identified contributors.
+
+os/ck-dos-5 (CK-DOS 5.0) is an independent MIT-licensed evolution derived from
+the open-source MS-DOS 4.00 source tree (excluding historical binary tools)
+combined with original clean-room first-party CK-DOS 5.0 kernel and utility
+code, using zero Microsoft MS-DOS 5.0 code. See os/ck-dos-5/LICENSE and
+docs/PROVENANCE.md for full provenance details.
 
 This project is independent and is not affiliated with, endorsed by, or
 sponsored by Microsoft. Microsoft and MS-DOS may be trademarks of Microsoft

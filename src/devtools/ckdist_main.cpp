@@ -39,6 +39,29 @@ namespace fs = std::filesystem;
 
 namespace {
 
+enum class OsTarget {
+    Dos4,
+    Dos5,
+    All
+};
+
+OsTarget parse_os_target(std::string_view value) {
+    std::string low(value);
+    for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (low == "dos4" || low == "4" || low == "4.0" || low == "4.00") return OsTarget::Dos4;
+    if (low == "dos5" || low == "5" || low == "5.0" || low == "5.00") return OsTarget::Dos5;
+    if (low == "all" || low == "both") return OsTarget::All;
+    throw std::runtime_error("invalid --os value '" + std::string(value) + "' (expected dos4, dos5, or all)");
+}
+
+bool includes_dos4(OsTarget t) noexcept {
+    return t == OsTarget::Dos4 || t == OsTarget::All;
+}
+
+bool includes_dos5(OsTarget t) noexcept {
+    return t == OsTarget::Dos5 || t == OsTarget::All;
+}
+
 // ---------------------------------------------------------------------------
 // First-principles FIPS 180-4 SHA-256 (constants derived from prime roots)
 // ---------------------------------------------------------------------------
@@ -468,7 +491,7 @@ std::string read_text_trimmed(const fs::path& path) {
 }
 
 // ---------------------------------------------------------------------------
-// Clean-Room Runtime & Full 60-Directory MS-DOS 4.00 Build + Manifest Gate
+// Clean-Room Runtime & Dual-OS (CK-DOS 4.0 + CK-DOS 5.0) Tree Builders
 // ---------------------------------------------------------------------------
 
 struct ManifestEntry {
@@ -476,15 +499,17 @@ struct ManifestEntry {
     std::uint64_t size = 0;
 };
 
-void build_clean_room_runtime(const fs::path& repo_root,
-                              const fs::path& stage,
-                              const fs::path& tool_dir,
-                              const fs::path& scratch_root) {
+fs::path compile_clean_room_runtime(const fs::path& repo_root,
+                                    const fs::path& tool_dir,
+                                    const fs::path& scratch_root) {
+    const fs::path d = scratch_root / "rt_build";
+    if (fs::is_regular_file(d / "SLIBCE.LIB")) {
+        return d;
+    }
     const fs::path ckcl = exe_path(tool_dir, "ckcl");
     const fs::path ckmasm = exe_path(tool_dir, "ckmasm");
     const fs::path cklib = exe_path(tool_dir, "cklib");
     const fs::path rt_root = repo_root / "runtime";
-    const fs::path d = scratch_root / "rt_build";
     fs::create_directories(d);
 
     auto run_asm = [&](const fs::path& src, const std::string& obj) {
@@ -528,20 +553,45 @@ void build_clean_room_runtime(const fs::path& repo_root,
     run_mklib("SLIBCE.LIB", {"CRT0.OBJ", "DOS_IO.OBJ", "CRT_MEM.OBJ", "CRT_STR.OBJ", "CRT_STDIO.OBJ"});
     run_mklib("COMSUBS.LIB", {"COMSUBS.OBJ", "REALOPEN.OBJ"});
     run_mklib("CASSFAR.LIB", {"CASSFAR.OBJ"});
+    return d;
+}
 
+void install_clean_room_runtime(const fs::path& rt_build_dir, const fs::path& stage) {
     const fs::path bld_lib = stage / "TOOLS" / "BLD" / "LIB";
     fs::create_directories(bld_lib);
     for (const char* name : {"SLIBCE.LIB", "SLIBC.LIB", "MLIBCE.LIB", "CLIBCE.LIB", "LLIBCE.LIB"}) {
-        fs::copy_file(d / "SLIBCE.LIB", bld_lib / name, fs::copy_options::overwrite_existing);
+        fs::copy_file(rt_build_dir / "SLIBCE.LIB", bld_lib / name, fs::copy_options::overwrite_existing);
     }
-    fs::copy_file(d / "SETARGV.OBJ", bld_lib / "SETARGV.OBJ", fs::copy_options::overwrite_existing);
-    fs::copy_file(d / "BINMODE.OBJ", bld_lib / "BINMODE.OBJ", fs::copy_options::overwrite_existing);
+    fs::copy_file(rt_build_dir / "SETARGV.OBJ", bld_lib / "SETARGV.OBJ", fs::copy_options::overwrite_existing);
+    fs::copy_file(rt_build_dir / "BINMODE.OBJ", bld_lib / "BINMODE.OBJ", fs::copy_options::overwrite_existing);
 
     fs::create_directories(stage / "LIB");
-    fs::copy_file(d / "SLIBCE.LIB", stage / "LIB" / "MEM.LIB", fs::copy_options::overwrite_existing);
-    fs::copy_file(d / "COMSUBS.LIB", stage / "INC" / "COMSUBS.LIB", fs::copy_options::overwrite_existing);
-    fs::copy_file(d / "STRING.OBJ", stage / "INC" / "STRING.OBJ", fs::copy_options::overwrite_existing);
-    fs::copy_file(d / "CASSFAR.LIB", stage / "SELECT" / "CASSFAR.LIB", fs::copy_options::overwrite_existing);
+    fs::create_directories(stage / "INC");
+    fs::create_directories(stage / "SELECT");
+    fs::copy_file(rt_build_dir / "SLIBCE.LIB", stage / "LIB" / "MEM.LIB", fs::copy_options::overwrite_existing);
+    fs::copy_file(rt_build_dir / "COMSUBS.LIB", stage / "INC" / "COMSUBS.LIB", fs::copy_options::overwrite_existing);
+    fs::copy_file(rt_build_dir / "STRING.OBJ", stage / "INC" / "STRING.OBJ", fs::copy_options::overwrite_existing);
+    fs::copy_file(rt_build_dir / "CASSFAR.LIB", stage / "SELECT" / "CASSFAR.LIB", fs::copy_options::overwrite_existing);
+}
+
+void verify_dos5_zero_prebuilt_binaries(const fs::path& dos5_src) {
+    static const std::set<std::string> forbidden_exts = {".EXE", ".COM", ".OBJ", ".SYS", ".BIN"};
+    for (const auto& entry : fs::recursive_directory_iterator(dos5_src)) {
+        if (!entry.is_regular_file()) continue;
+        const std::string ext = upper_ascii(entry.path().extension().string());
+        if (forbidden_exts.count(ext) > 0) {
+            throw std::runtime_error("forbidden prebuilt binary in os/ck-dos-5/src: " +
+                                     fs::relative(entry.path(), dos5_src).generic_string());
+        }
+        if (ext == ".LIB") {
+            std::ifstream in(entry.path(), std::ios::binary);
+            unsigned char magic = 0;
+            if (in.read(reinterpret_cast<char*>(&magic), 1) && magic == 0xF0u) {
+                throw std::runtime_error("forbidden prebuilt OMF library in os/ck-dos-5/src: " +
+                                         fs::relative(entry.path(), dos5_src).generic_string());
+            }
+        }
+    }
 }
 
 std::map<std::string, ManifestEntry> collect_manifest(const fs::path& stage) {
@@ -631,19 +681,22 @@ void write_manifest_json(const fs::path& path, const std::map<std::string, Manif
     write_text_file(path, oss.str());
 }
 
-void build_and_verify_dos_tree(const fs::path& repo_root,
-                               const fs::path& tool_dir,
-                               const fs::path& scratch_root,
-                               fs::path& out_stage,
-                               const fs::path& write_manifest,
-                               const fs::path& verify_manifest) {
-    const fs::path src_tree = repo_root / "third_party" / "ms-dos-4" / "src";
+void build_dos_source_stage(const std::string& os_label,
+                            const fs::path& src_tree,
+                            const fs::path& repo_root,
+                            const fs::path& tool_dir,
+                            const fs::path& scratch_root,
+                            const std::string& stage_subdir,
+                            fs::path& out_stage,
+                            const fs::path& write_manifest,
+                            const fs::path& verify_manifest) {
     if (!fs::is_directory(src_tree)) {
-        throw std::runtime_error("missing MS-DOS 4 source tree: " + src_tree.string());
+        throw std::runtime_error("missing " + os_label + " source tree: " + src_tree.string());
     }
-    out_stage = scratch_root / "src";
+    const fs::path rt_build_dir = compile_clean_room_runtime(repo_root, tool_dir, scratch_root);
+    out_stage = scratch_root / stage_subdir;
     fs::copy(src_tree, out_stage, fs::copy_options::recursive);
-    build_clean_room_runtime(repo_root, out_stage, tool_dir, scratch_root);
+    install_clean_room_runtime(rt_build_dir, out_stage);
 
     const fs::path cknmake = exe_path(tool_dir, "cknmake");
     const fs::path actual_tool_dir = cknmake.parent_path();
@@ -669,7 +722,7 @@ void build_and_verify_dos_tree(const fs::path& repo_root,
         const fs::path sub = out_stage / core;
         if (!has_makefile(sub)) continue;
         if (run_process({cknmake.string()}, sub, &env) != 0) {
-            throw std::runtime_error(std::string("cknmake failed in core target: ") + core);
+            throw std::runtime_error("[" + os_label + "] cknmake failed in core target: " + core);
         }
         ++built_count;
     }
@@ -688,25 +741,27 @@ void build_and_verify_dos_tree(const fs::path& repo_root,
         for (const fs::path& sub : candidates) {
             if (!has_makefile(sub)) continue;
             if (run_process({cknmake.string()}, sub, &env) != 0) {
-                throw std::runtime_error("cknmake failed in " + fs::relative(sub, out_stage).generic_string());
+                throw std::runtime_error("[" + os_label + "] cknmake failed in " +
+                                         fs::relative(sub, out_stage).generic_string());
             }
             ++built_count;
         }
     }
 
-    for (const char* req : {"BOOT/MSBOOT.BIN", "BIOS/IO.SYS", "DOS/MSDOS.SYS"}) {
+    for (const char* req : {"BOOT/MSBOOT.BIN", "BIOS/IO.SYS", "DOS/MSDOS.SYS", "CMD/COMMAND/COMMAND.COM"}) {
         const fs::path p = out_stage / req;
         if (!fs::is_regular_file(p) || fs::file_size(p) == 0) {
-            throw std::runtime_error(std::string("required core artifact missing: ") + req);
+            throw std::runtime_error("[" + os_label + "] required core artifact missing: " + req);
         }
     }
 
     const auto manifest = collect_manifest(out_stage);
-    std::cout << "Built " << built_count << " directories cleanly; manifest artifacts: " << manifest.size() << "\n";
+    std::cout << "[" << os_label << "] Built " << built_count
+              << " directories cleanly; binary artifacts: " << manifest.size() << "\n";
 
     if (!write_manifest.empty()) {
         write_manifest_json(write_manifest, manifest);
-        std::cout << "Wrote manifest to " << write_manifest.string() << "\n";
+        std::cout << "[" << os_label << "] Wrote manifest to " << write_manifest.string() << "\n";
     }
     if (!verify_manifest.empty()) {
         const auto expected = parse_manifest_json(verify_manifest);
@@ -725,10 +780,37 @@ void build_and_verify_dos_tree(const fs::path& repo_root,
             }
         }
         if (mismatches > 0) {
-            throw std::runtime_error("manifest verification failed with " + std::to_string(mismatches) + " differences");
+            throw std::runtime_error("[" + os_label + "] manifest verification failed with " +
+                                     std::to_string(mismatches) + " differences");
         }
-        std::cout << "Manifest verification passed (" << manifest.size() << " artifacts matched byte-for-byte)\n";
+        std::cout << "[" << os_label << "] Manifest verification passed ("
+                  << manifest.size() << " artifacts matched byte-for-byte)\n";
     }
+}
+
+void build_and_verify_dos4_tree(const fs::path& repo_root,
+                                const fs::path& tool_dir,
+                                const fs::path& scratch_root,
+                                fs::path& out_stage,
+                                const fs::path& write_manifest,
+                                const fs::path& verify_manifest) {
+    const fs::path src_tree = repo_root / "third_party" / "ms-dos-4" / "src";
+    build_dos_source_stage("CK-DOS 4.0", src_tree, repo_root, tool_dir, scratch_root,
+                           "src_dos4", out_stage, write_manifest, verify_manifest);
+}
+
+void build_and_verify_dos5_tree(const fs::path& repo_root,
+                                const fs::path& tool_dir,
+                                const fs::path& scratch_root,
+                                fs::path& out_stage,
+                                const fs::path& write_manifest) {
+    const fs::path src_tree = repo_root / "os" / "ck-dos-5" / "src";
+    if (!fs::is_directory(src_tree)) {
+        throw std::runtime_error("missing CK-DOS 5.0 source tree: " + src_tree.string());
+    }
+    verify_dos5_zero_prebuilt_binaries(src_tree);
+    build_dos_source_stage("CK-DOS 5.0", src_tree, repo_root, tool_dir, scratch_root,
+                           "src_dos5", out_stage, write_manifest, {});
 }
 
 // ---------------------------------------------------------------------------
@@ -1023,31 +1105,32 @@ void build_sdk_zip(const fs::path& repo_root,
     }
 }
 
-void build_all_dos_media(const fs::path& stage,
-                         const std::vector<fs::path>& dos_tools,
-                         const fs::path& dist_dir,
-                         const std::string& version) {
-    fs::create_directories(dist_dir);
+struct OsMediaSpec {
+    std::string prefix;
+    std::string floppy_1440_label;
+    std::string floppy_720_d1_label;
+    std::string floppy_720_d2_label;
+    std::string hdd_label;
+    std::string iso_volume_id;
+    std::string format_vol_arg;
+    std::string auto_floppy;
+    std::string auto_hdd;
+    std::string install_bat;
+    std::string readme_txt;
+    std::string disk2_readme;
+    bool is_dos5 = false;
+};
 
-    const fs::path msboot_path = find_ci(stage / "BOOT", "MSBOOT.BIN");
-    ck_u8 boot512[512]{};
-    {
-        std::ifstream b_in(msboot_path, std::ios::binary);
-        b_in.seekg(0x7C00, std::ios::beg);
-        b_in.read(reinterpret_cast<char*>(boot512), 512);
-        if (b_in.gcount() != 512) throw std::runtime_error("invalid MSBOOT.BIN");
-    }
-
-    const fs::path io_sys = find_ci(stage / "BIOS", "IO.SYS");
-    const fs::path msdos_sys = find_ci(stage / "DOS", "MSDOS.SYS");
-    const fs::path command_com = find_ci(stage / "CMD" / "COMMAND", "COMMAND.COM");
-
-    std::vector<std::pair<std::string, fs::path>> cmd_files;
-    std::vector<std::pair<std::string, fs::path>> dev_files;
-    collect_built_dos_payload(stage, cmd_files, dev_files);
-
-    const std::string cfg_floppy = "FILES=30\r\nBUFFERS=20\r\n";
-    const std::string auto_floppy =
+OsMediaSpec make_dos4_media_spec(const std::string& version) {
+    OsMediaSpec s;
+    s.prefix = "ckdos-4.00";
+    s.floppy_1440_label = "CKDOS 4.00";
+    s.floppy_720_d1_label = "CKDOS DISK1";
+    s.floppy_720_d2_label = "CKDOS DISK2";
+    s.hdd_label = "CKDOS 4.00";
+    s.iso_volume_id = "CKDOS_400";
+    s.format_vol_arg = "CKDOS400";
+    s.auto_floppy =
         "@ECHO OFF\r\n"
         "PATH A:\\;A:\\DOS\r\n"
         "PROMPT $P$G\r\n"
@@ -1056,13 +1139,12 @@ void build_all_dos_media(const fs::path& stage,
         "ECHO   Type INSTALL to install MS-DOS 4.00 onto hard drive C:\r\n"
         "ECHO   (Run FDISK first if hard drive C: is unpartitioned.)\r\n"
         "ECHO.\r\n";
-    const std::string cfg_hdd = "FILES=40\r\nBUFFERS=25\r\nDEVICE=C:\\DEV\\ANSI.SYS\r\n";
-    const std::string auto_hdd =
+    s.auto_hdd =
         "@ECHO OFF\r\n"
         "PATH C:\\DOS;C:\\DEVTOOLS\r\n"
         "PROMPT $P$G\r\n"
         "VER\r\n";
-    const std::string install_bat =
+    s.install_bat =
         "@ECHO OFF\r\n"
         "A:\r\n"
         "CD \\\r\n"
@@ -1087,7 +1169,7 @@ void build_all_dos_media(const fs::path& stage,
         ":FAIL\r\n"
         "ECHO Installation stopped. Run FDISK first if C: has no active DOS partition.\r\n"
         ":END\r\n";
-    const std::string readme_txt =
+    s.readme_txt =
         "CK-DOS Base Release " + version + " (MS-DOS 4.00 Clean-Room Build)\r\n"
         "=============================================================\r\n\r\n"
         "Built 100% from source with clean-room native tools:\r\n"
@@ -1098,62 +1180,165 @@ void build_all_dos_media(const fs::path& stage,
         "  - ckdos-4.00-hdd-32m.vhd      : Ready-to-Boot 32MB Hard Disk (+DEVTOOLS)\r\n"
         "  - ckdos-4.00-boot.iso         : El-Torito Bootable CD-ROM Image\r\n"
         "  - ckdos-4.00-files.zip        : File Archive for DOSBox-X / CF / SD\r\n";
+    s.disk2_readme =
+        "CK-DOS 4.00 Disk 2 (Utilities & Extended Drivers)\r\n"
+        "Copy DOS\\*.* and DEV\\*.* to C:\\DOS and C:\\DEV.\r\n";
+    s.is_dos5 = false;
+    return s;
+}
+
+OsMediaSpec make_dos5_media_spec(const std::string& version) {
+    OsMediaSpec s;
+    s.prefix = "ckdos-5.00";
+    s.floppy_1440_label = "CKDOS500";
+    s.floppy_720_d1_label = "CKDOS5 DSK1";
+    s.floppy_720_d2_label = "CKDOS5 DSK2";
+    s.hdd_label = "CKDOS500";
+    s.iso_volume_id = "CKDOS_500";
+    s.format_vol_arg = "CKDOS500";
+    s.auto_floppy =
+        "@ECHO OFF\r\n"
+        "PATH A:\\;A:\\DOS\r\n"
+        "PROMPT $P$G\r\n"
+        "ECHO.\r\n"
+        "ECHO CK-DOS 5.00 (Clean-Room Release " + version + ")\r\n"
+        "ECHO   Type INSTALL to install CK-DOS 5.00 onto hard drive C:\r\n"
+        "ECHO   (Run FDISK first if hard drive C: is unpartitioned.)\r\n"
+        "ECHO.\r\n";
+    s.auto_hdd =
+        "@ECHO OFF\r\n"
+        "PATH C:\\DOS;C:\\DEVTOOLS\r\n"
+        "PROMPT $P$G\r\n"
+        "ECHO CK-DOS 5.00 (Clean-Room Release " + version + ")\r\n"
+        "VER\r\n";
+    s.install_bat =
+        "@ECHO OFF\r\n"
+        "A:\r\n"
+        "CD \\\r\n"
+        "ECHO Installing CK-DOS 5.00 to C:\\ ...\r\n"
+        "A:\\DOS\\SYS C:\r\n"
+        "IF ERRORLEVEL 1 GOTO NEEDFMT\r\n"
+        "GOTO COPYFILES\r\n"
+        ":NEEDFMT\r\n"
+        "ECHO Formatting C: with system files ...\r\n"
+        "A:\\DOS\\FORMAT C: /S /V:CKDOS500\r\n"
+        "IF ERRORLEVEL 1 GOTO FAIL\r\n"
+        ":COPYFILES\r\n"
+        "COPY A:\\COMMAND.COM C:\\COMMAND.COM >NUL\r\n"
+        "MD C:\\DOS\r\n"
+        "MD C:\\DEV\r\n"
+        "A:\\DOS\\XCOPY A:\\DOS\\*.* C:\\DOS\\ /E >NUL\r\n"
+        "A:\\DOS\\XCOPY A:\\DEV\\*.* C:\\DEV\\ /E >NUL\r\n"
+        "COPY A:\\HDCFG.SYS C:\\CONFIG.SYS >NUL\r\n"
+        "COPY A:\\HDAUTO.BAT C:\\AUTOEXEC.BAT >NUL\r\n"
+        "ECHO Installation complete! Remove floppy disk and reboot from C:.\r\n"
+        "GOTO END\r\n"
+        ":FAIL\r\n"
+        "ECHO Installation stopped. Run FDISK first if C: has no active DOS partition.\r\n"
+        ":END\r\n";
+    s.readme_txt =
+        "CK-DOS Base Release " + version + " (CK-DOS 5.00 Clean-Room Build)\r\n"
+        "==============================================================\r\n\r\n"
+        "Independent MIT-licensed CK-DOS 5.00 distribution built 100% from source\r\n"
+        "with clean-room native tools (ckcl, ckmasm, cklink, cklib, cknmake, ckmkimg).\r\n\r\n"
+        "Included Release Media:\r\n"
+        "  - ckdos-5.00-floppy-1440k.img : 3.5\" 1.44M Boot + Install Floppy (CKDOS500)\r\n"
+        "  - ckdos-5.00-floppy-720k-disk1.img / disk2.img : 2x720K XT/PS2 Set\r\n"
+        "  - ckdos-5.00-hdd-32m.vhd      : Ready-to-Boot 32MB Hard Disk (+DEVTOOLS)\r\n"
+        "  - ckdos-5.00-boot.iso         : El-Torito Bootable CD-ROM Image\r\n"
+        "  - ckdos-5.00-files.zip        : File Archive for DOSBox-X / CF / SD\r\n";
+    s.disk2_readme =
+        "CK-DOS 5.00 Disk 2 (Utilities & Extended Drivers)\r\n"
+        "Copy DOS\\*.* and DEV\\*.* to C:\\DOS and C:\\DEV.\r\n";
+    s.is_dos5 = true;
+    return s;
+}
+
+void build_os_media_set(const fs::path& stage,
+                        const std::vector<fs::path>& dos_tools,
+                        const fs::path& dist_dir,
+                        const OsMediaSpec& spec) {
+    fs::create_directories(dist_dir);
+
+    const fs::path msboot_path = find_ci(stage / "BOOT", "MSBOOT.BIN");
+    ck_u8 boot512[512]{};
+    {
+        std::ifstream b_in(msboot_path, std::ios::binary);
+        b_in.seekg(0x7C00, std::ios::beg);
+        b_in.read(reinterpret_cast<char*>(boot512), 512);
+        if (b_in.gcount() != 512) throw std::runtime_error("invalid MSBOOT.BIN");
+    }
+
+    const fs::path io_sys = find_ci(stage / "BIOS", "IO.SYS");
+    const fs::path msdos_sys = find_ci(stage / "DOS", "MSDOS.SYS");
+    const fs::path command_com = find_ci(stage / "CMD" / "COMMAND", "COMMAND.COM");
+
+    std::vector<std::pair<std::string, fs::path>> cmd_files;
+    std::vector<std::pair<std::string, fs::path>> dev_files;
+    collect_built_dos_payload(stage, cmd_files, dev_files);
+
+    const std::string cfg_floppy = "FILES=30\r\nBUFFERS=20\r\n";
+    const std::string cfg_hdd = "FILES=40\r\nBUFFERS=25\r\nDEVICE=C:\\DEV\\ANSI.SYS\r\n";
 
     // 1. Build 1.44 MB All-in-One Boot + Install Floppy
-    const fs::path img_1440 = dist_dir / "ckdos-4.00-floppy-1440k.img";
+    const fs::path img_1440 = dist_dir / (spec.prefix + "-floppy-1440k.img");
     {
         std::vector<MemOrFileItem> items = {
             {"IO.SYS", io_sys, {}, false, 0x07u, 0100644u},
             {"MSDOS.SYS", msdos_sys, {}, false, 0x07u, 0100644u},
             {"COMMAND.COM", command_com, {}, false, 0x20u, 0100644u},
             {"CONFIG.SYS", {}, cfg_floppy, true, 0x20u, 0100644u},
-            {"AUTOEXEC.BAT", {}, auto_floppy, true, 0x20u, 0100644u},
-            {"INSTALL.BAT", {}, install_bat, true, 0x20u, 0100644u},
+            {"AUTOEXEC.BAT", {}, spec.auto_floppy, true, 0x20u, 0100644u},
+            {"INSTALL.BAT", {}, spec.install_bat, true, 0x20u, 0100644u},
             {"HDCFG.SYS", {}, cfg_hdd, true, 0x20u, 0100644u},
-            {"HDAUTO.BAT", {}, auto_hdd, true, 0x20u, 0100644u},
-            {"README.TXT", {}, readme_txt, true, 0x20u, 0100644u},
+            {"HDAUTO.BAT", {}, spec.auto_hdd, true, 0x20u, 0100644u},
+            {"README.TXT", {}, spec.readme_txt, true, 0x20u, 0100644u},
         };
         for (const auto& [name, p] : cmd_files) items.push_back({"DOS/" + name, p, {}, false, 0x20u, 0100644u});
         for (const auto& [name, p] : dev_files) items.push_back({"DEV/" + name, p, {}, false, 0x20u, 0100644u});
 
         ck_fat_geom g{};
-        ck_diskimg_floppy_geom(CK_FLOPPY_1440K, "CKDOS 4.00", &g);
+        ck_diskimg_floppy_geom(CK_FLOPPY_1440K, spec.floppy_1440_label.c_str(), &g);
         const auto bound = bind_img_files(items);
         std::ofstream out(img_1440, std::ios::binary | std::ios::trunc);
         ck_error err{};
         if (ck_diskimg_write_fat_volume(&g, boot512, bound.data(), bound.size(), ofstream_write_cb, &out, &err) != 0) {
-            throw std::runtime_error(std::string("failed building 1440k floppy: ") + err.message);
+            throw std::runtime_error("failed building " + img_1440.filename().string() + ": " + err.message);
         }
         out.close();
         std::cout << "Built " << img_1440.filename().string() << " (" << fs::file_size(img_1440) << " bytes)\n";
     }
 
     // 2. Build 2x 720 KB Vintage XT/PS2 Floppy Set (Disk 1: Boot+Setup, Disk 2: Utilities+EMS)
-    const std::set<std::string> d1_cmds = {
+    std::set<std::string> d1_cmds = {
         "FDISK.EXE", "FORMAT.COM", "SYS.COM", "XCOPY.EXE", "CHKDSK.COM",
         "DISKCOPY.COM", "DISKCOMP.COM", "ATTRIB.EXE", "MEM.EXE", "EDLIN.COM",
         "MORE.COM", "LABEL.COM", "MODE.COM", "KEYB.COM", "DEBUG.COM",
         "FC.EXE", "FIND.EXE", "SORT.EXE", "TREE.COM"};
+    if (spec.is_dos5) {
+        d1_cmds.insert("EDIT.COM");
+        d1_cmds.insert("HELP.COM");
+    }
     const std::set<std::string> d1_devs = {
         "ANSI.SYS", "COUNTRY.SYS", "DISPLAY.SYS", "DRIVER.SYS",
         "KEYBOARD.SYS", "RAMDRIVE.SYS", "VDISK.SYS"};
 
-    const fs::path img_720_1 = dist_dir / "ckdos-4.00-floppy-720k-disk1.img";
-    const fs::path img_720_2 = dist_dir / "ckdos-4.00-floppy-720k-disk2.img";
+    const fs::path img_720_1 = dist_dir / (spec.prefix + "-floppy-720k-disk1.img");
+    const fs::path img_720_2 = dist_dir / (spec.prefix + "-floppy-720k-disk2.img");
     {
         std::vector<MemOrFileItem> d1 = {
             {"IO.SYS", io_sys, {}, false, 0x07u, 0100644u},
             {"MSDOS.SYS", msdos_sys, {}, false, 0x07u, 0100644u},
             {"COMMAND.COM", command_com, {}, false, 0x20u, 0100644u},
             {"CONFIG.SYS", {}, cfg_floppy, true, 0x20u, 0100644u},
-            {"AUTOEXEC.BAT", {}, auto_floppy, true, 0x20u, 0100644u},
-            {"INSTALL.BAT", {}, install_bat, true, 0x20u, 0100644u},
+            {"AUTOEXEC.BAT", {}, spec.auto_floppy, true, 0x20u, 0100644u},
+            {"INSTALL.BAT", {}, spec.install_bat, true, 0x20u, 0100644u},
             {"HDCFG.SYS", {}, cfg_hdd, true, 0x20u, 0100644u},
-            {"HDAUTO.BAT", {}, auto_hdd, true, 0x20u, 0100644u},
-            {"README.TXT", {}, readme_txt, true, 0x20u, 0100644u},
+            {"HDAUTO.BAT", {}, spec.auto_hdd, true, 0x20u, 0100644u},
+            {"README.TXT", {}, spec.readme_txt, true, 0x20u, 0100644u},
         };
         std::vector<MemOrFileItem> d2 = {
-            {"README.TXT", {}, "CK-DOS 4.00 Disk 2 (Utilities & Extended Drivers)\r\nCopy DOS\\*.* and DEV\\*.* to C:\\DOS and C:\\DEV.\r\n", true, 0x20u, 0100644u},
+            {"README.TXT", {}, spec.disk2_readme, true, 0x20u, 0100644u},
         };
         for (const auto& [name, p] : cmd_files) {
             (d1_cmds.count(name) ? d1 : d2).push_back({"DOS/" + name, p, {}, false, 0x20u, 0100644u});
@@ -1163,34 +1348,35 @@ void build_all_dos_media(const fs::path& stage,
         }
 
         ck_fat_geom g1{}, g2{};
-        ck_diskimg_floppy_geom(CK_FLOPPY_720K, "CKDOS DISK1", &g1);
-        ck_diskimg_floppy_geom(CK_FLOPPY_720K, "CKDOS DISK2", &g2);
+        ck_diskimg_floppy_geom(CK_FLOPPY_720K, spec.floppy_720_d1_label.c_str(), &g1);
+        ck_diskimg_floppy_geom(CK_FLOPPY_720K, spec.floppy_720_d2_label.c_str(), &g2);
         const auto b1 = bind_img_files(d1);
         const auto b2 = bind_img_files(d2);
         ck_error err{};
         {
             std::ofstream out1(img_720_1, std::ios::binary | std::ios::trunc);
             if (ck_diskimg_write_fat_volume(&g1, boot512, b1.data(), b1.size(), ofstream_write_cb, &out1, &err) != 0) {
-                throw std::runtime_error(std::string("failed building 720k disk1: ") + err.message);
+                throw std::runtime_error("failed building " + img_720_1.filename().string() + ": " + err.message);
             }
         }
         {
             std::ofstream out2(img_720_2, std::ios::binary | std::ios::trunc);
             if (ck_diskimg_write_fat_volume(&g2, nullptr, b2.data(), b2.size(), ofstream_write_cb, &out2, &err) != 0) {
-                throw std::runtime_error(std::string("failed building 720k disk2: ") + err.message);
+                throw std::runtime_error("failed building " + img_720_2.filename().string() + ": " + err.message);
             }
         }
-        std::cout << "Built 2x720k floppy set (" << fs::file_size(img_720_1) << " + " << fs::file_size(img_720_2) << " bytes)\n";
+        std::cout << "Built " << spec.prefix << " 2x720k floppy set ("
+                  << fs::file_size(img_720_1) << " + " << fs::file_size(img_720_2) << " bytes)\n";
     }
 
-    // Shared full HDD / ISO / ZIP item list (includes C:\DEVTOOLS self-hosting 16-bit SDK!)
+    // Shared full HDD / ISO / ZIP item list (includes C:\DEVTOOLS self-hosting 16-bit SDK)
     std::vector<MemOrFileItem> full_hdd_items = {
         {"IO.SYS", io_sys, {}, false, 0x07u, 0100644u},
         {"MSDOS.SYS", msdos_sys, {}, false, 0x07u, 0100644u},
         {"COMMAND.COM", command_com, {}, false, 0x20u, 0100644u},
         {"CONFIG.SYS", {}, cfg_hdd, true, 0x20u, 0100644u},
-        {"AUTOEXEC.BAT", {}, auto_hdd, true, 0x20u, 0100644u},
-        {"README.TXT", {}, readme_txt, true, 0x20u, 0100644u},
+        {"AUTOEXEC.BAT", {}, spec.auto_hdd, true, 0x20u, 0100644u},
+        {"README.TXT", {}, spec.readme_txt, true, 0x20u, 0100644u},
     };
     for (const auto& [name, p] : cmd_files) full_hdd_items.push_back({"DOS/" + name, p, {}, false, 0x20u, 0100644u});
     for (const auto& [name, p] : dev_files) full_hdd_items.push_back({"DEV/" + name, p, {}, false, 0x20u, 0100644u});
@@ -1208,38 +1394,38 @@ void build_all_dos_media(const fs::path& stage,
     }
 
     // 3. Build Pre-Installed 32 MB Fixed VHD Bootable Hard Disk (64 cyl * 16 heads * 63 spt)
-    const fs::path hdd_vhd = dist_dir / "ckdos-4.00-hdd-32m.vhd";
+    const fs::path hdd_vhd = dist_dir / (spec.prefix + "-hdd-32m.vhd");
     {
         const auto bound = bind_img_files(full_hdd_items);
         std::ofstream out(hdd_vhd, std::ios::binary | std::ios::trunc);
         ck_error err{};
-        if (ck_diskimg_write_hdd_image(64u, 16u, 63u, "CKDOS 4.00", boot512,
+        if (ck_diskimg_write_hdd_image(64u, 16u, 63u, spec.hdd_label.c_str(), boot512,
                                        bound.data(), bound.size(), 1,
                                        ofstream_write_cb, &out, &err) != 0) {
-            throw std::runtime_error(std::string("failed building 32M VHD: ") + err.message);
+            throw std::runtime_error("failed building " + hdd_vhd.filename().string() + ": " + err.message);
         }
         out.close();
         std::cout << "Built " << hdd_vhd.filename().string() << " (" << fs::file_size(hdd_vhd) << " bytes)\n";
     }
 
     // 4. Build El-Torito Bootable CD-ROM ISO-9660
-    const fs::path boot_iso = dist_dir / "ckdos-4.00-boot.iso";
+    const fs::path boot_iso = dist_dir / (spec.prefix + "-boot.iso");
     {
         std::vector<MemOrFileItem> boot_items = {{"BOOT1440.IMG", img_1440, {}, false, 0x20u, 0100644u}};
         const auto boot_vec = bind_img_files(boot_items);
         const auto bound = bind_img_files(full_hdd_items);
         std::ofstream out(boot_iso, std::ios::binary | std::ios::trunc);
         ck_error err{};
-        if (ck_diskimg_write_eltorito_iso("CKDOS_400", &boot_vec[0], bound.data(), bound.size(),
+        if (ck_diskimg_write_eltorito_iso(spec.iso_volume_id.c_str(), &boot_vec[0], bound.data(), bound.size(),
                                           ofstream_write_cb, &out, &err) != 0) {
-            throw std::runtime_error(std::string("failed building El-Torito ISO: ") + err.message);
+            throw std::runtime_error("failed building " + boot_iso.filename().string() + ": " + err.message);
         }
         out.close();
         std::cout << "Built " << boot_iso.filename().string() << " (" << fs::file_size(boot_iso) << " bytes)\n";
     }
 
-    // 5. Build Loose Files Archive (ckdos-4.00-files.zip) for DOSBox-X / XT-IDE CF / SD
-    const fs::path files_zip = dist_dir / "ckdos-4.00-files.zip";
+    // 5. Build Loose Files Archive (<prefix>-files.zip) for DOSBox-X / XT-IDE CF / SD
+    const fs::path files_zip = dist_dir / (spec.prefix + "-files.zip");
     {
         std::vector<MemOrFileItem> z_items = full_hdd_items;
         z_items.push_back({"BOOT/MSBOOT.BIN", msboot_path, {}, false, 0x20u, 0100644u});
@@ -1247,7 +1433,7 @@ void build_all_dos_media(const fs::path& stage,
         std::ofstream out(files_zip, std::ios::binary | std::ios::trunc);
         ck_error err{};
         if (ck_diskimg_write_zip(bound_z.data(), bound_z.size(), ofstream_write_cb, &out, &err) != 0) {
-            throw std::runtime_error(std::string("failed building files.zip: ") + err.message);
+            throw std::runtime_error("failed building " + files_zip.filename().string() + ": " + err.message);
         }
         out.close();
         std::cout << "Built " << files_zip.filename().string() << " (" << fs::file_size(files_zip) << " bytes)\n";
@@ -1282,18 +1468,24 @@ void write_pages_site(const fs::path& pages_dir,
                       const std::string& version,
                       const std::vector<std::pair<std::string, std::pair<std::string, std::uint64_t>>>& sums) {
     fs::create_directories(pages_dir);
-    for (const char* pub_asset : {"ckdos-4.00-floppy-1440k.img", "ckdos-4.00-files.zip", "SHA256SUMS"}) {
+    for (const char* pub_asset : {
+             "ckdos-5.00-floppy-1440k.img", "ckdos-5.00-files.zip",
+             "ckdos-4.00-floppy-1440k.img", "ckdos-4.00-files.zip",
+             "SHA256SUMS"}) {
         const fs::path src = dist_dir / pub_asset;
         if (fs::is_regular_file(src)) {
             fs::copy_file(src, pages_dir / pub_asset, fs::copy_options::overwrite_existing);
         }
     }
 
+    const bool has_dos5 = fs::is_regular_file(dist_dir / "ckdos-5.00-floppy-1440k.img");
+    const bool has_dos4 = fs::is_regular_file(dist_dir / "ckdos-4.00-floppy-1440k.img");
+
     std::ostringstream html;
     html << "<!doctype html>\n<html lang=\"en\">\n<head>\n"
          << "  <meta charset=\"utf-8\">\n"
          << "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-         << "  <title>CK-DOS Base " << version << " — Clean-Room MS-DOS 4.00 Build & SDK</title>\n"
+         << "  <title>CK-DOS Base " << version << " — Clean-Room CK-DOS 5.0 &amp; 4.0 Builds &amp; SDK</title>\n"
          << "  <style>\n"
          << "    :root{color-scheme:light dark;--bg:#0e1116;--card:#161b22;--fg:#e6edf3;--muted:#8b949e;--line:#30363d;--acc:#58a6ff}\n"
          << "    @media (prefers-color-scheme:light){:root{--bg:#f6f8fa;--card:#ffffff;--fg:#1f2328;--muted:#59636e;--line:#d0d7de;--acc:#0969da}}\n"
@@ -1305,15 +1497,21 @@ void write_pages_site(const fs::path& pages_dir,
          << "    .pill{display:inline-block;padding:.2rem .6rem;border:1px solid var(--line);border-radius:999px;font-size:.82rem;color:var(--muted)}\n"
          << "  </style>\n</head>\n<body>\n"
          << "  <h1>CK-DOS Base <span class=\"pill\">" << version << "</span></h1>\n"
-         << "  <p>100% clean-room native C/C++20 cross-toolchain (<code>ckcl</code>, <code>ckmasm</code>, <code>cklink</code>, <code>cklib</code>, <code>cknmake</code>, <code>ckmkimg</code>) building all 60 directories of Microsoft MS-DOS 4.00 and self-hosting natively in 16-bit real mode.</p>\n"
+         << "  <p>100% clean-room native C/C++20 cross-toolchain (<code>ckcl</code>, <code>ckmasm</code>, <code>cklink</code>, <code>cklib</code>, <code>cknmake</code>, <code>ckmkimg</code>) building both <strong>CK-DOS 5.0</strong> (<code>os/ck-dos-5</code>) and the frozen 654-hash <strong>CK-DOS 4.0</strong> reference (<code>third_party/ms-dos-4</code>), plus self-hosting 16-bit DOS tools.</p>\n"
          << "  <div class=\"card\">\n"
          << "    <h2>Direct Downloads (Latest Main Build)</h2>\n"
-         << "    <ul>\n"
-         << "      <li><a href=\"ckdos-4.00-floppy-1440k.img\"><code>ckdos-4.00-floppy-1440k.img</code></a> — 3.5&quot; 1.44 MB Boot &amp; Install Diskette (QEMU / 86Box / Gotek / VirtualBox)</li>\n"
-         << "      <li><a href=\"ckdos-4.00-files.zip\"><code>ckdos-4.00-files.zip</code></a> — Complete DOS + 16-bit <code>DEVTOOLS</code> file archive (DOSBox-X / XT-IDE CF / SD)</li>\n"
-         << "      <li><a href=\"SHA256SUMS\"><code>SHA256SUMS</code></a> — Full release bundle SHA-256 checksums</li>\n"
+         << "    <ul>\n";
+    if (has_dos5) {
+        html << "      <li><a href=\"ckdos-5.00-floppy-1440k.img\"><code>ckdos-5.00-floppy-1440k.img</code></a> — CK-DOS 5.0 3.5&quot; 1.44 MB Boot &amp; Install Diskette (<code>CKDOS500</code>)</li>\n"
+             << "      <li><a href=\"ckdos-5.00-files.zip\"><code>ckdos-5.00-files.zip</code></a> — CK-DOS 5.0 + 16-bit <code>DEVTOOLS</code> file archive (DOSBox-X / XT-IDE CF / SD)</li>\n";
+    }
+    if (has_dos4) {
+        html << "      <li><a href=\"ckdos-4.00-floppy-1440k.img\"><code>ckdos-4.00-floppy-1440k.img</code></a> — CK-DOS 4.0 (MS-DOS 4.00 reference) 3.5&quot; 1.44 MB Boot &amp; Install Diskette</li>\n"
+             << "      <li><a href=\"ckdos-4.00-files.zip\"><code>ckdos-4.00-files.zip</code></a> — CK-DOS 4.0 + 16-bit <code>DEVTOOLS</code> file archive</li>\n";
+    }
+    html << "      <li><a href=\"SHA256SUMS\"><code>SHA256SUMS</code></a> — Full release bundle SHA-256 checksums</li>\n"
          << "    </ul>\n"
-         << "    <p>Full tagged releases (including <code>ckdos-4.00-hdd-32m.vhd</code>, <code>ckdos-4.00-boot.iso</code>, 2&times;720 KB XT floppy set, and Linux/macOS/Windows cross-SDK archives) are available under the project <strong>Releases</strong> tab.</p>\n"
+         << "    <p>Full tagged releases (including 32 MB Fixed VHD hard disks, El-Torito bootable CD-ROM ISOs, 2&times;720 KB XT floppy sets, and Linux/macOS/Windows cross-SDK archives) are available under the project <strong>Releases</strong> tab.</p>\n"
          << "  </div>\n"
          << "  <div class=\"card\">\n"
          << "    <h2>Release Artifact Checksums</h2>\n"
@@ -1325,25 +1523,29 @@ void write_pages_site(const fs::path& pages_dir,
     html << "      </tbody>\n    </table>\n  </div>\n"
          << "  <div class=\"card\">\n"
          << "    <h2>Quick Boot in QEMU</h2>\n"
-         << "    <pre>qemu-system-i386 -fda ckdos-4.00-floppy-1440k.img -boot a\n"
-         << "qemu-system-i386 -drive file=ckdos-4.00-hdd-32m.vhd,format=vpc -boot c\n"
-         << "qemu-system-i386 -cdrom ckdos-4.00-boot.iso -boot d</pre>\n"
+         << "    <pre>qemu-system-i386 -fda ckdos-5.00-floppy-1440k.img -boot a\n"
+         << "qemu-system-i386 -drive file=ckdos-5.00-hdd-32m.vhd,format=vpc -boot c\n"
+         << "qemu-system-i386 -cdrom ckdos-5.00-boot.iso -boot d\n"
+         << "qemu-system-i386 -fda ckdos-4.00-floppy-1440k.img -boot a</pre>\n"
          << "  </div>\n</body>\n</html>\n";
 
     write_text_file(pages_dir / "index.html", html.str());
 }
 
-void verify_boot_media_with_qemu(const fs::path& dist_dir, const std::string& qemu_bin) {
+void verify_boot_media_with_qemu(const fs::path& dist_dir,
+                                 const std::string& qemu_bin,
+                                 OsTarget os_target) {
 #if defined(_WIN32)
     (void)dist_dir;
     (void)qemu_bin;
+    (void)os_target;
     throw std::runtime_error("verify-boot is supported on POSIX hosts");
 #else
     ScratchDir scratch("ckdist-qemu");
 
     auto check_one = [&](const std::string& label,
                          const std::vector<std::string>& media_args,
-                         const std::string& expected) {
+                         const std::vector<std::string>& expected_tokens) {
         const fs::path vga_file = scratch.path() / ("vga_" + label + ".bin");
         int in_pipe[2]{-1, -1};
         if (pipe(in_pipe) != 0) throw std::runtime_error("pipe() failed");
@@ -1398,7 +1600,14 @@ void verify_boot_media_with_qemu(const fs::path& dist_dir, const std::string& qe
                     const unsigned char ch = static_cast<unsigned char>(raw[i]);
                     screen.push_back((ch >= 32 && ch < 127) ? static_cast<char>(ch) : ' ');
                 }
-                if (screen.find(expected) != std::string::npos) {
+                bool all_found = true;
+                for (const std::string& tok : expected_tokens) {
+                    if (screen.find(tok) == std::string::npos) {
+                        all_found = false;
+                        break;
+                    }
+                }
+                if (all_found) {
                     matched = true;
                     break;
                 }
@@ -1409,30 +1618,51 @@ void verify_boot_media_with_qemu(const fs::path& dist_dir, const std::string& qe
         int status = 0;
         waitpid(pid, &status, 0);
         if (!matched) {
-            throw std::runtime_error("QEMU boot check timed out for " + label + " (expected '" + expected + "')");
+            std::string desc;
+            for (std::size_t i = 0; i < expected_tokens.size(); ++i) {
+                if (i > 0) desc += " + ";
+                desc += "'" + expected_tokens[i] + "'";
+            }
+            throw std::runtime_error("QEMU boot check timed out for " + label + " (expected " + desc + ")");
         }
-        std::cout << "QEMU boot verified: " << label << " -> '" << expected << "'\n";
+        std::cout << "QEMU boot verified: " << label << " -> '" << expected_tokens.back() << "'\n";
     };
 
-    const fs::path f1440 = dist_dir / "ckdos-4.00-floppy-1440k.img";
-    const fs::path f720 = dist_dir / "ckdos-4.00-floppy-720k-disk1.img";
-    const fs::path vhd = dist_dir / "ckdos-4.00-hdd-32m.vhd";
-    const fs::path iso = dist_dir / "ckdos-4.00-boot.iso";
+    if (includes_dos4(os_target)) {
+        const fs::path f1440 = dist_dir / "ckdos-4.00-floppy-1440k.img";
+        const fs::path f720 = dist_dir / "ckdos-4.00-floppy-720k-disk1.img";
+        const fs::path vhd = dist_dir / "ckdos-4.00-hdd-32m.vhd";
+        const fs::path iso = dist_dir / "ckdos-4.00-boot.iso";
 
-    check_one("floppy-1440k", {"-fda", f1440.string(), "-boot", "a"}, "A:\\>");
-    check_one("floppy-720k-disk1", {"-fda", f720.string(), "-boot", "a"}, "A:\\>");
-    check_one("hdd-32m-vhd", {"-drive", "file=" + vhd.string() + ",format=vpc", "-boot", "c"}, "MS-DOS Version 4.00");
-    check_one("boot-iso", {"-cdrom", iso.string(), "-boot", "d"}, "A:\\>");
+        check_one("dos4-floppy-1440k", {"-fda", f1440.string(), "-boot", "a"}, {"A:\\>"});
+        check_one("dos4-floppy-720k-disk1", {"-fda", f720.string(), "-boot", "a"}, {"A:\\>"});
+        check_one("dos4-hdd-32m-vhd", {"-drive", "file=" + vhd.string() + ",format=vpc", "-boot", "c"}, {"MS-DOS Version 4.00", "C:\\>"});
+        check_one("dos4-boot-iso", {"-cdrom", iso.string(), "-boot", "d"}, {"A:\\>"});
+    }
+
+    if (includes_dos5(os_target)) {
+        const fs::path f1440 = dist_dir / "ckdos-5.00-floppy-1440k.img";
+        const fs::path f720 = dist_dir / "ckdos-5.00-floppy-720k-disk1.img";
+        const fs::path vhd = dist_dir / "ckdos-5.00-hdd-32m.vhd";
+        const fs::path iso = dist_dir / "ckdos-5.00-boot.iso";
+
+        check_one("dos5-floppy-1440k", {"-fda", f1440.string(), "-boot", "a"}, {"CK-DOS 5.00", "A:\\>"});
+        check_one("dos5-floppy-720k-disk1", {"-fda", f720.string(), "-boot", "a"}, {"CK-DOS 5.00", "A:\\>"});
+        check_one("dos5-hdd-32m-vhd", {"-drive", "file=" + vhd.string() + ",format=vpc", "-boot", "c"}, {"CK-DOS 5.00", "C:\\>"});
+        check_one("dos5-boot-iso", {"-cdrom", iso.string(), "-boot", "d"}, {"CK-DOS 5.00", "A:\\>"});
+    }
 #endif
 }
 
 void print_usage() {
     std::cerr << "Usage:\n"
-              << "  ckdist verify-build [--repo-root DIR] [--tool-dir DIR] [--verify-manifest JSON] [--write-manifest JSON]\n"
+              << "  ckdist verify-build [--os dos4|dos5|all] [--repo-root DIR] [--tool-dir DIR]\n"
+              << "                      [--verify-manifest JSON] [--write-manifest JSON]\n"
               << "  ckdist build-dos-tools [--repo-root DIR] [--tool-dir DIR] --out-dir DIR\n"
-              << "  ckdist release [--repo-root DIR] [--tool-dir DIR] --output DIR [--version VER] [--platform PLAT]\n"
-              << "                 [--verify-manifest JSON] [--sdk-only] [--pages-out DIR]\n"
-              << "  ckdist verify-boot --dist-dir DIR [--qemu QEMU_BIN]\n";
+              << "  ckdist release [--os dos4|dos5|all] [--repo-root DIR] [--tool-dir DIR] --output DIR\n"
+              << "                 [--version VER] [--platform PLAT] [--verify-manifest JSON]\n"
+              << "                 [--sdk-only] [--pages-out DIR]\n"
+              << "  ckdist verify-boot [--os dos4|dos5|all] --dist-dir DIR [--qemu QEMU_BIN]\n";
 }
 
 }  // namespace
@@ -1453,11 +1683,16 @@ int main(int argc, char** argv) {
         std::string version;
         std::string platform = default_platform_tag();
         std::string qemu_bin = "qemu-system-i386";
+        OsTarget os_target = OsTarget::All;
+        bool os_explicit = false;
         bool sdk_only = false;
 
         for (int i = 2; i < argc; ++i) {
             const std::string a = argv[i];
-            if (a == "--repo-root" && i + 1 < argc) repo_root = argv[++i];
+            if (a == "--os" && i + 1 < argc) {
+                os_target = parse_os_target(argv[++i]);
+                os_explicit = true;
+            } else if (a == "--repo-root" && i + 1 < argc) repo_root = argv[++i];
             else if (a == "--tool-dir" && i + 1 < argc) tool_dir = argv[++i];
             else if (a == "--verify-manifest" && i + 1 < argc) verify_manifest = argv[++i];
             else if (a == "--write-manifest" && i + 1 < argc) write_manifest = argv[++i];
@@ -1479,11 +1714,25 @@ int main(int argc, char** argv) {
         if (version.empty()) {
             version = read_text_trimmed(repo_root / "VERSION");
         }
+        if (!os_explicit && !write_manifest.empty()) {
+            os_target = OsTarget::Dos4;
+        }
 
         if (subcmd == "verify-build") {
             ScratchDir scratch("ckdist-verify");
-            fs::path stage;
-            build_and_verify_dos_tree(repo_root, tool_dir, scratch.path(), stage, write_manifest, verify_manifest);
+            if (includes_dos4(os_target)) {
+                fs::path stage4;
+                build_and_verify_dos4_tree(
+                    repo_root, tool_dir, scratch.path(), stage4,
+                    os_target == OsTarget::Dos4 ? write_manifest : fs::path{},
+                    verify_manifest);
+            }
+            if (includes_dos5(os_target)) {
+                fs::path stage5;
+                build_and_verify_dos5_tree(
+                    repo_root, tool_dir, scratch.path(), stage5,
+                    os_target == OsTarget::Dos5 ? write_manifest : fs::path{});
+            }
             return 0;
         }
         if (subcmd == "build-dos-tools") {
@@ -1501,17 +1750,35 @@ int main(int argc, char** argv) {
             }
             fs::create_directories(output_dir);
             ScratchDir scratch("ckdist-rel");
-            fs::path stage;
-            build_and_verify_dos_tree(repo_root, tool_dir, scratch.path(), stage, write_manifest, verify_manifest);
+            fs::path stage4;
+            fs::path stage5;
+            if (includes_dos4(os_target)) {
+                build_and_verify_dos4_tree(
+                    repo_root, tool_dir, scratch.path(), stage4,
+                    os_target == OsTarget::Dos4 ? write_manifest : fs::path{},
+                    verify_manifest);
+            }
+            if (includes_dos5(os_target)) {
+                build_and_verify_dos5_tree(
+                    repo_root, tool_dir, scratch.path(), stage5,
+                    os_target == OsTarget::Dos5 ? write_manifest : fs::path{});
+            }
 
             const fs::path dos_tools_dir = scratch.path() / "dos_tools";
             const auto dos_tools = build_dos_self_host_tools(repo_root, tool_dir, dos_tools_dir);
 
             if (!sdk_only) {
-                build_all_dos_media(stage, dos_tools, output_dir, version);
+                if (includes_dos4(os_target)) {
+                    build_os_media_set(stage4, dos_tools, output_dir, make_dos4_media_spec(version));
+                }
+                if (includes_dos5(os_target)) {
+                    build_os_media_set(stage5, dos_tools, output_dir, make_dos5_media_spec(version));
+                }
             }
+
+            const fs::path& sdk_stage = !stage5.empty() ? stage5 : stage4;
             const fs::path sdk_zip = output_dir / ("ck-dos-sdk-" + version + "-" + platform + ".zip");
-            build_sdk_zip(repo_root, tool_dir, stage, dos_tools, sdk_zip, version, platform);
+            build_sdk_zip(repo_root, tool_dir, sdk_stage, dos_tools, sdk_zip, version, platform);
             std::cout << "Built " << sdk_zip.filename().string() << " (" << fs::file_size(sdk_zip) << " bytes)\n";
 
             if (!sdk_only) {
@@ -1529,7 +1796,7 @@ int main(int argc, char** argv) {
                 std::cerr << "ckdist verify-boot requires --dist-dir\n";
                 return 1;
             }
-            verify_boot_media_with_qemu(output_dir, qemu_bin);
+            verify_boot_media_with_qemu(output_dir, qemu_bin, os_target);
             return 0;
         }
         print_usage();

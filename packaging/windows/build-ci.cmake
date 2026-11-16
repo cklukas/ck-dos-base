@@ -50,6 +50,7 @@ run_checked("${CMAKE_COMMAND}" -G Ninja
 run_checked("${CMAKE_COMMAND}" --build "${build}" --config Release --parallel 2)
 
 run_checked("${build}/ckdist.exe" release
+    --os all
     --repo-root "${source}"
     --tool-dir "${build}"
     --verify-manifest "${source}/docs/build-manifest.json"

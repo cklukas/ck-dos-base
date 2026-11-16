@@ -3,11 +3,12 @@
 #
 # Automated zero-Python CI/CD and release pipeline on ckgit@rpi4:
 #   - Every push to main builds all native C/C++20 tools, runs unit tests,
-#     builds all 60 MS-DOS 4.00 directories + 10 16-bit self-hosting DOS tools
-#     (including CKMKIMG.EXE), verifies all 654 SHA-256 manifest hashes,
-#     packages all Option B DOS media (1.44M floppy, 2x720K floppy set,
-#     32M fixed VHD, El-Torito ISO, files.zip) + native SDK archives,
-#     boot-tests all 4 bootable images in headless QEMU, and updates ck-pages.
+#     builds all 60 MS-DOS 4.00 directories (verifying all 654 SHA-256 manifest
+#     hashes), builds CK-DOS 5.0 from os/ck-dos-5 + 10 16-bit self-hosting DOS
+#     tools (including CKMKIMG.EXE), packages all Option B DOS media for both
+#     CK-DOS 4.0 and CK-DOS 5.0 (1.44M floppy, 2x720K floppy set, 32M fixed VHD,
+#     El-Torito ISO, files.zip) + native SDK archives, boot-tests all 8 bootable
+#     images in headless QEMU, and updates ck-pages.
 #   - Pushing a tag vMAJOR.MINOR.PATCH matching VERSION publishes durable
 #     release bundles across Linux arm64 and Windows x64.
 version: 2
@@ -39,6 +40,7 @@ jobs:
           set -eu
           version=$(tr -d '[:space:]' < VERSION)
           "$TMPDIR/build/ckdist" release \
+            --os all \
             --repo-root "$PWD" \
             --tool-dir "$TMPDIR/build" \
             --verify-manifest "$PWD/docs/build-manifest.json" \
@@ -49,7 +51,7 @@ jobs:
       - name: verify-boot-media-in-qemu
         script: |
           set -eu
-          "$TMPDIR/build/ckdist" verify-boot --dist-dir "$PWD/dist"
+          "$TMPDIR/build/ckdist" verify-boot --os all --dist-dir "$PWD/dist"
     artifacts:
       name: dos-media-and-linux-arm64-sdk
       paths: [dist]

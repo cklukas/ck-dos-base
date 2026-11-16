@@ -3,8 +3,8 @@
 #
 # Pushing a tag vMAJOR.MINOR.PATCH matching VERSION builds and verifies all
 # native SDK archives (Linux x64/arm64, macOS arm64, Windows x64) plus all 5
-# MS-DOS 4.00 bootable/installable media formats, verifies boot in QEMU, and
-# publishes a GitHub Release with SHA256SUMS.
+# bootable/installable media formats for both CK-DOS 5.0 and CK-DOS 4.0,
+# verifies boot in QEMU, and publishes a GitHub Release with SHA256SUMS.
 
 name: Release
 
@@ -51,13 +51,14 @@ jobs:
           cmake --build "$RUNNER_TEMP/build" --config Release --parallel
           ctest --test-dir "$RUNNER_TEMP/build" --build-config Release --output-on-failure
           "$RUNNER_TEMP/build/ckdist" release \
+            --os all \
             --repo-root . \
             --tool-dir "$RUNNER_TEMP/build" \
             --verify-manifest docs/build-manifest.json \
             --output "$RUNNER_TEMP/dist" \
             --version "$version" \
             --platform linux-x64
-          "$RUNNER_TEMP/build/ckdist" verify-boot --dist-dir "$RUNNER_TEMP/dist"
+          "$RUNNER_TEMP/build/ckdist" verify-boot --os all --dist-dir "$RUNNER_TEMP/dist"
           rm -f "$RUNNER_TEMP/dist/SHA256SUMS"
       - uses: actions/upload-artifact@v7.0.1
         with:
@@ -178,11 +179,19 @@ jobs:
           {
             echo "# CK-DOS Base $version"
             echo
-            echo "Clean-room built MS-DOS 4.00 distribution media, 16-bit self-hosting DOS toolchain, and native cross-compiler SDKs."
+            echo "Clean-room built CK-DOS 5.0 and CK-DOS 4.0 (MS-DOS 4.00 reference) distribution media, 16-bit self-hosting DOS toolchain, and native cross-compiler SDKs."
             echo
-            echo "## Bootable & Installable DOS Media"
+            echo "## CK-DOS 5.0 Bootable & Installable Media"
             echo
-            echo "- \`ckdos-4.00-floppy-1440k.img\` — 3.5\" 1.44 MB Boot + Install Diskette (QEMU, 86Box, PCem, VirtualBox, Gotek)"
+            echo "- \`ckdos-5.00-floppy-1440k.img\` — 3.5\" 1.44 MB Boot + Install Diskette (\`CKDOS500\`)"
+            echo "- \`ckdos-5.00-floppy-720k-disk1.img\` & \`disk2.img\` — 2x720 KB Floppy Set for vintage XT/PS2 systems"
+            echo "- \`ckdos-5.00-hdd-32m.vhd\` — Pre-installed 32 MB Fixed VHD hard disk with \`C:\\DOS\` and 16-bit \`C:\\DEVTOOLS\` SDK"
+            echo "- \`ckdos-5.00-boot.iso\` — El-Torito bootable CD-ROM ISO-9660 image"
+            echo "- \`ckdos-5.00-files.zip\` — File archive for DOSBox-X, XT-IDE CompactFlash, and SD adapters"
+            echo
+            echo "## CK-DOS 4.0 Reference Media (654-Hash Verified MS-DOS 4.00)"
+            echo
+            echo "- \`ckdos-4.00-floppy-1440k.img\` — 3.5\" 1.44 MB Boot + Install Diskette"
             echo "- \`ckdos-4.00-floppy-720k-disk1.img\` & \`disk2.img\` — 2x720 KB Floppy Set for vintage XT/PS2 systems"
             echo "- \`ckdos-4.00-hdd-32m.vhd\` — Pre-installed 32 MB Fixed VHD hard disk with \`C:\\DOS\` and 16-bit \`C:\\DEVTOOLS\` SDK"
             echo "- \`ckdos-4.00-boot.iso\` — El-Torito bootable CD-ROM ISO-9660 image"
