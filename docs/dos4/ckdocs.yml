@@ -10,7 +10,7 @@ site:
   stylesheet: docs/styles/retro-dos.css
   footer: "© 2026 C. Klukas · MIT License · CK-DOS 4.0 & SDK Manual"
   links:
-    - title: Releases & Media
+    - title: Releases & Downloads
       url: https://github.com/cklukas/ck-dos-base/releases
     - title: GitHub
       url: https://github.com/cklukas/ck-dos-base

@@ -183,6 +183,8 @@ jobs:
             echo
             echo "## CK-DOS 5.0 Bootable & Installable Media"
             echo
+            echo "Includes \`HIMEM.SYS\` + \`DOS=HIGH,UMB\` (615+ KB free conventional RAM), **CK Basic** (\`QBASIC.EXE\`), **CK Edit** (\`EDIT.COM\`), **CK Help** (\`HELP.COM\`), \`DOSKEY.COM\`, \`SETVER.EXE\`, \`LOADFIX.COM\`, and \`EXPAND.EXE\`:"
+            echo
             echo "- \`ckdos-5.00-floppy-1440k.img\` — 3.5\" 1.44 MB Boot + Install Diskette (\`CKDOS500\`)"
             echo "- \`ckdos-5.00-floppy-720k-disk1.img\`..\`disk3.img\` — 3x720 KB Floppy Set (+CK Basic Disk 3) for vintage XT/PS2 systems"
             echo "- \`ckdos-5.00-hdd-32m.vhd\` — Pre-installed 32 MB Fixed VHD hard disk with \`C:\\DOS\` and 16-bit \`C:\\DEVTOOLS\` SDK"
