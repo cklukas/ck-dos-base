@@ -293,8 +293,8 @@ DOSBASE_TEST(cl_wp10_const_folding_and_strength_reduction) {
             "}\n";
         const auto obj = compile_c_to_omf(src, CompileOptions{});
         const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
-        // shl cx, 1 (D1 E1) is used for int* indexing
-        DOSBASE_TEST_EXPECT(contains_seq(code, {0xD1, 0xE1}));
+        // shl bx, 1 (D1 E3) or shl cx, 1 (D1 E1) is used for int* indexing
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0xD1, 0xE3}) || contains_seq(code, {0xD1, 0xE1}));
         // Zero mul cx (F7 E1), imul cx (F7 E9), div cx (F7 F1), idiv cx (F7 F9), or mul bx (F7 E3)
         DOSBASE_TEST_EXPECT(!contains_seq(code, {0xF7, 0xE1}));
         DOSBASE_TEST_EXPECT(!contains_seq(code, {0xF7, 0xE9}));
@@ -660,4 +660,35 @@ DOSBASE_TEST(cl_block_scope_frame_compaction_and_zero_init_reuse) {
     // z1 = 0 and z2 = 0 share a single xor ax, ax followed by two mov [bp-d], ax stores:
     // 33 C0 89 46 FE 89 46 FC
     DOSBASE_TEST_EXPECT(contains_seq(code, {0x33, 0xC0, 0x89, 0x46, 0xFE, 0x89, 0x46, 0xFC}));
+}
+
+DOSBASE_TEST(cl_base_index_addressing_and_imm_stores) {
+    // 1. Local byte array indexed by SI emits 4-byte `mov byte ptr [bp+si-128], 0x20` (C6 42 80 20)
+    {
+        const char* src =
+            "void fill_dbcs(void) {\n"
+            "    char darray[128];\n"
+            "    int i;\n"
+            "    for (i = 0; i < 128; i++) {\n"
+            "        darray[i] = ' ';\n"
+            "    }\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0xC6, 0x42, 0x80, 0x20}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x50}));  // zero push ax!
+    }
+
+    // 2. Word pointer array store `placements[m] = val` scales BX without push/pop AX
+    {
+        const char* src =
+            "void set_slot(int **placements, volatile int m, int *val) {\n"
+            "    placements[m] = val;\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        // shl bx, 1 (D1 E3); add bx, [bp+4] (03 5E 04)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0xD1, 0xE3, 0x03, 0x5E, 0x04}));
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x50}));
+    }
 }

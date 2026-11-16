@@ -2216,7 +2216,15 @@ private:
     // Per-function state
     using LabelId = std::size_t;
     enum class RegVar : std::uint8_t { none = 0, si = 6, di = 7 };
-    enum class PtrBase : std::uint8_t { si = 4, di = 5, bx = 7 };
+    enum class PtrBase : std::uint8_t {
+        bx_si = 0,
+        bx_di = 1,
+        bp_si = 2,
+        bp_di = 3,
+        si = 4,
+        di = 5,
+        bx = 7
+    };
 
     struct BranchSite {
         std::size_t raw_pos = 0;
@@ -3081,6 +3089,16 @@ private:
                                 auto& c = cands[*off];
                                 c.byte_savings += 2;
                                 c.score += 2 + 6 * loop_depth;
+                            } else if (e->lhs && e->lhs->kind == ExprKind::binary &&
+                                       e->lhs->op == Tok::plus) {
+                                if (auto lo = unwrap_base_ptr_var(e->lhs->lhs)) {
+                                    cands[*lo].byte_savings += 2;
+                                    cands[*lo].score += 2 + 6 * loop_depth;
+                                }
+                                if (auto ro = unwrap_base_ptr_var(e->lhs->rhs)) {
+                                    cands[*ro].byte_savings += 2;
+                                    cands[*ro].score += 2 + 6 * loop_depth;
+                                }
                             }
                             walk_expr(e->lhs, loop_depth, false);
                         } else if (e->op == Tok::inc || e->op == Tok::dec) {
@@ -4102,6 +4120,84 @@ private:
 
     void emit_bx_rm(std::uint8_t reg_or_op, int disp) { emit_idx_rm(PtrBase::bx, reg_or_op, disp); }
 
+    static bool can_scale_bx_no_ax(std::size_t elem_sz) {
+        if (elem_sz <= 1) return true;
+        if ((elem_sz & (elem_sz - 1)) == 0) return true;
+        // Popcount 2: (1 << a) + (1 << b) with a <= 3 and (b - a) <= 3
+        const std::size_t lo_bit = elem_sz & (~elem_sz + 1);
+        const std::size_t hi_bit = elem_sz ^ lo_bit;
+        if (hi_bit != 0 && (hi_bit & (hi_bit - 1)) == 0) {
+            int a = 0;
+            while ((std::size_t(1) << a) < lo_bit) ++a;
+            int b = a;
+            while ((std::size_t(1) << b) < hi_bit) ++b;
+            return a <= 3 && (b - a) <= 3;
+        }
+        return false;
+    }
+
+    // Scales BX by elem_sz using only BX and CX (preserving AX, DX, SI, DI, ES).
+    void emit_scale_bx_no_ax(std::size_t elem_sz) {
+        if (elem_sz <= 1) return;
+        if ((elem_sz & (elem_sz - 1)) == 0) {
+            int k = 0;
+            while ((std::size_t(1) << k) < elem_sz) ++k;
+            if (k <= 3) {
+                for (int i = 0; i < k; ++i) { emit_u8(0xD1); emit_u8(0xE3); }  // shl bx, 1
+            } else {
+                emit_u8(0xB1); emit_u8(static_cast<std::uint8_t>(k));  // mov cl, k
+                emit_u8(0xD3); emit_u8(0xE3);                          // shl bx, cl
+            }
+            return;
+        }
+        const std::size_t lo_bit = elem_sz & (~elem_sz + 1);
+        const std::size_t hi_bit = elem_sz ^ lo_bit;
+        int a = 0;
+        while ((std::size_t(1) << a) < lo_bit) ++a;
+        int b = a;
+        while ((std::size_t(1) << b) < hi_bit) ++b;
+        for (int i = 0; i < a; ++i) { emit_u8(0xD1); emit_u8(0xE3); }      // shl bx, 1
+        emit_u8(0x8B); emit_u8(0xCB);                                      // mov cx, bx
+        for (int i = 0; i < b - a; ++i) { emit_u8(0xD1); emit_u8(0xE3); }  // shl bx, 1
+        emit_u8(0x03); emit_u8(0xD9);                                      // add bx, cx
+    }
+
+    bool match_scaled_near_index(const ExprPtr& ptr_expr, ExprPtr& out_base_e, ExprPtr& out_idx_e,
+                                 std::size_t& out_elem_sz) const {
+        if (!ptr_expr || ptr_expr->kind != ExprKind::binary || ptr_expr->op != Tok::plus ||
+            !ptr_expr->lhs || !ptr_expr->rhs) {
+            return false;
+        }
+        const bool l_ptr = ptr_expr->lhs->type &&
+                           (ptr_expr->lhs->type->kind == TypeKind::t_ptr ||
+                            ptr_expr->lhs->type->kind == TypeKind::t_array);
+        const bool r_ptr = ptr_expr->rhs->type &&
+                           (ptr_expr->rhs->type->kind == TypeKind::t_ptr ||
+                            ptr_expr->rhs->type->kind == TypeKind::t_array);
+        if (l_ptr == r_ptr) return false;
+        out_base_e = l_ptr ? ptr_expr->lhs : ptr_expr->rhs;
+        out_idx_e = l_ptr ? ptr_expr->rhs : ptr_expr->lhs;
+        if (!out_base_e->type || out_base_e->type->is_far || !out_idx_e->type) return false;
+        if (out_idx_e->kind == ExprKind::int_lit || is_32bit_scalar(out_idx_e->type) ||
+            is_byte_scalar(out_idx_e->type)) {
+            return false;
+        }
+        out_elem_sz = std::max<std::size_t>(1, type_size(out_base_e->type->base));
+        if (!can_scale_bx_no_ax(out_elem_sz)) return false;
+
+        const bool idx_ok = (find_expr_reg_var(out_idx_e) != RegVar::none) ||
+                            [&]() { DirectMem dm; return try_resolve_word_mem(out_idx_e, dm); }();
+        if (!idx_ok) return false;
+
+        if (out_base_e->type->kind == TypeKind::t_array) {
+            DirectMem dm;
+            return try_resolve_direct_mem(out_base_e, dm);
+        }
+        if (find_expr_reg_var(out_base_e) != RegVar::none) return true;
+        DirectMem dm;
+        return try_resolve_direct_mem(out_base_e, dm);
+    }
+
     bool can_emit_ptr_to_bx_preserving_ax_dx(const ExprPtr& ptr_expr) const {
         if (!ptr_expr || !ptr_expr->type) return false;
         if (ptr_expr->kind == ExprKind::binary &&
@@ -4111,6 +4207,11 @@ private:
              ptr_expr->lhs->type->kind == TypeKind::t_array) &&
             ptr_expr->rhs && ptr_expr->rhs->kind == ExprKind::int_lit) {
             return can_emit_ptr_to_bx_preserving_ax_dx(ptr_expr->lhs);
+        }
+        {
+            ExprPtr base_e, idx_e;
+            std::size_t elem_sz = 1;
+            if (match_scaled_near_index(ptr_expr, base_e, idx_e, elem_sz)) return true;
         }
         if (ptr_expr->type->kind == TypeKind::t_array && ptr_expr->kind == ExprKind::member) {
             return can_emit_lvalue_bx_preserving_ax_dx(ptr_expr);
@@ -4150,6 +4251,93 @@ private:
             emit_ptr_to_idx(ptr_expr->lhs, out_base, out_far, inout_disp);
             inout_disp += (ptr_expr->op == Tok::plus ? delta : -delta);
             return;
+        }
+        {
+            ExprPtr base_e, idx_e;
+            std::size_t elem_sz = 1;
+            if (match_scaled_near_index(ptr_expr, base_e, idx_e, elem_sz)) {
+                out_far = false;
+                const RegVar idx_rv = find_expr_reg_var(idx_e);
+                const RegVar base_rv = find_expr_reg_var(base_e);
+
+                auto load_idx_to_bx = [&]() {
+                    if (idx_rv != RegVar::none) {
+                        emit_u8(0x8B);
+                        emit_u8(idx_rv == RegVar::si ? 0xDE : 0xDF);  // mov bx, si/di
+                    } else {
+                        DirectMem idm;
+                        try_resolve_word_mem(idx_e, idm);
+                        if (idm.kind == DirectMem::bp_rel) {
+                            emit_u8(0x8B); emit_bp_rm(3, idm.disp);  // mov bx, [bp+d]
+                        } else {
+                            emit_u8(0x8B); emit_u8(0x1E);
+                            emit_dgroup_disp(idm.sym, idm.disp);      // mov bx, [sym+d]
+                        }
+                    }
+                    emit_scale_bx_no_ax(elem_sz);
+                };
+
+                if (base_e->type->kind == TypeKind::t_array) {
+                    DirectMem bdm;
+                    try_resolve_direct_mem(base_e, bdm);
+                    if (bdm.kind == DirectMem::bp_rel) {
+                        if (elem_sz == 1 && idx_rv != RegVar::none) {
+                            out_base = (idx_rv == RegVar::si) ? PtrBase::bp_si : PtrBase::bp_di;
+                            inout_disp += bdm.disp;
+                            return;
+                        }
+                        load_idx_to_bx();
+                        emit_u8(0x8D); emit_bp_rm(1, bdm.disp);  // lea cx, [bp+d]
+                        emit_u8(0x03); emit_u8(0xD9);            // add bx, cx
+                        out_base = PtrBase::bx;
+                        return;
+                    }
+                    if (elem_sz == 1 && idx_rv != RegVar::none) {
+                        emit_u8(0xBB); emit_dgroup_disp(bdm.sym, bdm.disp);  // mov bx, offset sym+d
+                        out_base = (idx_rv == RegVar::si) ? PtrBase::bx_si : PtrBase::bx_di;
+                        return;
+                    }
+                    load_idx_to_bx();
+                    emit_u8(0x81); emit_u8(0xC3);
+                    emit_dgroup_disp(bdm.sym, bdm.disp);  // add bx, offset sym+d
+                    out_base = PtrBase::bx;
+                    return;
+                }
+
+                if (base_rv != RegVar::none) {
+                    if (elem_sz == 1 && idx_rv != RegVar::none && idx_rv != base_rv) {
+                        emit_u8(0x8B);
+                        emit_u8(base_rv == RegVar::si ? 0xDE : 0xDF);  // mov bx, base_rv
+                        out_base = (idx_rv == RegVar::si) ? PtrBase::bx_si : PtrBase::bx_di;
+                        return;
+                    }
+                    load_idx_to_bx();
+                    out_base = (base_rv == RegVar::si) ? PtrBase::bx_si : PtrBase::bx_di;
+                    return;
+                }
+
+                DirectMem bdm;
+                try_resolve_direct_mem(base_e, bdm);
+                if (elem_sz == 1 && idx_rv != RegVar::none) {
+                    if (bdm.kind == DirectMem::bp_rel) {
+                        emit_u8(0x8B); emit_bp_rm(3, bdm.disp);  // mov bx, [bp+d]
+                    } else {
+                        emit_u8(0x8B); emit_u8(0x1E);
+                        emit_dgroup_disp(bdm.sym, bdm.disp);      // mov bx, [sym+d]
+                    }
+                    out_base = (idx_rv == RegVar::si) ? PtrBase::bx_si : PtrBase::bx_di;
+                    return;
+                }
+                load_idx_to_bx();
+                if (bdm.kind == DirectMem::bp_rel) {
+                    emit_u8(0x03); emit_bp_rm(3, bdm.disp);  // add bx, [bp+d]
+                } else {
+                    emit_u8(0x03); emit_u8(0x1E);
+                    emit_dgroup_disp(bdm.sym, bdm.disp);      // add bx, [sym+d]
+                }
+                out_base = PtrBase::bx;
+                return;
+            }
         }
         if (ptr_expr && ptr_expr->type && ptr_expr->type->kind == TypeKind::t_array &&
             ptr_expr->kind == ExprKind::member) {
@@ -4239,13 +4427,11 @@ private:
             if (disp != 0) {
                 emit_u8(0x8D); emit_idx_rm(PtrBase::bx, 3, disp);  // lea bx, [bx + disp]
             }
+        } else if ((base == PtrBase::si || base == PtrBase::di) && disp == 0) {
+            emit_u8(0x8B);
+            emit_u8(base == PtrBase::si ? 0xDE : 0xDF);  // mov bx, si/di
         } else {
-            if (disp == 0) {
-                emit_u8(0x8B);
-                emit_u8(base == PtrBase::si ? 0xDE : 0xDF);  // mov bx, si/di
-            } else {
-                emit_u8(0x8D); emit_idx_rm(base, 3, disp);   // lea bx, [si/di + disp]
-            }
+            emit_u8(0x8D); emit_idx_rm(base, 3, disp);   // lea bx, [base + disp]
         }
     }
 
@@ -4479,6 +4665,83 @@ private:
                         emit_mov_regvar_ax(rv);
                     }
                     break;
+                }
+                if (!need_value && e->rhs->kind == ExprKind::int_lit) {
+                    DirectMem imm_dm;
+                    if (try_resolve_direct_mem(e->lhs, imm_dm)) {
+                        if (is_byte_scalar(e->type)) {
+                            const auto imm8 = static_cast<std::uint8_t>(e->rhs->int_val & 0xFF);
+                            emit_u8(0xC6);
+                            if (imm_dm.kind == DirectMem::bp_rel) {
+                                emit_bp_rm(0, imm_dm.disp);
+                            } else {
+                                emit_u8(0x06);
+                                emit_dgroup_disp(imm_dm.sym, imm_dm.disp);
+                            }
+                            emit_u8(imm8);
+                            break;
+                        }
+                        if (!is_32bit_scalar(e->type)) {
+                            const auto imm16 = static_cast<std::uint16_t>(e->rhs->int_val);
+                            if (imm16 != 0) {
+                                emit_u8(0xC7);
+                                if (imm_dm.kind == DirectMem::bp_rel) {
+                                    emit_bp_rm(0, imm_dm.disp);
+                                } else {
+                                    emit_u8(0x06);
+                                    emit_dgroup_disp(imm_dm.sym, imm_dm.disp);
+                                }
+                                emit_u16(imm16);
+                                break;
+                            }
+                        } else {
+                            const auto lo = static_cast<std::uint16_t>(e->rhs->int_val & 0xFFFF);
+                            const auto hi = static_cast<std::uint16_t>((e->rhs->int_val >> 16) & 0xFFFF);
+                            if (lo == 0 && hi == 0) {
+                                emit_u8(0x33); emit_u8(0xC0);  // xor ax, ax
+                                if (imm_dm.kind == DirectMem::bp_rel) {
+                                    emit_u8(0x89); emit_bp_rm(0, imm_dm.disp);
+                                    emit_u8(0x89); emit_bp_rm(0, imm_dm.disp + 2);
+                                } else {
+                                    emit_u8(0xA3); emit_dgroup_disp(imm_dm.sym, imm_dm.disp);
+                                    emit_u8(0xA3); emit_dgroup_disp(imm_dm.sym, imm_dm.disp + 2);
+                                }
+                                break;
+                            }
+                        }
+                    } else {
+                        PtrBase base = PtrBase::bx;
+                        bool is_far = false;
+                        int disp = 0;
+                        emit_lvalue_idx_disp(e->lhs, base, is_far, disp);
+                        if (is_byte_scalar(e->type)) {
+                            if (is_far) emit_u8(0x26);
+                            emit_u8(0xC6);
+                            emit_idx_rm(base, 0, disp);
+                            emit_u8(static_cast<std::uint8_t>(e->rhs->int_val & 0xFF));
+                        } else if (is_32bit_scalar(e->type)) {
+                            const auto lo = static_cast<std::uint16_t>(e->rhs->int_val & 0xFFFF);
+                            const auto hi = static_cast<std::uint16_t>((e->rhs->int_val >> 16) & 0xFFFF);
+                            if (lo == 0 && hi == 0) {
+                                emit_u8(0x33); emit_u8(0xC0);
+                                if (is_far) emit_u8(0x26);
+                                emit_u8(0x89); emit_idx_rm(base, 0, disp);
+                                if (is_far) emit_u8(0x26);
+                                emit_u8(0x89); emit_idx_rm(base, 0, disp + 2);
+                            } else {
+                                if (is_far) emit_u8(0x26);
+                                emit_u8(0xC7); emit_idx_rm(base, 0, disp); emit_u16(lo);
+                                if (is_far) emit_u8(0x26);
+                                emit_u8(0xC7); emit_idx_rm(base, 0, disp + 2); emit_u16(hi);
+                            }
+                        } else {
+                            if (is_far) emit_u8(0x26);
+                            emit_u8(0xC7);
+                            emit_idx_rm(base, 0, disp);
+                            emit_u16(static_cast<std::uint16_t>(e->rhs->int_val));
+                        }
+                        break;
+                    }
                 }
                 emit_expr(e->rhs);
                 if (is_32bit_scalar(e->type)) emit_widen_dxax(e->rhs->type);
