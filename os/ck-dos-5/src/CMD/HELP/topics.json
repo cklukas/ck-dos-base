@@ -1,0 +1,1253 @@
+{
+  "kind": "ckdos-help-authored-topic-slice-v1",
+  "schema": 1,
+  "provenance": {
+    "authority": "CK-DOS 5 first-party authored help",
+    "license": "MIT",
+    "excluded_reference": "Microsoft DOSHELP.HLP and MS-DOS 5.0 text are not inputs."
+  },
+  "topics": [
+    {
+      "topic_id": "ATTRIB",
+      "aliases": [
+        "ATTRIB"
+      ],
+      "title": "File attributes",
+      "summary": "Displays or changes read-only and archive file attributes.",
+      "syntax": [
+        "ATTRIB [+R|-R] [+A|-A] [drive:][path]file [/S]"
+      ],
+      "details": [
+        "ATTRIB reports the read-only and archive attributes of every matching file. A plus or minus operand sets or clears an attribute before the report is written.",
+        "This build parses only the R and A attribute letters; hidden and system letters are not accepted. /S extends the operation to matching files in every directory below the named path."
+      ],
+      "see_also": [
+        "DEL",
+        "DIR",
+        "XCOPY"
+      ]
+    },
+    {
+      "topic_id": "BACKUP",
+      "aliases": [
+        "BACKUP"
+      ],
+      "title": "Back up files",
+      "summary": "Backs up files from one disk onto another.",
+      "syntax": [
+        "BACKUP source drive: [/S] [/M] [/A] [/F[:size]] [/D:date] [/T:time]",
+        "       [/L[:logfile]]"
+      ],
+      "details": [
+        "BACKUP needs a source file specification and a target drive. It copies file by file rather than making a disk image, and it never backs up the two hidden system files.",
+        "/S includes subdirectories, /M limits the run to files whose archive attribute is set, and /A adds to the files already on the target instead of replacing them.",
+        "/D and /T restrict the run to files changed on or after the given date and time. Diskette targets are formatted by default; /F chooses a capacity such as 360, 720, 1200, or 1440 kilobytes. /L writes a log file."
+      ],
+      "see_also": [
+        "FORMAT",
+        "RESTORE",
+        "XCOPY"
+      ]
+    },
+    {
+      "topic_id": "BREAK",
+      "aliases": [
+        "BREAK"
+      ],
+      "title": "Extended Ctrl+C checking",
+      "summary": "Controls extended Ctrl+C checking.",
+      "syntax": [
+        "BREAK [ON|OFF]"
+      ],
+      "details": [
+        "With no operand, BREAK reports the current state. ON and OFF change the shell's extended Ctrl+C checking setting."
+      ],
+      "see_also": [
+        "CTTY",
+        "VERIFY"
+      ]
+    },
+    {
+      "topic_id": "CALL",
+      "aliases": [
+        "CALL"
+      ],
+      "title": "Call a command or batch file",
+      "summary": "Calls a batch or executable file and returns.",
+      "syntax": [
+        "CALL [drive:][path]file [arguments]"
+      ],
+      "details": [
+        "CALL searches the current directory and PATH for a batch file, passes its arguments, and resumes the caller when the batch finishes.",
+        "If the target is not a batch file, CALL executes the supplied command line and returns after it completes."
+      ],
+      "see_also": [
+        "GOTO",
+        "IF",
+        "SHIFT"
+      ]
+    },
+    {
+      "topic_id": "CD",
+      "aliases": [
+        "CD",
+        "CHDIR"
+      ],
+      "title": "Current directory",
+      "summary": "Displays or changes the current directory.",
+      "syntax": [
+        "CD [drive:][path]"
+      ],
+      "details": [
+        "Without a path, CD displays the current drive and directory. A drive-qualified directory updates that drive; changing drives remains a separate drive-letter command."
+      ],
+      "see_also": [
+        "DIR",
+        "MD",
+        "RD",
+        "TRUENAME"
+      ]
+    },
+    {
+      "topic_id": "CHCP",
+      "aliases": [
+        "CHCP"
+      ],
+      "title": "Active code page",
+      "summary": "Displays or changes the active code page.",
+      "syntax": [
+        "CHCP [nnn]"
+      ],
+      "details": [
+        "Without a number, CHCP reports the active code page. Supplying a prepared three-digit code-page identifier switches the active console and device code page when NLSFUNC is loaded."
+      ],
+      "see_also": [
+        "CTTY",
+        "VER"
+      ]
+    },
+    {
+      "topic_id": "CHKDSK",
+      "aliases": [
+        "CHKDSK"
+      ],
+      "title": "Check a disk",
+      "summary": "Checks a disk and reports its file and memory status.",
+      "syntax": [
+        "CHKDSK [drive:][[path]file] [/F] [/V]"
+      ],
+      "details": [
+        "CHKDSK reports allocation, directory, and free-space totals for the selected drive together with the memory available to the session. One optional operand names a drive or a file specification to check.",
+        "/F writes corrections for the allocation faults it finds; without it the report changes nothing. /V names every file as the scan reaches it."
+      ],
+      "see_also": [
+        "FORMAT",
+        "MEM",
+        "RECOVER"
+      ]
+    },
+    {
+      "topic_id": "CLS",
+      "aliases": [
+        "CLS"
+      ],
+      "title": "Clear the screen",
+      "summary": "Clears the screen.",
+      "syntax": [
+        "CLS"
+      ],
+      "details": [
+        "CLS clears the current text console using its configured blank cell and returns the cursor to the home position."
+      ],
+      "see_also": [
+        "ECHO",
+        "PROMPT"
+      ]
+    },
+    {
+      "topic_id": "COMMAND",
+      "aliases": [
+        "COMMAND"
+      ],
+      "title": "Command processor",
+      "summary": "Starts a secondary DOS command processor.",
+      "syntax": [
+        "COMMAND [drive:][path] [/P] [/F] [/D] [/E:nnnnn] [/MSG] [/C string]"
+      ],
+      "details": [
+        "COMMAND starts a second copy of the command processor. The optional path tells that copy where to reload itself from. /P makes it permanent, so EXIT will not end it.",
+        "/C runs the rest of the line as a single command and then exits, so it has to come last; it also cancels /P. /E sets the environment size in bytes and accepts 160 through 32768.",
+        "/D suppresses the startup date and time prompt, /F answers every critical-error request with failure, and /MSG keeps the extended message block resident and is accepted only together with /P."
+      ],
+      "see_also": [
+        "EXIT",
+        "PATH",
+        "SET"
+      ]
+    },
+    {
+      "topic_id": "COMP",
+      "aliases": [
+        "COMP"
+      ],
+      "title": "Compare file contents",
+      "summary": "Compares the contents of two files.",
+      "syntax": [
+        "COMP [drive:][path]file1 [drive:][path]file2"
+      ],
+      "details": [
+        "COMP compares two files byte for byte and prints the offset and both values at each difference. It abandons a pair after ten mismatches.",
+        "Either operand may be left out; COMP then prompts for the missing name. Files of unequal size are reported without being compared, and after each pair it asks whether to compare more files."
+      ],
+      "see_also": [
+        "DISKCOMP",
+        "FC"
+      ]
+    },
+    {
+      "topic_id": "COPY",
+      "aliases": [
+        "COPY"
+      ],
+      "title": "Copy or combine files",
+      "summary": "Copies or combines files.",
+      "syntax": [
+        "COPY source [+ source ...] [destination] [/A] [/B] [/V]"
+      ],
+      "details": [
+        "COPY accepts one or more sources joined by plus signs. The final operand may name the destination; otherwise the current directory and source name are used.",
+        "/A selects text handling, /B selects binary handling, and /V requests write verification."
+      ],
+      "see_also": [
+        "DEL",
+        "DIR",
+        "REN",
+        "TYPE"
+      ]
+    },
+    {
+      "topic_id": "CTTY",
+      "aliases": [
+        "CTTY"
+      ],
+      "title": "Controlling terminal",
+      "summary": "Changes the controlling terminal device.",
+      "syntax": [
+        "CTTY device"
+      ],
+      "details": [
+        "CTTY redirects standard console input and output for the command processor to a character device such as AUX, COM1, or CON. CTTY CON restores the local keyboard and screen."
+      ],
+      "see_also": [
+        "CHCP",
+        "ECHO"
+      ]
+    },
+    {
+      "topic_id": "DATE",
+      "aliases": [
+        "DATE"
+      ],
+      "title": "System date",
+      "summary": "Displays or sets the system date.",
+      "syntax": [
+        "DATE [mm-dd-yy]"
+      ],
+      "details": [
+        "With no operand, DATE displays the current date and prompts for a replacement. Enter accepts the current value.",
+        "Accepted dates use month, day, and year fields and must fall from 1980 through 2099."
+      ],
+      "see_also": [
+        "TIME",
+        "VER"
+      ]
+    },
+    {
+      "topic_id": "DEBUG",
+      "aliases": [
+        "DEBUG"
+      ],
+      "title": "Program debugger",
+      "summary": "Loads a program for testing with the DOS debugger.",
+      "syntax": [
+        "DEBUG [[drive:][path]file [arguments]]"
+      ],
+      "details": [
+        "DEBUG loads the named file together with any following arguments and then presents its own prompt. Without a file it starts with an empty workspace.",
+        "Single-letter commands assemble, compare, dump, enter, fill, go, add hexadecimal values, read ports, load, move, name, write ports, proceed, quit, show registers, search, trace, unassemble, and write.",
+        "The X commands manage expanded memory: XA allocates pages, XD releases a handle, XM maps a page, and XS reports handle status."
+      ],
+      "see_also": [
+        "EXE2BIN",
+        "MEM"
+      ]
+    },
+    {
+      "topic_id": "DEL",
+      "aliases": [
+        "DEL",
+        "ERASE"
+      ],
+      "title": "Delete files",
+      "summary": "Deletes files; /P prompts before each deletion.",
+      "syntax": [
+        "DEL [drive:][path]file [/P]"
+      ],
+      "details": [
+        "DEL accepts DOS wildcards and removes matching files. Directories are not removed.",
+        "/P asks for confirmation before each matching file is deleted."
+      ],
+      "see_also": [
+        "COPY",
+        "DIR",
+        "REN"
+      ]
+    },
+    {
+      "topic_id": "DIR",
+      "aliases": [
+        "DIR"
+      ],
+      "title": "Directory listing",
+      "summary": "Displays a directory; /P pauses and /W uses wide format.",
+      "syntax": [
+        "DIR [drive:][path][file] [/P] [/W]"
+      ],
+      "details": [
+        "DIR lists matching files and directories, including DOS attributes, sizes, and free-space totals for the selected drive.",
+        "/P pauses after each screen and /W uses a compact wide listing."
+      ],
+      "see_also": [
+        "CD",
+        "MD",
+        "TYPE"
+      ]
+    },
+    {
+      "topic_id": "DISKCOMP",
+      "aliases": [
+        "DISKCOMP"
+      ],
+      "title": "Compare diskettes",
+      "summary": "Compares the contents of two diskettes.",
+      "syntax": [
+        "DISKCOMP [drive1: [drive2:]] [/1] [/8]"
+      ],
+      "details": [
+        "DISKCOMP compares two diskettes track by track and names each track and side that differs. Given fewer than two drives it prompts for each diskette in turn.",
+        "/1 compares the first side only. /8 compares only the first eight sectors of each track."
+      ],
+      "see_also": [
+        "COMP",
+        "DISKCOPY",
+        "FORMAT"
+      ]
+    },
+    {
+      "topic_id": "DISKCOPY",
+      "aliases": [
+        "DISKCOPY"
+      ],
+      "title": "Copy diskettes",
+      "summary": "Copies the whole contents of one diskette to another.",
+      "syntax": [
+        "DISKCOPY [drive1: [drive2:]] [/1]"
+      ],
+      "details": [
+        "DISKCOPY duplicates an entire diskette and formats the target when its layout does not already match the source. Given fewer than two drives it prompts for the diskettes to swap.",
+        "/1 copies the first side only. Whatever the target diskette held before is replaced."
+      ],
+      "see_also": [
+        "DISKCOMP",
+        "FORMAT",
+        "XCOPY"
+      ]
+    },
+    {
+      "topic_id": "DOSKEY",
+      "aliases": [
+        "DOSKEY"
+      ],
+      "title": "Command history and macros",
+      "summary": "Edits command lines, recalls commands, and creates macros.",
+      "syntax": [
+        "DOSKEY [/REINSTALL] [/LISTSIZE=size] [/MACROS[:ALL|exename]]",
+        "       [/HISTORY] [/INSERT|/OVERSTRIKE] [/EXENAME=exename]",
+        "       [/MACROFILE=filename] [macroname=[text]]"
+      ],
+      "details": [
+        "Running DOSKEY enables the resident command-line editor. /REINSTALL clears history; /LISTSIZE, /INSERT, and /OVERSTRIKE adjust editor behavior.",
+        "/HISTORY displays history. /MACROS and /EXENAME select macro namespaces; /MACROFILE loads name=value definitions. Macro text supports arguments and $T command separators."
+      ],
+      "see_also": [
+        "HELP",
+        "PROMPT"
+      ]
+    },
+    {
+      "topic_id": "ECHO",
+      "aliases": [
+        "ECHO"
+      ],
+      "title": "Display text and command echo",
+      "summary": "Displays text or controls command echoing.",
+      "syntax": [
+        "ECHO [ON|OFF|text]"
+      ],
+      "details": [
+        "ECHO ON and ECHO OFF control batch command display. With no operand, ECHO reports that state; any other operand is printed as text."
+      ],
+      "see_also": [
+        "PROMPT",
+        "TYPE"
+      ]
+    },
+    {
+      "topic_id": "EDIT",
+      "aliases": [
+        "CKEDIT",
+        "EDIT"
+      ],
+      "title": "Full-screen text editor",
+      "summary": "Edits ASCII text files in the CK-DOS 5 full-screen editor.",
+      "syntax": [
+        "EDIT [[drive:][path]file] [/B] [/G] [/H] [/NOHI]",
+        "CKEDIT [[drive:][path]file] [/B] [/G] [/H] [/NOHI]"
+      ],
+      "details": [
+        "EDIT (also installed as CKEDIT) opens an ASCII text file in a full-screen editor with pull-down menus, dialog boxes, mouse support, clipboard commands, search, and replace.",
+        "/B selects monochrome attributes on a color adapter, /G uses fast CGA video updates, /H switches EGA/VGA displays to 43 or 50 rows, and /NOHI uses eight non-bright colors. F1 opens built-in editor help."
+      ],
+      "see_also": [
+        "EDLIN",
+        "HELP",
+        "QBASIC",
+        "TYPE"
+      ]
+    },
+    {
+      "topic_id": "EDLIN",
+      "aliases": [
+        "EDLIN"
+      ],
+      "title": "Line editor",
+      "summary": "Edits a text file one numbered line at a time.",
+      "syntax": [
+        "EDLIN [drive:][path]file [/B]"
+      ],
+      "details": [
+        "EDLIN requires a file name. An existing file is loaded for editing and a new name starts an empty one. Its own prompt accepts commands that act on line numbers.",
+        "/B reads the whole file instead of stopping at the first end-of-file character, which matters for files that carry one in the middle."
+      ],
+      "see_also": [
+        "EDIT",
+        "TYPE"
+      ]
+    },
+    {
+      "topic_id": "EXE2BIN",
+      "aliases": [
+        "EXE2BIN"
+      ],
+      "title": "Convert EXE to binary",
+      "summary": "Converts an executable file to binary format.",
+      "syntax": [
+        "EXE2BIN [drive:][path]input [[drive:][path]output]"
+      ],
+      "details": [
+        "EXE2BIN turns a relocatable executable into a plain memory image. The input name is required; without an output name the input name is reused with a BIN extension.",
+        "A file that still needs segment fix-ups cannot be converted until a base segment is supplied, and EXE2BIN prompts for that value in hexadecimal. Files it cannot convert are reported and left alone."
+      ],
+      "see_also": [
+        "DEBUG",
+        "MEM"
+      ]
+    },
+    {
+      "topic_id": "EXIT",
+      "aliases": [
+        "EXIT"
+      ],
+      "title": "Exit the command prompt",
+      "summary": "Exits a secondary command processor.",
+      "syntax": [
+        "EXIT"
+      ],
+      "details": [
+        "EXIT ends a secondary COMMAND.COM shell and returns to the parent program or command processor. It has no effect in a permanent top-level shell started with /P."
+      ],
+      "see_also": [
+        "CALL",
+        "HELP"
+      ]
+    },
+    {
+      "topic_id": "EXPAND",
+      "aliases": [
+        "EXPAND"
+      ],
+      "title": "Expand compressed files",
+      "summary": "Decompresses one or more compressed distribution files.",
+      "syntax": [
+        "EXPAND [drive:][path]source [[drive:][path]destination]"
+      ],
+      "details": [
+        "EXPAND unpacks distribution files stored in compressed format and writes the expanded output to the named destination file or directory.",
+        "Already-uncompressed input files are copied unchanged so setup scripts can process mixed media uniformly."
+      ],
+      "see_also": [
+        "COPY",
+        "REPLACE",
+        "XCOPY"
+      ]
+    },
+    {
+      "topic_id": "FC",
+      "aliases": [
+        "FC"
+      ],
+      "title": "Compare two files",
+      "summary": "Compares two files and lists the differences.",
+      "syntax": [
+        "FC [/A] [/C] [/L] [/LB:n] [/N] [/T] [/W] [/nnnn] file1 file2",
+        "FC /B file1 file2"
+      ],
+      "details": [
+        "FC needs exactly two file operands. /B forces a byte comparison; otherwise files whose extension is EXE, OBJ, LIB, COM, BIN, or SYS are compared as bytes and all others as lines of text.",
+        "/A prints only the first and last line of each differing block, /C ignores letter case, /W ignores runs of white space, /N numbers the lines, and /T keeps tab characters instead of expanding them.",
+        "/nnnn sets how many consecutive equal lines end a difference, and /LB:n sets the internal line buffer. A byte comparison rejects /L and /N."
+      ],
+      "see_also": [
+        "COMP",
+        "FIND"
+      ]
+    },
+    {
+      "topic_id": "FIND",
+      "aliases": [
+        "FIND"
+      ],
+      "title": "Search files for text",
+      "summary": "Searches files for a text string.",
+      "syntax": [
+        "FIND [/V] [/C] [/N] \"string\" [[drive:][path]file ...]"
+      ],
+      "details": [
+        "FIND prints every line of the named files that contains the quoted string, and repeats the file name as a heading. With no file operand it reads the standard input, so it can end a pipe.",
+        "The comparison keeps letter case. /V prints the lines that do not contain the string, /C prints only the count of matching lines, and /N puts the line number in front of each line."
+      ],
+      "see_also": [
+        "MORE",
+        "SORT",
+        "TYPE"
+      ]
+    },
+    {
+      "topic_id": "FOR",
+      "aliases": [
+        "FOR"
+      ],
+      "title": "Repeat a command",
+      "summary": "Runs a command for each item in a set.",
+      "syntax": [
+        "FOR %variable IN (set) DO command"
+      ],
+      "details": [
+        "FOR substitutes one percent variable into the command for each item in the parenthesized set.",
+        "Items containing DOS wildcards expand to matching directory entries before execution."
+      ],
+      "see_also": [
+        "IF",
+        "SET"
+      ]
+    },
+    {
+      "topic_id": "FORMAT",
+      "aliases": [
+        "FORMAT"
+      ],
+      "title": "Format a disk",
+      "summary": "Formats a disk for use with DOS.",
+      "syntax": [
+        "FORMAT drive: [/V[:label]] [/S] [/B] [/1] [/4] [/8] [/T:tracks]",
+        "       [/N:sectors] [/F:size] [/SELECT] [/BACKUP] [/AUTOTEST]"
+      ],
+      "details": [
+        "FORMAT prepares the disk in the named drive and takes exactly one drive operand. /V records a volume label, /S copies the system files afterwards, and /B reserves room for them without copying.",
+        "Layout comes from /T for tracks, from 1 through 1024, /N for sectors per track, from 1 through 64, and /F for a named capacity such as 360, 720, 1200, or 1440 kilobytes. /1 formats one side; /4 and /8 select reduced layouts.",
+        "/SELECT, /BACKUP, and /AUTOTEST are the unattended entry points used by installation programs. This build ships those twelve switches and no quick or unconditional format switch."
+      ],
+      "see_also": [
+        "CHKDSK",
+        "DISKCOPY",
+        "LABEL",
+        "SYS"
+      ]
+    },
+    {
+      "topic_id": "GOTO",
+      "aliases": [
+        "GOTO"
+      ],
+      "title": "Branch within a batch file",
+      "summary": "Branches to a label in the current batch file.",
+      "syntax": [
+        "GOTO label"
+      ],
+      "details": [
+        "GOTO searches labels in the current batch file and continues after the matching label. It is rejected outside batch execution."
+      ],
+      "see_also": [
+        "CALL",
+        "IF"
+      ]
+    },
+    {
+      "topic_id": "HELP",
+      "aliases": [
+        "HELP"
+      ],
+      "title": "CK-DOS 5 command help",
+      "summary": "Opens the CK-DOS 5 full-screen command reference or a named topic.",
+      "syntax": [
+        "HELP [topic]"
+      ],
+      "details": [
+        "HELP opens the full-screen CK-DOS 5 command browser. Supplying a command name opens that topic directly; typing in the Search box filters topics interactively, and Tab moves between the topic list, Search field, and See also links.",
+        "Alternate command spellings resolve to the same entry, so HELP CHDIR and HELP CD open one topic. Esc clears an active search filter or exits back to DOS."
+      ],
+      "see_also": [
+        "EDIT",
+        "QBASIC",
+        "VER"
+      ]
+    },
+    {
+      "topic_id": "IF",
+      "aliases": [
+        "IF"
+      ],
+      "title": "Conditional command execution",
+      "summary": "Conditionally runs a batch command.",
+      "syntax": [
+        "IF [NOT] condition command"
+      ],
+      "details": [
+        "IF supports ERRORLEVEL n, EXIST path, and string1==string2 conditions. NOT may invert a condition.",
+        "The trailing command runs only when the resulting condition is true."
+      ],
+      "see_also": [
+        "FOR",
+        "GOTO"
+      ]
+    },
+    {
+      "topic_id": "JOIN",
+      "aliases": [
+        "JOIN"
+      ],
+      "title": "Join a drive to a path",
+      "summary": "Joins a disk drive to a directory on another drive.",
+      "syntax": [
+        "JOIN [drive1: [drive2:]path] [/D]"
+      ],
+      "details": [
+        "With no operands JOIN lists the joins in effect. Given a drive and a path, the whole of that drive appears below the named directory, which has to exist and be empty.",
+        "/D cancels the join for the named drive. A drive cannot be joined to itself, and a joined drive is no longer reached through its own letter."
+      ],
+      "see_also": [
+        "SUBST",
+        "TREE"
+      ]
+    },
+    {
+      "topic_id": "LABEL",
+      "aliases": [
+        "LABEL"
+      ],
+      "title": "Volume label",
+      "summary": "Creates, changes, or deletes a disk volume label.",
+      "syntax": [
+        "LABEL [drive:][label]"
+      ],
+      "details": [
+        "LABEL shows the current label and serial number of the selected drive and then writes the new one. A label holds up to eleven characters and follows the file-name character rules.",
+        "With no label on the command line LABEL prompts for one; an empty answer offers to delete the existing label. Substituted, assigned, and network drives are refused."
+      ],
+      "see_also": [
+        "FORMAT",
+        "VOL"
+      ]
+    },
+    {
+      "topic_id": "LH",
+      "aliases": [
+        "LH",
+        "LOADHIGH"
+      ],
+      "title": "Load a program into upper memory",
+      "summary": "Loads a program into upper memory blocks (UMBs) when available.",
+      "syntax": [
+        "LOADHIGH [drive:][path]filename [parameters]",
+        "LH [drive:][path]filename [parameters]"
+      ],
+      "details": [
+        "LH (or LOADHIGH) links upper memory blocks into the DOS allocation chain and attempts to load a terminate-and-stay-resident utility or program above 640 KB.",
+        "If upper memory is unavailable or no UMB is large enough, DOS automatically loads the program into conventional memory instead."
+      ],
+      "see_also": [
+        "LOADFIX",
+        "MEM"
+      ]
+    },
+    {
+      "topic_id": "LOADFIX",
+      "aliases": [
+        "LOADFIX"
+      ],
+      "title": "Load above the first 64 KB",
+      "summary": "Ensures a program is loaded above the first 64 KB of conventional memory.",
+      "syntax": [
+        "LOADFIX [drive:][path]filename [parameters]"
+      ],
+      "details": [
+        "Some older packed executables fail with a packed-file error when DOS frees low conventional memory and loads them below segment 1000h (64 KB).",
+        "LOADFIX reserves any free memory below 64 KB before launching the target program and releases that reservation when the program terminates."
+      ],
+      "see_also": [
+        "LH",
+        "MEM",
+        "SETVER"
+      ]
+    },
+    {
+      "topic_id": "MD",
+      "aliases": [
+        "MD",
+        "MKDIR"
+      ],
+      "title": "Create a directory",
+      "summary": "Creates a directory.",
+      "syntax": [
+        "MD [drive:]path"
+      ],
+      "details": [
+        "MD creates one directory at the resolved DOS path. Its parent directory must already exist."
+      ],
+      "see_also": [
+        "CD",
+        "DIR",
+        "RD"
+      ]
+    },
+    {
+      "topic_id": "MEM",
+      "aliases": [
+        "MEM"
+      ],
+      "title": "Memory report",
+      "summary": "Displays used and free memory.",
+      "syntax": [
+        "MEM [/PROGRAM|/DEBUG]"
+      ],
+      "details": [
+        "MEM reports total and available conventional memory, the largest program that will still fit, and the expanded and extended memory the session can see. It takes no file operands.",
+        "/PROGRAM lists the programs held in memory with their addresses, names, and sizes. /DEBUG adds the system data, device drivers, and expanded-memory handles to that listing."
+      ],
+      "see_also": [
+        "CHKDSK",
+        "DEBUG",
+        "LH",
+        "LOADFIX"
+      ]
+    },
+    {
+      "topic_id": "MORE",
+      "aliases": [
+        "MORE"
+      ],
+      "title": "Page output",
+      "summary": "Displays output one screen at a time.",
+      "syntax": [
+        "MORE < [drive:][path]file",
+        "command | MORE"
+      ],
+      "details": [
+        "MORE reads the standard input and writes it one screen at a time, waiting for a key at the foot of each screen. It accepts no command-line operands, so its input has to be redirected or piped.",
+        "The page height follows the current text mode and falls back to twenty-five lines when that mode cannot be read."
+      ],
+      "see_also": [
+        "FIND",
+        "SORT",
+        "TYPE"
+      ]
+    },
+    {
+      "topic_id": "PATH",
+      "aliases": [
+        "PATH"
+      ],
+      "title": "Executable search path",
+      "summary": "Displays or sets the executable search path.",
+      "syntax": [
+        "PATH [[drive:]path[;...]]"
+      ],
+      "details": [
+        "Without an operand, PATH displays the executable search path. PATH ; clears it; any other value replaces it.",
+        "Unqualified batch and executable names are searched through the semicolon-separated directories."
+      ],
+      "see_also": [
+        "CD",
+        "SET",
+        "TRUENAME"
+      ]
+    },
+    {
+      "topic_id": "PAUSE",
+      "aliases": [
+        "PAUSE"
+      ],
+      "title": "Pause a batch file",
+      "summary": "Suspends batch processing until a key is pressed.",
+      "syntax": [
+        "PAUSE"
+      ],
+      "details": [
+        "PAUSE prints a continuation message and suspends the active batch flow until the session receives a key."
+      ],
+      "see_also": [
+        "ECHO",
+        "REM"
+      ]
+    },
+    {
+      "topic_id": "PROMPT",
+      "aliases": [
+        "PROMPT"
+      ],
+      "title": "Command prompt format",
+      "summary": "Changes the command prompt.",
+      "syntax": [
+        "PROMPT [text]"
+      ],
+      "details": [
+        "PROMPT stores the supplied pattern in the PROMPT environment variable. With no operand, it restores the native default.",
+        "Dollar codes insert values such as drive, path, time, date, version, punctuation, escape, backspace, and a literal dollar sign."
+      ],
+      "see_also": [
+        "ECHO",
+        "SET"
+      ]
+    },
+    {
+      "topic_id": "QBASIC",
+      "aliases": [
+        "CKBASIC",
+        "QBASIC"
+      ],
+      "title": "BASIC interpreter and environment",
+      "summary": "Runs BASIC programs or opens the interactive CK-DOS 5 BASIC environment.",
+      "syntax": [
+        "QBASIC [/B] [/G] [/H] [/MBF] [/NOHI] [[/RUN] [drive:][path]file]",
+        "CKBASIC [/B] [/G] [/H] [/MBF] [/NOHI] [[/RUN] [drive:][path]file]"
+      ],
+      "details": [
+        "QBASIC (also invoked as CKBASIC) edits and runs structured BASIC source files (.BAS) with SUB and FUNCTION procedures, full-screen menus, and immediate expression evaluation.",
+        "/RUN loads and executes the named program immediately. /B selects monochrome attributes, /G enables fast CGA updates, /H selects 43/50-line EGA/VGA text mode, and /NOHI disables high-intensity background colors."
+      ],
+      "see_also": [
+        "EDIT",
+        "HELP"
+      ]
+    },
+    {
+      "topic_id": "RD",
+      "aliases": [
+        "RD",
+        "RMDIR"
+      ],
+      "title": "Remove a directory",
+      "summary": "Removes an empty directory.",
+      "syntax": [
+        "RD [drive:]path"
+      ],
+      "details": [
+        "RD removes one empty directory. It refuses the current directory and any directory that is not empty."
+      ],
+      "see_also": [
+        "CD",
+        "DIR",
+        "MD"
+      ]
+    },
+    {
+      "topic_id": "RECOVER",
+      "aliases": [
+        "RECOVER"
+      ],
+      "title": "Recover a damaged file",
+      "summary": "Recovers a file or a disk with damaged sectors.",
+      "syntax": [
+        "RECOVER [drive:][path]file",
+        "RECOVER drive:"
+      ],
+      "details": [
+        "Given a file, RECOVER reads it sector by sector and rebuilds it from the sectors that still read. The file keeps its name and loses whatever the damaged sectors held.",
+        "Given only a drive, RECOVER rebuilds the whole root directory and names what it finds FILE0001.REC upwards, so every file has to be identified by hand. Substituted, assigned, and network drives are refused."
+      ],
+      "see_also": [
+        "CHKDSK",
+        "DISKCOPY"
+      ]
+    },
+    {
+      "topic_id": "REM",
+      "aliases": [
+        "REM"
+      ],
+      "title": "Batch-file comment",
+      "summary": "Adds a comment to a batch file.",
+      "syntax": [
+        "REM [comment]"
+      ],
+      "details": [
+        "REM ignores the remainder of its line. It is commonly used to annotate batch files without changing execution."
+      ],
+      "see_also": [
+        "CALL",
+        "GOTO"
+      ]
+    },
+    {
+      "topic_id": "REN",
+      "aliases": [
+        "REN",
+        "RENAME"
+      ],
+      "title": "Rename files or directories",
+      "summary": "Renames a file or directory.",
+      "syntax": [
+        "REN [drive:][path]source destination"
+      ],
+      "details": [
+        "REN changes a file or directory name without moving it to another drive or directory.",
+        "A wildcard source may rename multiple entries when the destination is an unqualified DOS wildcard pattern."
+      ],
+      "see_also": [
+        "COPY",
+        "DEL",
+        "DIR"
+      ]
+    },
+    {
+      "topic_id": "REPLACE",
+      "aliases": [
+        "REPLACE"
+      ],
+      "title": "Replace files",
+      "summary": "Replaces or adds files from one directory to another.",
+      "syntax": [
+        "REPLACE source [drive:][path] [/A] [/P] [/R] [/S] [/U] [/W]"
+      ],
+      "details": [
+        "REPLACE copies files from the source specification over files of the same name in the target directory. Without a target operand the current directory is used.",
+        "/A adds only the files that are missing from the target and cannot be combined with /S or /U. /S searches every directory below the target for names to replace, and /U replaces only files older than their source.",
+        "/P asks before each file, /R allows read-only files to be overwritten, and /W waits for a key so that a diskette can be swapped before the search starts."
+      ],
+      "see_also": [
+        "COPY",
+        "XCOPY"
+      ]
+    },
+    {
+      "topic_id": "RESTORE",
+      "aliases": [
+        "RESTORE"
+      ],
+      "title": "Restore backed-up files",
+      "summary": "Restores files that were saved by BACKUP.",
+      "syntax": [
+        "RESTORE drive: [drive:][path]file [/S] [/P] [/M] [/N]",
+        "        [/B:date] [/A:date] [/E:time] [/L:time]"
+      ],
+      "details": [
+        "RESTORE reads a backup set from the first drive and writes the selected files back. Both the source drive and a target file specification are required.",
+        "/S restores subdirectories, /P asks before replacing hidden or read-only files, /M restores only files changed since the backup, and /N restores only files that no longer exist on the target.",
+        "/B and /A restore files last changed on or before, and on or after, the given date. /E and /L restore files last changed at or earlier than, and at or later than, the given time."
+      ],
+      "see_also": [
+        "BACKUP",
+        "COPY",
+        "XCOPY"
+      ]
+    },
+    {
+      "topic_id": "SET",
+      "aliases": [
+        "SET"
+      ],
+      "title": "Environment variables",
+      "summary": "Displays, sets, or removes environment variables.",
+      "syntax": [
+        "SET [name=[value]]"
+      ],
+      "details": [
+        "Without an assignment, SET lists environment variables. NAME=value creates or replaces a value; NAME= removes it.",
+        "Variable names are matched without regard to case and are stored in canonical uppercase."
+      ],
+      "see_also": [
+        "PATH",
+        "PROMPT"
+      ]
+    },
+    {
+      "topic_id": "SETVER",
+      "aliases": [
+        "SETVER"
+      ],
+      "title": "Version table manager",
+      "summary": "Displays or modifies the DOS version number reported to specific programs.",
+      "syntax": [
+        "SETVER [drive:path] [filename n.nn]",
+        "SETVER [drive:path] filename /DELETE [/QUIET]"
+      ],
+      "details": [
+        "With no program operand, SETVER lists the active version-table entries. Supplying an executable file name and version (such as 4.00 or 3.30) records the version DOS reports to that program via INT 21h function 30h.",
+        "/DELETE removes an entry from the table, and /QUIET suppresses confirmation messages during deletion. Load DEVICE=SETVER.EXE in CONFIG.SYS when persistent boot-time overrides are required."
+      ],
+      "see_also": [
+        "LOADFIX",
+        "MEM",
+        "VER"
+      ]
+    },
+    {
+      "topic_id": "SHIFT",
+      "aliases": [
+        "SHIFT"
+      ],
+      "title": "Shift batch parameters",
+      "summary": "Shifts batch parameters %1 through %9.",
+      "syntax": [
+        "SHIFT"
+      ],
+      "details": [
+        "SHIFT discards the current %1 batch argument and moves the remaining positional arguments down one number."
+      ],
+      "see_also": [
+        "CALL",
+        "GOTO"
+      ]
+    },
+    {
+      "topic_id": "SORT",
+      "aliases": [
+        "SORT"
+      ],
+      "title": "Sort text",
+      "summary": "Sorts text and writes the result.",
+      "syntax": [
+        "SORT [/R] [/+n]",
+        "SORT [/R] [/+n] < input > output"
+      ],
+      "details": [
+        "SORT reads the standard input, orders the lines it finds, and writes them to the standard output. It accepts no file operands, so its input and output have to be redirected or piped.",
+        "/R reverses the order. /+n starts each comparison at column n instead of the first column."
+      ],
+      "see_also": [
+        "FIND",
+        "MORE"
+      ]
+    },
+    {
+      "topic_id": "SUBST",
+      "aliases": [
+        "SUBST"
+      ],
+      "title": "Substitute a drive for a path",
+      "summary": "Substitutes a drive letter for a path.",
+      "syntax": [
+        "SUBST [drive1: [drive2:]path] [/D]"
+      ],
+      "details": [
+        "With no operands SUBST lists the substitutions in effect. Given a free drive letter and a path, that letter then stands for the path in every command that follows.",
+        "/D cancels the substitution for the named drive. A drive cannot be substituted for a path that lies on itself."
+      ],
+      "see_also": [
+        "JOIN",
+        "PATH",
+        "TRUENAME"
+      ]
+    },
+    {
+      "topic_id": "SYS",
+      "aliases": [
+        "SYS"
+      ],
+      "title": "Transfer the system",
+      "summary": "Copies the DOS system files to a disk.",
+      "syntax": [
+        "SYS [source-drive:] target-drive:"
+      ],
+      "details": [
+        "SYS copies IO.SYS and MSDOS.SYS to the target disk so that it can start DOS. A target drive is required and may not be the current drive; a source drive may be given in front of it.",
+        "The target has to have room for the system files where the loader expects them, which normally means a disk formatted with that space reserved. Network, substituted, and assigned drives are refused."
+      ],
+      "see_also": [
+        "FORMAT",
+        "VER"
+      ]
+    },
+    {
+      "topic_id": "TIME",
+      "aliases": [
+        "TIME"
+      ],
+      "title": "System time",
+      "summary": "Displays or sets the system time.",
+      "syntax": [
+        "TIME [hh:mm[:ss]]"
+      ],
+      "details": [
+        "With no operand, TIME displays the current time and prompts for a replacement. Enter accepts the current value.",
+        "Hours use 0 through 23; minutes and seconds use 0 through 59. A fractional suffix is accepted and ignored."
+      ],
+      "see_also": [
+        "DATE",
+        "VER"
+      ]
+    },
+    {
+      "topic_id": "TREE",
+      "aliases": [
+        "TREE"
+      ],
+      "title": "Directory tree",
+      "summary": "Displays the directory structure of a drive.",
+      "syntax": [
+        "TREE [drive:][path] [/F] [/A]"
+      ],
+      "details": [
+        "TREE walks the directories below the named path, or below the current directory when no path is given, and draws each level with the line-drawing characters of the active code page.",
+        "/F also lists the files in every directory it reaches. /A draws the tree with plain text characters instead, for printers and code pages that cannot show the line-drawing set."
+      ],
+      "see_also": [
+        "CD",
+        "DIR",
+        "JOIN"
+      ]
+    },
+    {
+      "topic_id": "TRUENAME",
+      "aliases": [
+        "TRUENAME"
+      ],
+      "title": "Resolve a DOS path",
+      "summary": "Displays the fully resolved path.",
+      "syntax": [
+        "TRUENAME [drive:][path]"
+      ],
+      "details": [
+        "TRUENAME resolves the supplied DOS path against the current drive and directory and prints its canonical drive-qualified form."
+      ],
+      "see_also": [
+        "CD",
+        "PATH"
+      ]
+    },
+    {
+      "topic_id": "TYPE",
+      "aliases": [
+        "TYPE"
+      ],
+      "title": "Display a text file",
+      "summary": "Displays a text file.",
+      "syntax": [
+        "TYPE [drive:][path]file"
+      ],
+      "details": [
+        "TYPE writes the selected file bytes to the current command output. It does not edit or convert the file."
+      ],
+      "see_also": [
+        "DIR",
+        "ECHO"
+      ]
+    },
+    {
+      "topic_id": "VER",
+      "aliases": [
+        "VER"
+      ],
+      "title": "CK-DOS 5 version",
+      "summary": "Displays the CK-DOS 5 operating-system version.",
+      "syntax": [
+        "VER"
+      ],
+      "details": [
+        "VER prints the active CK-DOS 5 version banner on standard output. Programs that query INT 21h function 30h receive the active DOS version or any per-program override configured with SETVER."
+      ],
+      "see_also": [
+        "HELP",
+        "SETVER",
+        "VOL"
+      ]
+    },
+    {
+      "topic_id": "VERIFY",
+      "aliases": [
+        "VERIFY"
+      ],
+      "title": "Write verification",
+      "summary": "Controls write verification.",
+      "syntax": [
+        "VERIFY [ON|OFF]"
+      ],
+      "details": [
+        "With no operand, VERIFY reports the current state. ON and OFF change the shell's write-verification setting."
+      ],
+      "see_also": [
+        "BREAK",
+        "COPY"
+      ]
+    },
+    {
+      "topic_id": "VOL",
+      "aliases": [
+        "VOL"
+      ],
+      "title": "Disk volume identity",
+      "summary": "Displays a disk volume label.",
+      "syntax": [
+        "VOL [drive:]"
+      ],
+      "details": [
+        "VOL prints the volume label and serial number for the selected drive, or for the current drive when none is supplied."
+      ],
+      "see_also": [
+        "DIR",
+        "VER"
+      ]
+    },
+    {
+      "topic_id": "XCOPY",
+      "aliases": [
+        "XCOPY"
+      ],
+      "title": "Copy directory trees",
+      "summary": "Copies files and directory trees.",
+      "syntax": [
+        "XCOPY source [destination] [/A|/M] [/D:date] [/E] [/P] [/S] [/V] [/W]"
+      ],
+      "details": [
+        "XCOPY copies the files that match the source specification, using the current directory when no destination is given. It reads as many files as memory allows before writing them, so it crosses a tree faster than a plain copy.",
+        "/S copies the directories below the source that contain files, and /E also creates the empty ones. /A copies files whose archive attribute is set and leaves it alone; /M copies the same files and clears it.",
+        "/D copies only files dated on or after the given date, written in the format of the active country setting. /P asks before each file, /V verifies each write, and /W waits for a key before the copy starts."
+      ],
+      "see_also": [
+        "COPY",
+        "REPLACE",
+        "TREE"
+      ]
+    }
+  ]
+}

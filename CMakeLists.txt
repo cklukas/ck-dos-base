@@ -110,6 +110,7 @@ if(DOSBASE_BUILD_TESTS)
         tests/test_convert.cpp
         tests/test_dbof.cpp
         tests/test_diskimg.cpp
+        tests/test_dos5_build.cpp
         tests/test_exe2bin.cpp
         tests/test_exefix.cpp
         tests/test_lib_dictionary.cpp

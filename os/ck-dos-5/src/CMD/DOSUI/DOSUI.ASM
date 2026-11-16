@@ -1,0 +1,1129 @@
+; Copyright (c) 2026 C. Klukas. All rights reserved.
+; SPDX-License-Identifier: MIT
+;
+; DOSUI-0 mode-3 backend.
+;
+; MASM 5.10 / 8086 source.  Assemble this file as an object and link it with
+; a tiny-model main object before converting the linked image to a COM file:
+;
+;   MASM DOSUI.ASM,DOSUI.OBJ,NUL,NUL;
+;   LINK  APP.OBJ+DOSUI.OBJ;
+;   EXE2BIN APP.EXE APP.COM
+;
+; There are no DOS, CK-DOS, or host callbacks here.  Video state and keyboard
+; records use the PC BIOS; text cells are written directly to color text RAM.
+
+.8086
+DOSUI_TEXT SEGMENT PUBLIC 'CODE'
+ASSUME CS:DOSUI_TEXT
+
+DOSUI_IMPLEMENTATION EQU 1
+INCLUDE DOSUI.INC
+
+PUBLIC DOSUI_INIT
+PUBLIC DOSUI_SHUTDOWN
+PUBLIC DOSUI_CLEAR
+PUBLIC DOSUI_FILL_ROW
+PUBLIC DOSUI_WRITE_Z
+PUBLIC DOSUI_SET_CURSOR
+PUBLIC DOSUI_SET_CURSOR_SHAPE
+PUBLIC DOSUI_SHOW_CURSOR
+PUBLIC DOSUI_HIDE_CURSOR
+PUBLIC DOSUI_READ_KEY
+PUBLIC DOSUI_MOUSE_INIT
+PUBLIC DOSUI_MOUSE_SHUTDOWN
+PUBLIC DOSUI_MOUSE_PRESENT
+PUBLIC DOSUI_READ_EVENT
+PUBLIC DOSUI_ALT_TAP
+PUBLIC DOSUI_DRAW_MODAL
+PUBLIC DOSUI_MENU_BOX
+PUBLIC DOSUI_MENU_SHADOW
+PUBLIC DOSUI_MENU_SEPARATOR
+PUBLIC DOSUI_MENU_ITEM
+PUBLIC DOSUI_MENU_SELECTED
+PUBLIC DOSUI_MENU_ITEM_WIDTH
+PUBLIC DOSUI_MENU_MASK_VECTOR
+PUBLIC DOSUI_ATTR_MAP
+PUBLIC DOSUI_ATTR_RAW
+PUBLIC DOSUI_SHADOW_ATTR
+PUBLIC DOSUI_ROWS
+PUBLIC DOSUI_ROW_OFFSET
+PUBLIC DOSUI_SAVE_SEGMENT
+
+DOSUI_VIDEO_SEGMENT EQU 0B800h
+DOSUI_ROW_BYTES     EQU 160
+
+DOSUI_ACTIVE           DB 0
+DOSUI_OLD_MODE         DB 3
+DOSUI_OLD_PAGE         DB 0
+DOSUI_OLD_CURSOR_SHAPE DW 0607h
+DOSUI_OLD_CURSOR_POS   DW 0
+DOSUI_CURSOR_SHAPE     DW 0607h
+DOSUI_MOUSE_PRESENT    DB 0
+DOSUI_ALT_TAP          DB 0
+DOSUI_ALT_STATE        DB 0
+; An application's display mode (EDIT /B, /NOHI) can recolour everything
+; DOSUI writes: DOSUI_ATTR_MAP names a 256-byte attribute translation table
+; (0 = none), DOSUI_ATTR_RAW set makes the next writes bypass it (the user's
+; own text colours), and DOSUI_SHADOW_ATTR is the drop-shadow attribute.
+DOSUI_ATTR_MAP         DW 0
+DOSUI_ATTR_RAW         DB 0
+DOSUI_SHADOW_ATTR      DB 08h
+; The text rows the screen has (EDIT /H selects 43 or 50), and a row offset
+; added to every row drawn, positioned or clicked: an application lays its
+; dialogs out for 25 rows and centres them on a taller screen with it.
+DOSUI_ROWS             DB DOSUI_SCREEN_ROWS
+DOSUI_ROW_OFFSET       DB 0
+; An application that hands DOSUI_INIT a segment of DOSUI_SAVE_PARAGRAPHS
+; gets the caller's text screen back at DOSUI_SHUTDOWN, as DOS 5 EDIT
+; leaves the screen it found (its row count included).
+DOSUI_SAVE_SEGMENT     DW 0
+DOSUI_SAVED_CELLS      DW 0
+DOSUI_SAVED_OFFSET     DW 0
+DOSUI_OLD_ROWS         DB DOSUI_SCREEN_ROWS
+
+; BL = an attribute; BL returns it through DOSUI_ATTR_MAP unless raw.
+DOSUI_MAP_ATTR PROC NEAR
+    CMP WORD PTR CS:DOSUI_ATTR_MAP,0
+    JE SHORT DOSUI_MAP_ATTR_DONE
+    CMP BYTE PTR CS:DOSUI_ATTR_RAW,0
+    JNE SHORT DOSUI_MAP_ATTR_DONE
+    PUSH AX
+    PUSH SI
+    MOV SI,CS:DOSUI_ATTR_MAP
+    XOR AX,AX
+    MOV AL,BL
+    ADD SI,AX
+    MOV BL,CS:[SI]
+    POP SI
+    POP AX
+DOSUI_MAP_ATTR_DONE:
+    RET
+DOSUI_MAP_ATTR ENDP
+
+; Save the current BIOS video state and enter standard color text mode 3.
+DOSUI_INIT PROC NEAR
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DX
+
+    CMP BYTE PTR CS:DOSUI_ACTIVE,0
+    JNE SHORT DOSUI_INIT_DONE
+
+    MOV AH,0Fh
+    INT 10h
+    MOV CS:DOSUI_OLD_MODE,AL
+    MOV CS:DOSUI_OLD_PAGE,BH
+
+    MOV AH,03h
+    INT 10h
+    MOV CS:DOSUI_OLD_CURSOR_SHAPE,CX
+    MOV CS:DOSUI_CURSOR_SHAPE,CX
+    MOV CS:DOSUI_OLD_CURSOR_POS,DX
+    CALL DOSUI_SAVE_TEXT
+
+    MOV AX,0003h
+    INT 10h
+    MOV BYTE PTR CS:DOSUI_ACTIVE,1
+
+DOSUI_INIT_DONE:
+    POP DX
+    POP CX
+    POP BX
+    POP AX
+    RET
+DOSUI_INIT ENDP
+
+; Restore the BIOS mode, active page, cursor shape, and cursor position.
+DOSUI_SHUTDOWN PROC NEAR
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DX
+
+    CMP BYTE PTR CS:DOSUI_ACTIVE,0
+    JE SHORT DOSUI_SHUTDOWN_DONE
+
+    MOV AL,CS:DOSUI_OLD_MODE
+    XOR AH,AH
+    INT 10h
+
+    CMP BYTE PTR CS:DOSUI_OLD_ROWS,DOSUI_SCREEN_ROWS
+    JBE SHORT DOSUI_SHUTDOWN_ROWS_DONE
+    MOV AX,1112h                ; the 8x8 font: 43 or 50 rows again
+    XOR BL,BL
+    INT 10h
+DOSUI_SHUTDOWN_ROWS_DONE:
+    MOV AH,05h
+    MOV AL,CS:DOSUI_OLD_PAGE
+    INT 10h
+    CALL DOSUI_RESTORE_TEXT
+
+    MOV AH,01h
+    MOV CX,CS:DOSUI_OLD_CURSOR_SHAPE
+    INT 10h
+
+    MOV AH,02h
+    MOV BH,CS:DOSUI_OLD_PAGE
+    MOV DX,CS:DOSUI_OLD_CURSOR_POS
+    INT 10h
+
+    MOV BYTE PTR CS:DOSUI_ACTIVE,0
+
+DOSUI_SHUTDOWN_DONE:
+    POP DX
+    POP CX
+    POP BX
+    POP AX
+    RET
+DOSUI_SHUTDOWN ENDP
+
+; The text cells of the caller's screen, into DOSUI_SAVE_SEGMENT: a text
+; mode only (2, 3 or 7), at most DOSUI_SAVE_PARAGRAPHS of them.
+DOSUI_SAVE_TEXT PROC NEAR
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH SI
+    PUSH DI
+    PUSH DS
+    PUSH ES
+    MOV WORD PTR CS:DOSUI_SAVED_CELLS,0
+    MOV AX,40h
+    MOV DS,AX
+    MOV AL,DS:[84h]
+    INC AL
+    CMP AL,DOSUI_SCREEN_ROWS
+    JA SHORT DOSUI_SAVE_TEXT_ROWS
+    MOV AL,DOSUI_SCREEN_ROWS
+DOSUI_SAVE_TEXT_ROWS:
+    MOV CS:DOSUI_OLD_ROWS,AL
+    CMP WORD PTR CS:DOSUI_SAVE_SEGMENT,0
+    JE SHORT DOSUI_SAVE_TEXT_DONE
+    MOV BX,0B800h
+    MOV AH,CS:DOSUI_OLD_MODE
+    AND AH,7Fh
+    CMP AH,7
+    JNE SHORT DOSUI_SAVE_TEXT_COLOUR
+    MOV BX,0B000h
+    JMP SHORT DOSUI_SAVE_TEXT_MODE_OK
+DOSUI_SAVE_TEXT_COLOUR:
+    CMP AH,2
+    JB SHORT DOSUI_SAVE_TEXT_DONE
+    CMP AH,3
+    JA SHORT DOSUI_SAVE_TEXT_DONE
+DOSUI_SAVE_TEXT_MODE_OK:
+    MUL BYTE PTR DS:[4Ah]       ; rows x columns
+    CMP AX,DOSUI_SAVE_PARAGRAPHS*8
+    JBE SHORT DOSUI_SAVE_TEXT_FITS
+    MOV AX,DOSUI_SAVE_PARAGRAPHS*8
+DOSUI_SAVE_TEXT_FITS:
+    MOV CX,AX
+    MOV CS:DOSUI_SAVED_CELLS,AX
+    MOV SI,DS:[4Eh]             ; the active page's start
+    MOV CS:DOSUI_SAVED_OFFSET,SI
+    MOV ES,CS:DOSUI_SAVE_SEGMENT
+    MOV DS,BX
+    XOR DI,DI
+    CLD
+    REP MOVSW
+DOSUI_SAVE_TEXT_DONE:
+    POP ES
+    POP DS
+    POP DI
+    POP SI
+    POP CX
+    POP BX
+    POP AX
+    RET
+DOSUI_SAVE_TEXT ENDP
+
+DOSUI_RESTORE_TEXT PROC NEAR
+    PUSH AX
+    PUSH CX
+    PUSH SI
+    PUSH DI
+    PUSH DS
+    PUSH ES
+    MOV CX,CS:DOSUI_SAVED_CELLS
+    JCXZ DOSUI_RESTORE_TEXT_DONE
+    MOV AX,0B800h
+    CMP BYTE PTR CS:DOSUI_OLD_MODE,7
+    JNE SHORT DOSUI_RESTORE_TEXT_SEGMENT
+    MOV AX,0B000h
+DOSUI_RESTORE_TEXT_SEGMENT:
+    MOV ES,AX
+    MOV DI,CS:DOSUI_SAVED_OFFSET
+    MOV DS,CS:DOSUI_SAVE_SEGMENT
+    XOR SI,SI
+    CLD
+    REP MOVSW
+DOSUI_RESTORE_TEXT_DONE:
+    POP ES
+    POP DS
+    POP DI
+    POP SI
+    POP CX
+    POP AX
+    RET
+DOSUI_RESTORE_TEXT ENDP
+
+; Fill all 2,000 mode-3 cells with attributed spaces.
+DOSUI_CLEAR PROC NEAR
+    PUSHF
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DI
+    PUSH ES
+
+    MOV BL,AL
+    CALL DOSUI_MAP_ATTR
+    MOV AL,CS:DOSUI_ROWS
+    MOV CL,DOSUI_SCREEN_COLUMNS
+    MUL CL
+    MOV CX,AX
+    XOR DI,DI
+    MOV AX,DOSUI_VIDEO_SEGMENT
+    MOV ES,AX
+    MOV AL,' '
+    MOV AH,BL
+    CLD
+    REP STOSW
+
+    POP ES
+    POP DI
+    POP CX
+    POP BX
+    POP AX
+    POPF
+    RET
+DOSUI_CLEAR ENDP
+
+; Fill CX cells on row DH from column DL with character AL and attribute BL.
+DOSUI_FILL_ROW PROC NEAR
+    PUSHF
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DX
+    PUSH BP
+    PUSH DI
+    PUSH ES
+
+    ADD DH,CS:DOSUI_ROW_OFFSET
+    CMP DH,CS:DOSUI_ROWS
+    JAE SHORT DOSUI_FILL_ROW_DONE
+    CMP DL,DOSUI_SCREEN_COLUMNS
+    JAE SHORT DOSUI_FILL_ROW_DONE
+
+    CALL DOSUI_MAP_ATTR
+    MOV AH,BL
+    MOV BP,AX
+
+    XOR AX,AX
+    MOV AL,DL
+    MOV BX,DOSUI_SCREEN_COLUMNS
+    SUB BX,AX
+    CMP CX,BX
+    JBE SHORT DOSUI_FILL_ROW_COUNT_OK
+    MOV CX,BX
+
+DOSUI_FILL_ROW_COUNT_OK:
+    XOR AX,AX
+    MOV AL,DH
+    MOV BL,DOSUI_ROW_BYTES
+    MUL BL
+    MOV DI,AX
+
+    XOR AX,AX
+    MOV AL,DL
+    SHL AX,1
+    ADD DI,AX
+
+    MOV AX,DOSUI_VIDEO_SEGMENT
+    MOV ES,AX
+    MOV AX,BP
+    CLD
+    REP STOSW
+
+DOSUI_FILL_ROW_DONE:
+    POP ES
+    POP DI
+    POP BP
+    POP DX
+    POP CX
+    POP BX
+    POP AX
+    POPF
+    RET
+DOSUI_FILL_ROW ENDP
+
+; Write DS:SI zero-terminated text at DH:DL using attribute BL.
+DOSUI_WRITE_Z PROC NEAR
+    PUSHF
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DX
+    PUSH SI
+    PUSH DI
+    PUSH ES
+
+    ADD DH,CS:DOSUI_ROW_OFFSET
+    CMP DH,CS:DOSUI_ROWS
+    JAE SHORT DOSUI_WRITE_Z_DONE
+    CMP DL,DOSUI_SCREEN_COLUMNS
+    JAE SHORT DOSUI_WRITE_Z_DONE
+
+    CALL DOSUI_MAP_ATTR
+    MOV BH,BL
+
+    XOR AX,AX
+    MOV AL,DH
+    MOV BL,DOSUI_ROW_BYTES
+    MUL BL
+    MOV DI,AX
+
+    XOR AX,AX
+    MOV AL,DL
+    SHL AX,1
+    ADD DI,AX
+
+    XOR CX,CX
+    MOV CL,DOSUI_SCREEN_COLUMNS
+    SUB CL,DL
+
+    MOV AX,DOSUI_VIDEO_SEGMENT
+    MOV ES,AX
+    CLD
+
+DOSUI_WRITE_Z_NEXT:
+    JCXZ DOSUI_WRITE_Z_DONE
+    LODSB
+    OR AL,AL
+    JZ SHORT DOSUI_WRITE_Z_DONE
+    MOV AH,BH
+    STOSW
+    LOOP DOSUI_WRITE_Z_NEXT
+
+DOSUI_WRITE_Z_DONE:
+    POP ES
+    POP DI
+    POP SI
+    POP DX
+    POP CX
+    POP BX
+    POP AX
+    POPF
+    RET
+DOSUI_WRITE_Z ENDP
+
+; Set the page-zero hardware cursor through BIOS INT 10h/AH=02h.
+DOSUI_SET_CURSOR PROC NEAR
+    PUSH AX
+    PUSH BX
+    PUSH DX
+
+    ADD DH,CS:DOSUI_ROW_OFFSET
+    CMP DH,CS:DOSUI_ROWS
+    JAE SHORT DOSUI_SET_CURSOR_DONE
+    CMP DL,DOSUI_SCREEN_COLUMNS
+    JAE SHORT DOSUI_SET_CURSOR_DONE
+
+    MOV AH,02h
+    XOR BH,BH
+    INT 10h
+
+DOSUI_SET_CURSOR_DONE:
+    POP DX
+    POP BX
+    POP AX
+    RET
+DOSUI_SET_CURSOR ENDP
+
+; Select and immediately apply the application's visible cursor shape.
+DOSUI_SET_CURSOR_SHAPE PROC NEAR
+    PUSH AX
+
+    MOV CS:DOSUI_CURSOR_SHAPE,CX
+    MOV AH,01h
+    INT 10h
+
+    POP AX
+    RET
+DOSUI_SET_CURSOR_SHAPE ENDP
+
+; Restore the application's selected visible cursor shape.
+DOSUI_SHOW_CURSOR PROC NEAR
+    PUSH AX
+    PUSH CX
+
+    MOV AH,01h
+    MOV CX,CS:DOSUI_CURSOR_SHAPE
+    INT 10h
+
+    POP CX
+    POP AX
+    RET
+DOSUI_SHOW_CURSOR ENDP
+
+; Suppress the hardware cursor while a menu or command-only dialog has focus.
+DOSUI_HIDE_CURSOR PROC NEAR
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DX
+
+    MOV AH,02h
+    XOR BX,BX
+    XOR DX,DX
+    INT 10h
+
+    MOV AH,01h
+    MOV CX,2000h
+    INT 10h
+
+    POP DX
+    POP CX
+    POP BX
+    POP AX
+    RET
+DOSUI_HIDE_CURSOR ENDP
+
+; Wait for one BIOS key record.  AX and FLAGS are intentional outputs.
+DOSUI_READ_KEY PROC NEAR
+    PUSH BX
+    PUSH CX
+    PUSH DX
+    PUSH BP
+    PUSH SI
+    PUSH DI
+    PUSH DS
+    PUSH ES
+
+    MOV AH,10h                  ; enhanced interface: every 101-key key
+    INT 16h
+    CMP AL,0E0h                 ; E0-prefixed keys read as extended keys
+    JNE DOSUI_READ_KEY_READY
+    OR AH,AH
+    JZ DOSUI_READ_KEY_READY
+    XOR AL,AL
+DOSUI_READ_KEY_READY:
+
+    POP ES
+    POP DS
+    POP DI
+    POP SI
+    POP BP
+    POP DX
+    POP CX
+    POP BX
+    RET
+DOSUI_READ_KEY ENDP
+
+; Detect an installed INT 33h driver.  A driverless system may leave vector
+; 33h unset or pointed at a bare IRET stub, and calling through either must
+; not be trusted, so the vector is inspected through DOS INT 21h/35h first
+; and only then is function 0000h required to answer with AX = FFFFh.
+DOSUI_MOUSE_INIT PROC NEAR
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DX
+    PUSH ES
+
+    MOV CS:DOSUI_MOUSE_PRESENT,0
+    MOV AX,3533h
+    INT 21h
+    MOV AX,ES
+    OR AX,BX
+    JZ DOSUI_MOUSE_INIT_DONE
+    CMP BYTE PTR ES:[BX],0CFh
+    JE DOSUI_MOUSE_INIT_DONE
+    XOR AX,AX
+    INT 33h
+    CMP AX,0FFFFh
+    JNE DOSUI_MOUSE_INIT_DONE
+    MOV CS:DOSUI_MOUSE_PRESENT,1
+DOSUI_MOUSE_INIT_DONE:
+    POP ES
+    POP DX
+    POP CX
+    POP BX
+    POP AX
+    RET
+DOSUI_MOUSE_INIT ENDP
+
+; Reset a detected driver so its cursor is hidden and any user handlers are
+; detached before the application releases the screen.
+DOSUI_MOUSE_SHUTDOWN PROC NEAR
+    PUSH AX
+    PUSH BX
+
+    CMP CS:DOSUI_MOUSE_PRESENT,0
+    JE DOSUI_MOUSE_SHUTDOWN_DONE
+    XOR AX,AX
+    INT 33h
+DOSUI_MOUSE_SHUTDOWN_DONE:
+    POP BX
+    POP AX
+    RET
+DOSUI_MOUSE_SHUTDOWN ENDP
+
+; Wait for one input event.  CF clear: AL/AH hold a BIOS key record.  CF
+; set: the left button was pressed at cell DH (row) DL (column).  The
+; driver's cursor is visible only while this procedure is waiting, so the
+; caller never draws underneath it.  Presses are consumed through function
+; 0005h, whose counter also covers a press that landed while the caller was
+; drawing; the reported cell is the position of the latest press.
+DOSUI_READ_EVENT PROC NEAR
+    PUSH BX
+    PUSH CX
+    PUSH DX
+    PUSH BP
+    PUSH SI
+    PUSH DI
+    PUSH DS
+    PUSH ES
+
+    CMP CS:DOSUI_MOUSE_PRESENT,0
+    JNE DOSUI_READ_EVENT_POLL
+    CMP CS:DOSUI_ALT_TAP,0
+    JNE DOSUI_READ_EVENT_WAIT
+    MOV AH,10h
+    INT 16h
+    JMP DOSUI_READ_EVENT_KEY_OUT
+
+DOSUI_READ_EVENT_POLL:
+    MOV AX,0001h
+    INT 33h
+DOSUI_READ_EVENT_WAIT:
+    MOV AH,11h
+    INT 16h
+    JNZ DOSUI_READ_EVENT_KEY
+    CALL DOSUI_POLL_ALT
+    JC DOSUI_READ_EVENT_ALT
+    CMP CS:DOSUI_MOUSE_PRESENT,0
+    JE DOSUI_READ_EVENT_IDLE
+    MOV AX,0005h
+    XOR BX,BX
+    INT 33h
+    OR BX,BX
+    JNZ DOSUI_READ_EVENT_PRESS
+DOSUI_READ_EVENT_IDLE:
+    STI
+    HLT
+    JMP DOSUI_READ_EVENT_WAIT
+
+DOSUI_READ_EVENT_ALT:
+    MOV AX,3800h
+    JMP SHORT DOSUI_READ_EVENT_HIDE
+
+DOSUI_READ_EVENT_KEY:
+    AND CS:DOSUI_ALT_STATE,1            ; a key while Alt is down is a chord
+    MOV AH,10h
+    INT 16h
+DOSUI_READ_EVENT_HIDE:
+    CMP CS:DOSUI_MOUSE_PRESENT,0
+    JE DOSUI_READ_EVENT_KEY_OUT
+    PUSH AX
+    MOV AX,0002h
+    INT 33h
+    POP AX
+DOSUI_READ_EVENT_KEY_OUT:
+    ; The enhanced interface (AH=10h/11h) delivers every key of the 101-key
+    ; keyboard, Ctrl+Insert and F11/F12 included, which AH=00h would drop.
+    ; It marks E0-prefixed keys with AL=E0h, and keys only it reports (Alt
+    ; with a keypad key among them) with AL=F0h; callers see both as
+    ; extended keys (AL=00h). AL=E0h or F0h with AH=00h is that character
+    ; typed with Alt and the keypad.
+    CMP AL,0E0h
+    JE DOSUI_READ_EVENT_MARKED
+    CMP AL,0F0h
+    JNE DOSUI_READ_EVENT_KEY_READY
+DOSUI_READ_EVENT_MARKED:
+    OR AH,AH
+    JZ DOSUI_READ_EVENT_KEY_READY
+    XOR AL,AL
+DOSUI_READ_EVENT_KEY_READY:
+    POP ES
+    POP DS
+    POP DI
+    POP SI
+    POP BP
+    POP DX
+    POP CX
+    POP BX
+    CLC
+    RET
+
+DOSUI_READ_EVENT_PRESS:
+    AND CS:DOSUI_ALT_STATE,1            ; a click while Alt is down is no tap
+    PUSH CX
+    PUSH DX
+    MOV AX,0002h
+    INT 33h
+    POP DX
+    POP CX
+    MOV AX,CX
+    MOV CL,3
+    SHR AX,CL
+    SHR DX,CL
+    MOV DH,DL
+    SUB DH,CS:DOSUI_ROW_OFFSET
+    MOV DL,AL
+    POP ES
+    POP DS
+    POP DI
+    POP SI
+    POP BP
+    POP AX
+    POP CX
+    POP BX
+    STC
+    RET
+DOSUI_READ_EVENT ENDP
+
+; Track the Alt shift state between polls. CF is set when Alt went up after a
+; press that saw no key and no click in between: a lone Alt tap. State bit 0
+; is "Alt is down", bit 1 "nothing else happened since it went down".
+DOSUI_POLL_ALT PROC NEAR
+    CMP CS:DOSUI_ALT_TAP,0
+    JE SHORT DOSUI_POLL_ALT_NONE
+    MOV AH,02h
+    INT 16h
+    TEST AL,08h
+    JZ SHORT DOSUI_POLL_ALT_UP
+    TEST CS:DOSUI_ALT_STATE,1
+    JNZ SHORT DOSUI_POLL_ALT_NONE
+    MOV CS:DOSUI_ALT_STATE,3
+    JMP SHORT DOSUI_POLL_ALT_NONE
+DOSUI_POLL_ALT_UP:
+    MOV AL,CS:DOSUI_ALT_STATE
+    MOV CS:DOSUI_ALT_STATE,0
+    CMP AL,3
+    JNE SHORT DOSUI_POLL_ALT_NONE
+    STC
+    RET
+DOSUI_POLL_ALT_NONE:
+    CLC
+    RET
+DOSUI_POLL_ALT ENDP
+
+; Draw and fill the inclusive rectangle described by DS:SI.
+DOSUI_DRAW_MODAL PROC NEAR
+    PUSHF
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DX
+    PUSH BP
+    PUSH SI
+    PUSH DI
+
+    MOV BP,SI
+
+    MOV AL,BYTE PTR DS:[BP+DOSUI_RECT_TOP]
+    CMP AL,CS:DOSUI_ROWS
+    JB SHORT DOSUI_DRAW_MODAL_TOP_OK
+    JMP DOSUI_DRAW_MODAL_DONE
+DOSUI_DRAW_MODAL_TOP_OK:
+    MOV AH,BYTE PTR DS:[BP+DOSUI_RECT_BOTTOM]
+    CMP AH,CS:DOSUI_ROWS
+    JB SHORT DOSUI_DRAW_MODAL_BOTTOM_OK
+    JMP DOSUI_DRAW_MODAL_DONE
+DOSUI_DRAW_MODAL_BOTTOM_OK:
+    CMP AL,AH
+    JB SHORT DOSUI_DRAW_MODAL_ROWS_OK
+    JMP DOSUI_DRAW_MODAL_DONE
+DOSUI_DRAW_MODAL_ROWS_OK:
+
+    MOV AL,BYTE PTR DS:[BP+DOSUI_RECT_LEFT]
+    CMP AL,DOSUI_SCREEN_COLUMNS
+    JB SHORT DOSUI_DRAW_MODAL_LEFT_OK
+    JMP DOSUI_DRAW_MODAL_DONE
+DOSUI_DRAW_MODAL_LEFT_OK:
+    MOV AH,BYTE PTR DS:[BP+DOSUI_RECT_RIGHT]
+    CMP AH,DOSUI_SCREEN_COLUMNS
+    JB SHORT DOSUI_DRAW_MODAL_RIGHT_OK
+    JMP DOSUI_DRAW_MODAL_DONE
+DOSUI_DRAW_MODAL_RIGHT_OK:
+    CMP AL,AH
+    JB SHORT DOSUI_DRAW_MODAL_COLUMNS_OK
+    JMP DOSUI_DRAW_MODAL_DONE
+DOSUI_DRAW_MODAL_COLUMNS_OK:
+
+    ; Top edge and corners.
+    MOV DH,BYTE PTR DS:[BP+DOSUI_RECT_TOP]
+    MOV DL,BYTE PTR DS:[BP+DOSUI_RECT_LEFT]
+    XOR CX,CX
+    MOV CL,BYTE PTR DS:[BP+DOSUI_RECT_RIGHT]
+    SUB CL,DL
+    INC CX
+    MOV AL,DOSUI_BOX_HORIZONTAL
+    MOV BL,BYTE PTR DS:[BP+DOSUI_RECT_FRAME_ATTR]
+    CALL DOSUI_FILL_ROW
+
+    MOV CX,1
+    MOV AL,DOSUI_BOX_TOP_LEFT
+    CALL DOSUI_FILL_ROW
+    MOV DL,BYTE PTR DS:[BP+DOSUI_RECT_RIGHT]
+    MOV AL,DOSUI_BOX_TOP_RIGHT
+    CALL DOSUI_FILL_ROW
+
+    ; Interior rows: fill first, then replace the edge cells.
+    XOR AX,AX
+    MOV AL,BYTE PTR DS:[BP+DOSUI_RECT_TOP]
+    INC AX
+    MOV DI,AX
+
+DOSUI_DRAW_MODAL_INTERIOR:
+    XOR AX,AX
+    MOV AL,BYTE PTR DS:[BP+DOSUI_RECT_BOTTOM]
+    CMP DI,AX
+    JAE SHORT DOSUI_DRAW_MODAL_BOTTOM
+
+    MOV AX,DI
+    MOV DH,AL
+    MOV DL,BYTE PTR DS:[BP+DOSUI_RECT_LEFT]
+    XOR CX,CX
+    MOV CL,BYTE PTR DS:[BP+DOSUI_RECT_RIGHT]
+    SUB CL,DL
+    INC CX
+    MOV AL,' '
+    MOV BL,BYTE PTR DS:[BP+DOSUI_RECT_FILL_ATTR]
+    CALL DOSUI_FILL_ROW
+
+    MOV CX,1
+    MOV AL,DOSUI_BOX_VERTICAL
+    MOV BL,BYTE PTR DS:[BP+DOSUI_RECT_FRAME_ATTR]
+    CALL DOSUI_FILL_ROW
+    MOV DL,BYTE PTR DS:[BP+DOSUI_RECT_RIGHT]
+    CALL DOSUI_FILL_ROW
+
+    INC DI
+    JMP DOSUI_DRAW_MODAL_INTERIOR
+
+DOSUI_DRAW_MODAL_BOTTOM:
+    ; Bottom edge and corners.
+    MOV DH,BYTE PTR DS:[BP+DOSUI_RECT_BOTTOM]
+    MOV DL,BYTE PTR DS:[BP+DOSUI_RECT_LEFT]
+    XOR CX,CX
+    MOV CL,BYTE PTR DS:[BP+DOSUI_RECT_RIGHT]
+    SUB CL,DL
+    INC CX
+    MOV AL,DOSUI_BOX_HORIZONTAL
+    MOV BL,BYTE PTR DS:[BP+DOSUI_RECT_FRAME_ATTR]
+    CALL DOSUI_FILL_ROW
+
+    MOV CX,1
+    MOV AL,DOSUI_BOX_BOTTOM_LEFT
+    CALL DOSUI_FILL_ROW
+    MOV DL,BYTE PTR DS:[BP+DOSUI_RECT_RIGHT]
+    MOV AL,DOSUI_BOX_BOTTOM_RIGHT
+    CALL DOSUI_FILL_ROW
+
+DOSUI_DRAW_MODAL_DONE:
+    POP DI
+    POP SI
+    POP BP
+    POP DX
+    POP CX
+    POP BX
+    POP AX
+    POPF
+    RET
+DOSUI_DRAW_MODAL ENDP
+
+
+; ---------------------------------------------------------------------------
+; Menu and drop-down frame rendering, shared by the applications that draw a
+; DOS 5 style menu bar. These primitives draw; they decide nothing. Which
+; menus exist, which item is a command, and whether an item is enabled stay
+; with the application, so a program with two menus does not inherit the
+; state machine of a program with five.
+; ---------------------------------------------------------------------------
+
+; Caller-owned rendering state, set before the item calls that consume it.
+DOSUI_MENU_SELECTED   DB 0
+DOSUI_MENU_ITEM_WIDTH DB 0
+DOSUI_MENU_DRAW_ITEM  DB 0
+DOSUI_MENU_DRAW_ACCEL DB 0
+DOSUI_MENU_DRAW_COLUMN DB 0
+DOSUI_MENU_DRAW_TEXT_POINTER DW 0
+DOSUI_MENU_DRAW_TEXT_ATTR DB 70H
+DOSUI_MENU_DRAW_ACCEL_ATTR DB 71H
+DOSUI_MENU_DRAW_ENABLED DB 0
+DOSUI_MENU_MASK_VECTOR DW OFFSET DOSUI_MENU_MASK_ALL ; near proc: out AL = enabled mask
+
+; Default policy: every item is enabled. An application whose items are always
+; available needs no mask of its own; one that disables items points the vector
+; at its own routine.
+DOSUI_MENU_MASK_ALL PROC NEAR
+        MOV     AL,0FFH
+        RET
+DOSUI_MENU_MASK_ALL ENDP
+
+; Draw the single-line DOS 5 drop-down frame described by DS:SI, followed by
+; the two-column/right and one-row/bottom attribute-only shadow.  Preserving
+; covered characters in the shadow is important for the editor scroll rails.
+DOSUI_MENU_BOX PROC NEAR
+        PUSH    AX
+        PUSH    BX
+        PUSH    CX
+        PUSH    DX
+        PUSH    BP
+        PUSH    DI
+        MOV     BP,SI
+
+        MOV     DH,BYTE PTR DS:[BP+DOSUI_RECT_TOP]
+        MOV     DL,BYTE PTR DS:[BP+DOSUI_RECT_LEFT]
+        XOR     CX,CX
+        MOV     CL,BYTE PTR DS:[BP+DOSUI_RECT_RIGHT]
+        SUB     CL,DL
+        INC     CX
+        MOV     AL,0C4H
+        MOV     BL,BYTE PTR DS:[BP+DOSUI_RECT_FRAME_ATTR]
+        CALL    DOSUI_FILL_ROW
+        MOV     CX,1
+        MOV     AL,0DAH
+        CALL    DOSUI_FILL_ROW
+        MOV     DL,BYTE PTR DS:[BP+DOSUI_RECT_RIGHT]
+        MOV     AL,0BFH
+        CALL    DOSUI_FILL_ROW
+
+        XOR     AX,AX
+        MOV     AL,BYTE PTR DS:[BP+DOSUI_RECT_TOP]
+        INC     AX
+        MOV     DI,AX
+DOSUI_MENU_BOX_INTERIOR:
+        XOR     AX,AX
+        MOV     AL,BYTE PTR DS:[BP+DOSUI_RECT_BOTTOM]
+        CMP     DI,AX
+        JAE     SHORT DOSUI_MENU_BOX_BOTTOM
+        MOV     AX,DI
+        MOV     DH,AL
+        MOV     DL,BYTE PTR DS:[BP+DOSUI_RECT_LEFT]
+        XOR     CX,CX
+        MOV     CL,BYTE PTR DS:[BP+DOSUI_RECT_RIGHT]
+        SUB     CL,DL
+        INC     CX
+        MOV     AL,' '
+        MOV     BL,BYTE PTR DS:[BP+DOSUI_RECT_FILL_ATTR]
+        CALL    DOSUI_FILL_ROW
+        MOV     CX,1
+        MOV     AL,0B3H
+        MOV     BL,BYTE PTR DS:[BP+DOSUI_RECT_FRAME_ATTR]
+        CALL    DOSUI_FILL_ROW
+        MOV     DL,BYTE PTR DS:[BP+DOSUI_RECT_RIGHT]
+        CALL    DOSUI_FILL_ROW
+        INC     DI
+        JMP     DOSUI_MENU_BOX_INTERIOR
+
+DOSUI_MENU_BOX_BOTTOM:
+        MOV     DH,BYTE PTR DS:[BP+DOSUI_RECT_BOTTOM]
+        MOV     DL,BYTE PTR DS:[BP+DOSUI_RECT_LEFT]
+        XOR     CX,CX
+        MOV     CL,BYTE PTR DS:[BP+DOSUI_RECT_RIGHT]
+        SUB     CL,DL
+        INC     CX
+        MOV     AL,0C4H
+        MOV     BL,BYTE PTR DS:[BP+DOSUI_RECT_FRAME_ATTR]
+        CALL    DOSUI_FILL_ROW
+        MOV     CX,1
+        MOV     AL,0C0H
+        CALL    DOSUI_FILL_ROW
+        MOV     DL,BYTE PTR DS:[BP+DOSUI_RECT_RIGHT]
+        MOV     AL,0D9H
+        CALL    DOSUI_FILL_ROW
+
+        MOV     SI,BP
+        CALL    DOSUI_MENU_SHADOW
+        POP     DI
+        POP     BP
+        POP     DX
+        POP     CX
+        POP     BX
+        POP     AX
+        RET
+DOSUI_MENU_BOX ENDP
+
+DOSUI_MENU_SHADOW PROC NEAR
+        PUSH    AX
+        PUSH    BX
+        PUSH    CX
+        PUSH    DX
+        PUSH    BP
+        PUSH    DI
+        PUSH    ES
+        MOV     BP,SI
+        MOV     AX,0B800H
+        MOV     ES,AX
+
+        MOV     DH,BYTE PTR DS:[BP+DOSUI_RECT_TOP]
+        INC     DH
+DOSUI_MENU_SHADOW_RIGHT:
+        CMP     DH,BYTE PTR DS:[BP+DOSUI_RECT_BOTTOM]
+        JA      SHORT DOSUI_MENU_SHADOW_BOTTOM
+        XOR     AX,AX
+        MOV     AL,DH
+        ADD     AL,CS:DOSUI_ROW_OFFSET
+        MOV     BL,160
+        MUL     BL
+        MOV     DI,AX
+        XOR     AX,AX
+        MOV     AL,BYTE PTR DS:[BP+DOSUI_RECT_RIGHT]
+        INC     AL
+        SHL     AX,1
+        ADD     DI,AX
+        INC     DI
+        MOV     BL,CS:DOSUI_SHADOW_ATTR
+        MOV     BYTE PTR ES:[DI],BL
+        ADD     DI,2
+        MOV     BL,CS:DOSUI_SHADOW_ATTR
+        MOV     BYTE PTR ES:[DI],BL
+        INC     DH
+        JMP     DOSUI_MENU_SHADOW_RIGHT
+
+DOSUI_MENU_SHADOW_BOTTOM:
+        XOR     AX,AX
+        MOV     AL,BYTE PTR DS:[BP+DOSUI_RECT_BOTTOM]
+        INC     AL
+        ADD     AL,CS:DOSUI_ROW_OFFSET
+        MOV     BL,160
+        MUL     BL
+        MOV     DI,AX
+        XOR     AX,AX
+        MOV     AL,BYTE PTR DS:[BP+DOSUI_RECT_LEFT]
+        ADD     AL,2
+        SHL     AX,1
+        ADD     DI,AX
+        INC     DI
+        XOR     CX,CX
+        MOV     CL,BYTE PTR DS:[BP+DOSUI_RECT_RIGHT]
+        SUB     CL,BYTE PTR DS:[BP+DOSUI_RECT_LEFT]
+        INC     CX
+DOSUI_MENU_SHADOW_BOTTOM_NEXT:
+        MOV     BL,CS:DOSUI_SHADOW_ATTR
+        MOV     BYTE PTR ES:[DI],BL
+        ADD     DI,2
+        LOOP    DOSUI_MENU_SHADOW_BOTTOM_NEXT
+        POP     ES
+        POP     DI
+        POP     BP
+        POP     DX
+        POP     CX
+        POP     BX
+        POP     AX
+        RET
+DOSUI_MENU_SHADOW ENDP
+
+; DH=row, DL=left, CX=full frame width.
+DOSUI_MENU_SEPARATOR PROC NEAR
+        PUSH    AX
+        PUSH    BX
+        PUSH    CX
+        PUSH    DX
+        MOV     AL,0C4H
+        MOV     BL,70H
+        CALL    DOSUI_FILL_ROW
+        MOV     AL,0C3H
+        MOV     CX,1
+        CALL    DOSUI_FILL_ROW
+        POP     DX
+        POP     CX
+        PUSH    CX
+        PUSH    DX
+        ADD     DL,CL
+        DEC     DL
+        MOV     AL,0B4H
+        MOV     CX,1
+        CALL    DOSUI_FILL_ROW
+        POP     DX
+        POP     CX
+        POP     BX
+        POP     AX
+        RET
+DOSUI_MENU_SEPARATOR ENDP
+
+; AL is the item index and AH is its highlighted accelerator offset.
+DOSUI_MENU_ITEM PROC NEAR
+        PUSH    AX
+        PUSH    BX
+        PUSH    CX
+        PUSH    DX
+        PUSH    SI
+        MOV     DOSUI_MENU_DRAW_ITEM,AL
+        MOV     DOSUI_MENU_DRAW_ACCEL,AH
+        MOV     DOSUI_MENU_DRAW_COLUMN,DL
+        MOV     DOSUI_MENU_DRAW_TEXT_POINTER,SI
+        MOV     BYTE PTR DOSUI_MENU_DRAW_TEXT_ATTR,70H
+        MOV     BYTE PTR DOSUI_MENU_DRAW_ACCEL_ATTR,78H
+        MOV     BYTE PTR DOSUI_MENU_DRAW_ENABLED,0
+        CALL    WORD PTR DOSUI_MENU_MASK_VECTOR
+        MOV     AH,1
+        MOV     CL,DOSUI_MENU_DRAW_ITEM
+        SHL     AH,CL
+        TEST    AL,AH
+        JZ      SHORT DOSUI_MENU_ITEM_SELECTION
+        MOV     BYTE PTR DOSUI_MENU_DRAW_ENABLED,1
+        MOV     BYTE PTR DOSUI_MENU_DRAW_TEXT_ATTR,70H
+        MOV     BYTE PTR DOSUI_MENU_DRAW_ACCEL_ATTR,7FH
+DOSUI_MENU_ITEM_SELECTION:
+        MOV     AL,DOSUI_MENU_DRAW_ITEM
+        CMP     AL,DOSUI_MENU_SELECTED
+        JNE     SHORT DOSUI_MENU_ITEM_COLORS_READY
+        MOV     BYTE PTR DOSUI_MENU_DRAW_TEXT_ATTR,07H
+        MOV     BYTE PTR DOSUI_MENU_DRAW_ACCEL_ATTR,07H
+        CMP     BYTE PTR DOSUI_MENU_DRAW_ENABLED,0
+        JE      SHORT DOSUI_MENU_ITEM_COLORS_READY
+        MOV     BYTE PTR DOSUI_MENU_DRAW_ACCEL_ATTR,0FH
+DOSUI_MENU_ITEM_COLORS_READY:
+        MOV     AL,' '
+        MOV     BL,DOSUI_MENU_DRAW_TEXT_ATTR
+        XOR     CX,CX
+        MOV     CL,DOSUI_MENU_ITEM_WIDTH
+        CALL    DOSUI_FILL_ROW
+        CMP     BYTE PTR DOSUI_MENU_DRAW_ENABLED,0
+        JNE     SHORT DOSUI_MENU_ITEM_WRITE_NORMAL
+        MOV     AL,DOSUI_MENU_DRAW_ITEM
+        CMP     AL,DOSUI_MENU_SELECTED
+        JE      SHORT DOSUI_MENU_ITEM_WRITE_NORMAL
+DOSUI_MENU_ITEM_WRITE_DISABLED:
+        MOV     AL,[SI]
+        OR      AL,AL
+        JZ      SHORT DOSUI_MENU_ITEM_ACCELERATOR
+        CMP     AL,' '
+        JE      SHORT DOSUI_MENU_ITEM_DISABLED_NEXT
+        MOV     BL,78H
+        MOV     CX,1
+        CALL    DOSUI_FILL_ROW
+DOSUI_MENU_ITEM_DISABLED_NEXT:
+        INC     SI
+        INC     DL
+        JMP     DOSUI_MENU_ITEM_WRITE_DISABLED
+DOSUI_MENU_ITEM_WRITE_NORMAL:
+        MOV     BL,DOSUI_MENU_DRAW_TEXT_ATTR
+        CALL    DOSUI_WRITE_Z
+DOSUI_MENU_ITEM_ACCELERATOR:
+        MOV     DL,DOSUI_MENU_DRAW_COLUMN
+        MOV     SI,DOSUI_MENU_DRAW_TEXT_POINTER
+        XOR     BX,BX
+        MOV     BL,DOSUI_MENU_DRAW_ACCEL
+        MOV     AL,[SI+BX]
+        ADD     DL,BL
+        MOV     BL,DOSUI_MENU_DRAW_ACCEL_ATTR
+        MOV     CX,1
+        CALL    DOSUI_FILL_ROW
+        POP     SI
+        POP     DX
+        POP     CX
+        POP     BX
+        POP     AX
+        RET
+DOSUI_MENU_ITEM ENDP
+
+DOSUI_TEXT ENDS
+END

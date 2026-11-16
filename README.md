@@ -10,9 +10,9 @@ compilers, assemblers, or Python build scripts:
   `docs/build-manifest.json` (`ckdos-4.00-*` release media).
 - **CK-DOS 5.0 (`os/ck-dos-5`)** — Independent MIT-licensed evolution of the
   open-source MS-DOS 4.00 codebase combined with clean-room, first-party
-  CK-DOS 5.0 kernel enhancements and utilities, containing zero historical
-  binary tools and zero Microsoft MS-DOS 5.0 code (`ckdos-5.00-*` release
-  media).
+  CK-DOS 5.0 kernel enhancements and full-screen `DOSUI` utilities (`EDIT.COM` /
+  `CKEDIT.COM` and `HELP.COM`), containing zero historical binary tools and zero
+  Microsoft MS-DOS 5.0 code (`ckdos-5.00-*` release media).
 
 The project has no dependency on any private or downstream product. Downstream
 products may consume CK-DOS Base, while this repository remains completely

@@ -681,6 +681,82 @@ void write_manifest_json(const fs::path& path, const std::map<std::string, Manif
     write_text_file(path, oss.str());
 }
 
+void validate_flat_com_image(const fs::path& com_path, const std::string& label) {
+    if (!fs::is_regular_file(com_path)) {
+        throw std::runtime_error(label + " missing after ckexe2bin: " + com_path.string());
+    }
+    const auto sz = fs::file_size(com_path);
+    if (sz == 0 || sz >= 0xFF00u) {
+        throw std::runtime_error(label + " invalid COM size (" + std::to_string(sz) + " bytes; must be 1..65279)");
+    }
+    std::ifstream in(com_path, std::ios::binary);
+    char hdr[2]{0, 0};
+    in.read(hdr, 2);
+    if (in.gcount() == 2 && hdr[0] == 'M' && hdr[1] == 'Z') {
+        throw std::runtime_error(label + " still has MZ header instead of flat COM image");
+    }
+}
+
+void build_dos5_dosui_tools(const fs::path& tool_dir, const fs::path& out_stage) {
+    const fs::path dosui_dir = out_stage / "CMD" / "DOSUI";
+    const fs::path edit_dir = out_stage / "CMD" / "EDIT";
+    const fs::path help_dir = out_stage / "CMD" / "HELP";
+    if (!fs::is_directory(dosui_dir) || !fs::is_directory(edit_dir) || !fs::is_directory(help_dir)) {
+        throw std::runtime_error("[CK-DOS 5.0] missing CMD/DOSUI, CMD/EDIT, or CMD/HELP source directories");
+    }
+
+    const fs::path ckmasm = exe_path(tool_dir, "ckmasm");
+    const fs::path cklink = exe_path(tool_dir, "cklink");
+    const fs::path ckexe2bin = exe_path(tool_dir, "ckexe2bin");
+
+    if (run_process({ckmasm.string(), "-I.", "DOSUI.ASM,DOSUI.OBJ,NUL,NUL;"}, dosui_dir) != 0) {
+        throw std::runtime_error("[CK-DOS 5.0] ckmasm failed on CMD/DOSUI/DOSUI.ASM");
+    }
+    const fs::path dosui_obj = find_ci(dosui_dir, "DOSUI.OBJ");
+
+    for (const char* mod : {"EDIT", "EDITHLP"}) {
+        const std::string spec = std::string(mod) + ".ASM," + mod + ".OBJ,NUL,NUL;";
+        if (run_process({ckmasm.string(), "-I.", "-I" + dosui_dir.string(), spec}, edit_dir) != 0) {
+            throw std::runtime_error(std::string("[CK-DOS 5.0] ckmasm failed on CMD/EDIT/") + mod + ".ASM");
+        }
+    }
+    // EDITHLP.OBJ must link last past DOSUI.OBJ so EDIT reads its help topics in place.
+    fs::copy_file(dosui_obj, edit_dir / "DOSUI.OBJ", fs::copy_options::overwrite_existing);
+    if (run_process({cklink.string(), "EDIT.OBJ+DOSUI.OBJ+EDITHLP.OBJ,EDIT.EXE,NUL,;"}, edit_dir) != 0) {
+        throw std::runtime_error("[CK-DOS 5.0] cklink failed on EDIT.EXE");
+    }
+    if (run_process({ckexe2bin.string(), "EDIT.EXE", "EDIT.COM"}, edit_dir) != 0) {
+        throw std::runtime_error("[CK-DOS 5.0] ckexe2bin failed on EDIT.COM");
+    }
+    std::error_code ec;
+    fs::remove(find_ci(edit_dir, "EDIT.EXE"), ec);
+    fs::remove(edit_dir / "DOSUI.OBJ", ec);
+    const fs::path edit_com = find_ci(edit_dir, "EDIT.COM");
+    validate_flat_com_image(edit_com, "EDIT.COM");
+    const fs::path ckedit_com = edit_dir / "CKEDIT.COM";
+    fs::copy_file(edit_com, ckedit_com, fs::copy_options::overwrite_existing);
+    validate_flat_com_image(ckedit_com, "CKEDIT.COM");
+
+    if (run_process({ckmasm.string(), "-I.", "-I" + dosui_dir.string(), "HELP.ASM,HELP.OBJ,NUL,NUL;"}, help_dir) != 0) {
+        throw std::runtime_error("[CK-DOS 5.0] ckmasm failed on CMD/HELP/HELP.ASM");
+    }
+    fs::copy_file(dosui_obj, help_dir / "DOSUI.OBJ", fs::copy_options::overwrite_existing);
+    if (run_process({cklink.string(), "HELP.OBJ+DOSUI.OBJ,HELP.EXE,NUL,;"}, help_dir) != 0) {
+        throw std::runtime_error("[CK-DOS 5.0] cklink failed on HELP.EXE");
+    }
+    if (run_process({ckexe2bin.string(), "HELP.EXE", "HELP.COM"}, help_dir) != 0) {
+        throw std::runtime_error("[CK-DOS 5.0] ckexe2bin failed on HELP.COM");
+    }
+    fs::remove(find_ci(help_dir, "HELP.EXE"), ec);
+    fs::remove(help_dir / "DOSUI.OBJ", ec);
+    const fs::path help_com = find_ci(help_dir, "HELP.COM");
+    validate_flat_com_image(help_com, "HELP.COM");
+
+    std::cout << "[CK-DOS 5.0] Built first-party DOSUI tools: EDIT.COM & CKEDIT.COM ("
+              << fs::file_size(edit_com) << " bytes), HELP.COM ("
+              << fs::file_size(help_com) << " bytes)\n";
+}
+
 void build_dos_source_stage(const std::string& os_label,
                             const fs::path& src_tree,
                             const fs::path& repo_root,
@@ -689,7 +765,8 @@ void build_dos_source_stage(const std::string& os_label,
                             const std::string& stage_subdir,
                             fs::path& out_stage,
                             const fs::path& write_manifest,
-                            const fs::path& verify_manifest) {
+                            const fs::path& verify_manifest,
+                            bool build_dos5_extras = false) {
     if (!fs::is_directory(src_tree)) {
         throw std::runtime_error("missing " + os_label + " source tree: " + src_tree.string());
     }
@@ -755,6 +832,10 @@ void build_dos_source_stage(const std::string& os_label,
         }
     }
 
+    if (build_dos5_extras) {
+        build_dos5_dosui_tools(tool_dir, out_stage);
+    }
+
     const auto manifest = collect_manifest(out_stage);
     std::cout << "[" << os_label << "] Built " << built_count
               << " directories cleanly; binary artifacts: " << manifest.size() << "\n";
@@ -810,7 +891,7 @@ void build_and_verify_dos5_tree(const fs::path& repo_root,
     }
     verify_dos5_zero_prebuilt_binaries(src_tree);
     build_dos_source_stage("CK-DOS 5.0", src_tree, repo_root, tool_dir, scratch_root,
-                           "src_dos5", out_stage, write_manifest, {});
+                           "src_dos5", out_stage, write_manifest, {}, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -1240,7 +1321,8 @@ OsMediaSpec make_dos5_media_spec(const std::string& version) {
         "CK-DOS Base Release " + version + " (CK-DOS 5.00 Clean-Room Build)\r\n"
         "==============================================================\r\n\r\n"
         "Independent MIT-licensed CK-DOS 5.00 distribution built 100% from source\r\n"
-        "with clean-room native tools (ckcl, ckmasm, cklink, cklib, cknmake, ckmkimg).\r\n\r\n"
+        "with clean-room native tools (ckcl, ckmasm, cklink, cklib, cknmake, ckmkimg).\r\n"
+        "Includes full-screen DOSUI utilities EDIT.COM (CKEDIT.COM) and HELP.COM.\r\n\r\n"
         "Included Release Media:\r\n"
         "  - ckdos-5.00-floppy-1440k.img : 3.5\" 1.44M Boot + Install Floppy (CKDOS500)\r\n"
         "  - ckdos-5.00-floppy-720k-disk1.img / disk2.img : 2x720K XT/PS2 Set\r\n"
@@ -1551,8 +1633,8 @@ void verify_boot_media_with_qemu(const fs::path& dist_dir,
         if (pipe(in_pipe) != 0) throw std::runtime_error("pipe() failed");
 
         std::vector<std::string> cmd = {
-            qemu_bin, "-m", "4M", "-display", "none", "-serial", "none", "-parallel", "none",
-            "-monitor", "stdio"};
+            qemu_bin, "-snapshot", "-m", "4M", "-display", "none", "-serial", "none",
+            "-parallel", "none", "-monitor", "stdio"};
         cmd.insert(cmd.end(), media_args.begin(), media_args.end());
 
         const pid_t pid = fork();
@@ -1650,6 +1732,128 @@ void verify_boot_media_with_qemu(const fs::path& dist_dir,
         check_one("dos5-floppy-720k-disk1", {"-fda", f720.string(), "-boot", "a"}, {"CK-DOS 5.00", "A:\\>"});
         check_one("dos5-hdd-32m-vhd", {"-drive", "file=" + vhd.string() + ",format=vpc", "-boot", "c"}, {"CK-DOS 5.00", "C:\\>"});
         check_one("dos5-boot-iso", {"-cdrom", iso.string(), "-boot", "d"}, {"CK-DOS 5.00", "A:\\>"});
+
+        // Verify EDIT.COM, CKEDIT.COM, and full-screen DOSUI HELP.COM inside CK-DOS 5.0 VHD
+        {
+            const fs::path vga_file = scratch.path() / "vga_dos5_dosui.bin";
+            int in_pipe[2]{-1, -1};
+            if (pipe(in_pipe) != 0) throw std::runtime_error("pipe() failed");
+            std::vector<std::string> cmd = {
+                qemu_bin, "-snapshot", "-m", "4M", "-display", "none", "-serial", "none",
+                "-parallel", "none", "-monitor", "stdio",
+                "-drive", "file=" + vhd.string() + ",format=vpc", "-boot", "c"};
+            const pid_t pid = fork();
+            if (pid < 0) {
+                close(in_pipe[0]);
+                close(in_pipe[1]);
+                throw std::runtime_error("fork() failed for qemu dosui check");
+            }
+            if (pid == 0) {
+                dup2(in_pipe[0], STDIN_FILENO);
+                close(in_pipe[0]);
+                close(in_pipe[1]);
+                if (FILE* f = std::fopen("/dev/null", "wb")) {
+                    dup2(fileno(f), STDOUT_FILENO);
+                    dup2(fileno(f), STDERR_FILENO);
+                    std::fclose(f);
+                }
+                std::vector<char*> argv_ptrs;
+                for (auto& s : cmd) argv_ptrs.push_back(s.data());
+                argv_ptrs.push_back(nullptr);
+                execvp(cmd[0].c_str(), argv_ptrs.data());
+                _exit(127);
+            }
+            close(in_pipe[0]);
+
+            auto send_mon = [&](const std::string& line) {
+                const ssize_t wr = write(in_pipe[1], line.data(), line.size());
+                (void)wr;
+            };
+
+            auto wait_for_tokens = [&](const std::vector<std::string>& tokens, const std::string& step_name) {
+                for (int attempt = 0; attempt < 80; ++attempt) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                    std::error_code ec;
+                    fs::remove(vga_file, ec);
+                    send_mon("pmemsave 0xb8000 4000 \"" + vga_file.string() + "\"\n");
+                    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+                    if (fs::is_regular_file(vga_file, ec) && fs::file_size(vga_file, ec) == 4000u) {
+                        std::ifstream vin(vga_file, std::ios::binary);
+                        std::array<char, 4000> raw{};
+                        vin.read(raw.data(), 4000);
+                        std::string screen;
+                        screen.reserve(2000);
+                        for (std::size_t i = 0; i < 4000; i += 2) {
+                            const unsigned char ch = static_cast<unsigned char>(raw[i]);
+                            screen.push_back((ch >= 32 && ch < 127) ? static_cast<char>(ch) : ' ');
+                        }
+                        bool ok = true;
+                        for (const std::string& tok : tokens) {
+                            if (screen.find(tok) == std::string::npos) {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        if (ok) return;
+                    }
+                }
+                send_mon("quit\n");
+                close(in_pipe[1]);
+                int st = 0;
+                waitpid(pid, &st, 0);
+                throw std::runtime_error("QEMU DOSUI check timed out during " + step_name);
+            };
+
+            auto type_cmd = [&](std::string_view text) {
+                for (char c : text) {
+                    std::string key;
+                    if (c >= 'a' && c <= 'z') key = std::string(1, c);
+                    else if (c >= 'A' && c <= 'Z') key = std::string(1, static_cast<char>(c - 'A' + 'a'));
+                    else if (c >= '0' && c <= '9') key = std::string(1, c);
+                    else if (c == ' ') key = "spc";
+                    else if (c == '/') key = "slash";
+                    else if (c == '?') key = "shift-slash";
+                    else if (c == '.') key = "dot";
+                    else if (c == '\n') key = "ret";
+                    if (!key.empty()) {
+                        send_mon("sendkey " + key + "\n");
+                        std::this_thread::sleep_for(std::chrono::milliseconds(35));
+                    }
+                }
+            };
+
+            wait_for_tokens({"CK-DOS 5.00", "C:\\>"}, "boot to C:\\>");
+
+            type_cmd("cls\n");
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            type_cmd("edit /?\n");
+            wait_for_tokens({"Starts the CK-DOS Editor", "EDIT [[drive:][path]filename]"}, "EDIT.COM /?");
+            std::cout << "QEMU utility verified: dos5 EDIT.COM /?\n";
+
+            type_cmd("cls\n");
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            type_cmd("ckedit /?\n");
+            wait_for_tokens({"Starts the CK-DOS Editor", "/NOHI"}, "CKEDIT.COM /?");
+            std::cout << "QEMU utility verified: dos5 CKEDIT.COM /?\n";
+
+            type_cmd("help ver\n");
+            wait_for_tokens({"File  Help", "CK-DOS 5 version", "SETVER"}, "HELP.COM VER");
+            std::cout << "QEMU utility verified: dos5 HELP.COM VER (full-screen DOSUI)\n";
+
+            send_mon("sendkey esc\n");
+            wait_for_tokens({"C:\\>"}, "HELP.COM exit restore");
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+            type_cmd("edit readme.txt\n");
+            wait_for_tokens({"CK-DOS Editor", "File  Edit  Search  Options", "CK-DOS 5.00 Clean-Room Build"},
+                            "EDIT.COM README.TXT");
+            std::cout << "QEMU utility verified: dos5 EDIT.COM README.TXT (full-screen DOSUI)\n";
+
+            send_mon("quit\n");
+            close(in_pipe[1]);
+            int status = 0;
+            waitpid(pid, &status, 0);
+        }
     }
 #endif
 }
