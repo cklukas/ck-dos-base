@@ -434,11 +434,22 @@ procedure   Align_Buffer,NEAR		;AN000;
 	SaveReg <CX>			; don't stomp on count
 	MOV	CL,4			; bits to shift bytes->para
 	SHR	BX,CL			; get number of paragraphs
-	RestoreReg  <CX>		; get count back
 	MOV	AX,DS			; get original segment
 	ADD	AX,BX			; get new segment
+	JNC	Align_Low_Seg		; no HMA wrap (< 100000h)
+	SHL	AX,CL			; HMA wrap: offset = (AX << 4) + (DX & 0Fh) + 10h
+	AND	DX,0Fh
+	ADD	DX,AX
+	ADD	DX,10h
+	MOV	AX,0FFFFh
+	MOV	DS,AX
+	RestoreReg  <CX>
+	JMP	SHORT Align_Set_Dma
+Align_Low_Seg:
+	RestoreReg  <CX>		; get count back
 	MOV	DS,AX			; in seg register
 	AND	DX,0Fh			; normalize offset
+Align_Set_Dma:
 	MOV	WORD PTR [DMAAdd],DX	; use user DX as offset
 	MOV	WORD PTR [DMAAdd+2],DS	; use user DS as segment for DMA
 	return				;AN000;

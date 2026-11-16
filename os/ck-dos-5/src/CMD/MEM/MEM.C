@@ -259,7 +259,8 @@ void    EMSPrint(int,int,unsigned char,                                         
 extern void sysloadmsg(union REGS *, union REGS *);                                                                              /* ;an000; */
 extern void sysdispmsg(union REGS *, union REGS *);                                                                              /* ;an000; */
 extern void sysgetmsg(union REGS *, struct SREGS *, union REGS *);                                                               /* ;an000; */
-extern void parse(union REGS *, union REGS *);                                                                                   /* ;an000; */
+extern void parse(union REGS *, union REGS *);
+extern unsigned int query_xms_free_kb(void);                                                                                   /* ;an000; */
                                                                                                                                  /* ;an000; */
                                                                                                                                 /* ;an000; */
 /*컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�*/                                                  /* ;an000; */
@@ -290,7 +291,28 @@ char     *argv[];                                                               
         cmd_line[i++] = (char) '\x0d';                                          /* an000; dms; CR terminate string      */       /* ;an000; */
         cmd_line[i++] = (char) '\0';                                            /* an000; dms; null terminate string    */       /* ;an000; */
                                                                                                                                  /* ;an000; */
-        DataLevel = 0;                                                                                                           /* ;an000; */
+        DataLevel = 0;
+        {
+            int k = 0;
+            while (cmd_line[k] != '\x0d' && cmd_line[k] != '\0') {
+                if (cmd_line[k] == '/' && cmd_line[k + 1] == '?') {
+                    printf("Displays the amount of used and free memory in your system.\n\n");
+                    printf("MEM [/PROGRAM | /DEBUG | /CLASSIFY]\n\n");
+                    printf("  /PROGRAM or /P   Displays status of programs currently loaded in memory.\n");
+                    printf("  /DEBUG or /D     Displays status of programs, internal drivers, and other\n");
+                    printf("                   programming information.\n");
+                    printf("  /CLASSIFY or /C  Lists programs by memory usage.\n");
+                    exit(0);
+                }
+                if (cmd_line[k] == '/' && (cmd_line[k + 1] == 'c' || cmd_line[k + 1] == 'C')) {
+                    DataLevel = 1;
+                    cmd_line[0] = '\x0d';
+                    cmd_line[1] = '\0';
+                    break;
+                }
+                k++;
+            }
+        }                                                                                                           /* ;an000; */
                                                                                                                                  /* ;an000; */
         parse_init();                                                           /* an000; dms; init for parser          */       /* ;an000; */
         InRegs.x.si = (unsigned)cmd_line;                                       /* an000; dms; initialize to command ln.*/       /* ;an000; */
@@ -421,50 +443,49 @@ void    DisplayBaseDetail()                                                     
         Sub0_Message(NewLineMsg,STDOUT,Utility_Msg_Class);                                                                       /* ;an000; */
                                                                                                                                  /* ;an000; */
                                                                                                                                  /* ;an000; */
-        Out_Var1 = 0x700l;                                                                                                       /* ;an000; */
-        Out_Var2 = (long) (FP_SEG(SysVarsPtr) - 0x70)*16l;                                                                       /* ;an000; */
-        Sub4_Message(MainLineMsg,                                                                                                /* ;an000; */
-                     STDOUT,                                                                                                     /* ;an000; */
-                     Utility_Msg_Class,                                                                                          /* ;an000; */
-                     &Out_Var1,                                                                                                  /* ;an000; */
-                     IbmbioMsg,                                                                                                  /* ;an000; */
-                     &Out_Var2,                                                                                                  /* ;an000; */
-                     SystemProgramMsg);                                                                                          /* ;an000; */
-                                                                                                                                 /* ;an000; */
-        /* Display the Base Device Driver Locations and Sizes */                                                                 /* ;an000; */
-                                                                                                                                 /* ;an000; */
-        BlockDeviceNumber = 0;                                                                                                   /* ;an000; */
-                                                                                                                                 /* ;an000; */
-        for (ThisDeviceDriver = SysVarsPtr -> DeviceDriverChain;                                                                 /* ;an000; */
-              (FP_OFF(ThisDeviceDriver) != 0xFFFF);                                                                              /* ;an000; */
-               ThisDeviceDriver = ThisDeviceDriver -> NextDeviceHeader)                                                          /* ;an000; */
-              { if ( FP_SEG(ThisDeviceDriver) < FP_SEG(SysVarsPtr) )                                                             /* ;an000; */
-                        DisplayDeviceDriver(ThisDeviceDriver,SystemDeviceDriverMsg);                                             /* ;an000; */
-                kbhit();                                                                                                         /* ;an000; */
-                }                                                                                                                /* ;an000; */
-                                                                                                                                 /* ;an000; */
-        /* Display the DOS location and size */                                                                                  /* ;an000; */
+        FP_SEG(ArenaHeadPtr) = FP_SEG(SysVarsPtr);
+        FP_OFF(ArenaHeadPtr) = FP_OFF(SysVarsPtr) - 2;
 
-        FP_SEG(ArenaHeadPtr) = FP_SEG(SysVarsPtr);                                                                               /* ;an004; */
-        FP_OFF(ArenaHeadPtr) = FP_OFF(SysVarsPtr) - 2;                                                                           /* ;an004; */
-                                                                                                                                 /* ;an004; */
-        FP_SEG(ThisArenaPtr) = *ArenaHeadPtr;                                                                                    /* ;an004; */
-        FP_OFF(ThisArenaPtr) = 0;                                                                                                /* ;an004; */
-                                                                                                                                 /* ;an000; */
-        Sub0_Message(NewLineMsg,STDOUT,Utility_Msg_Class);                                                                       /* ;an000; */
-                                                                                                                                 /* ;an000; */
-        Out_Var1 = (long) FP_SEG(SysVarsPtr) * 16l;                                                                              /* ;an000; */
-        Out_Var2 = (long) ((AddressOf((char far *)ThisArenaPtr)) - Out_Var1);                                                    /* ;ac004; */
-        Sub4_Message(MainLineMsg,                                                                                                /* ;an000; */
-                     STDOUT,                                                                                                     /* ;an000; */
-                     Utility_Msg_Class,                                                                                          /* ;an000; */
-                     &Out_Var1,                                                                                                  /* ;an000; */
-                     IbmdosMsg,                                                                                                  /* ;an000; */
-                     &Out_Var2,                                                                                                  /* ;an000; */
-                     SystemProgramMsg);                                                                                          /* ;an000; */
-                                                                                                                                 /* ;an000; */
-        Sub0_Message(NewLineMsg,STDOUT,Utility_Msg_Class);                                                                       /* ;an000; */
-                                                                                                                                 /* ;an000; */
+        FP_SEG(ThisArenaPtr) = *ArenaHeadPtr;
+        FP_OFF(ThisArenaPtr) = 0;
+
+        Out_Var1 = 0x700l;
+        if (FP_SEG(SysVarsPtr) >= 0xA000u)
+            Out_Var2 = (long) (*ArenaHeadPtr - 0x70u) * 16l;
+        else
+            Out_Var2 = (long) (FP_SEG(SysVarsPtr) - 0x70u) * 16l;
+        Sub4_Message(MainLineMsg,
+                     STDOUT,
+                     Utility_Msg_Class,
+                     &Out_Var1,
+                     IbmbioMsg,
+                     &Out_Var2,
+                     SystemProgramMsg);
+
+        BlockDeviceNumber = 0;
+        for (ThisDeviceDriver = SysVarsPtr -> DeviceDriverChain;
+              (FP_OFF(ThisDeviceDriver) != 0xFFFF);
+               ThisDeviceDriver = ThisDeviceDriver -> NextDeviceHeader)
+              { if ( FP_SEG(ThisDeviceDriver) < *ArenaHeadPtr )
+                        DisplayDeviceDriver(ThisDeviceDriver,SystemDeviceDriverMsg);
+                kbhit();
+                }
+
+        if (FP_SEG(SysVarsPtr) < 0xA000u) {
+            Sub0_Message(NewLineMsg,STDOUT,Utility_Msg_Class);
+            Out_Var1 = (long) FP_SEG(SysVarsPtr) * 16l;
+            Out_Var2 = (long) ((AddressOf((char far *)ThisArenaPtr)) - Out_Var1);
+            Sub4_Message(MainLineMsg,
+                         STDOUT,
+                         Utility_Msg_Class,
+                         &Out_Var1,
+                         IbmdosMsg,
+                         &Out_Var2,
+                         SystemProgramMsg);
+        }
+
+        Sub0_Message(NewLineMsg,STDOUT,Utility_Msg_Class);
+
         /* Display the memory data */                                                                                            /* ;an000; */
                                                                                                                                  /* ;an000; */
         while (ThisArenaPtr -> Signature != (char) 'Z')                                                                          /* ;an000; */
@@ -761,45 +782,47 @@ void DisplayEMSDetail()                                                         
                                                                                                                                 /* ;an000; */
 /*컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�*/                                                  /* ;an000; */
                                                                                                                                  /* ;an000; */
-void DisplayExtendedSummary()                                                                                                    /* ;an000; */
-  {                                                                                                                              /* ;an000; */
-                                                                                                                                 /* ;an000; */
-  unsigned long int       EXTMemoryTot;                                                                                          /* ;an000; */
-                                                                                                                                 /* ;an000; */
-  InRegs.h.ah = (unsigned char) 0x52;                                           /* Get SysVar Pointer   ;an001; dms;*/
-  intdosx(&InRegs,&OutRegs,&SegRegs);                                           /* Invoke interrupt     ;an001; dms;*/
-                                                                                                                                                         /* ;an000; */
-  FP_SEG(SysVarsPtr) = SegRegs.es;                                              /* put pointer in var   ;an001; dms;*/
-  FP_OFF(SysVarsPtr) = OutRegs.x.bx;                                            /*                      ;an001; dms;*/
-  if ((SysVarsPtr) -> ExtendedMemory != 0)                                      /* extended memory?     ;an001; dms;*/
-  {                                                                             /* yes                  ;an001; dms;*/
-      EXTMemoryTot = (long) (SysVarsPtr) -> ExtendedMemory;                     /* get total EM size    ;an001; dms;*/
-      EXTMemoryTot *= (long) 1024l;                                             /*  at boot time        ;an001; dms;*/
-      Sub0_Message(NewLineMsg,STDOUT,Utility_Msg_Class);                        /* print blank line     ;an001; dms;*/
-      Sub1_Message(EXTMemoryMsg,STDOUT,Utility_Msg_Class,&EXTMemoryTot);        /* print total EM mem   ;an001; dms;*/
-                                                                                                                                 /* ;an000; */
-      OutRegs.x.cflag = 0;                                                      /* clear carry flag     ;an001; dms;*/
-      InRegs.x.ax = GetExtended;                                                /* get extended mem     ;an001; dms;*/
-                                                                                /*   available                      */
-      int86(CASSETTE, &InRegs, &OutRegs);                                       /* INT 15h call         ;an001; dms;*/
+void DisplayExtendedSummary()
+  {
+  unsigned long int EXTMemoryTot;
+  unsigned int xms_kb;
 
-      EXTMemoryTot = (long) OutRegs.x.ax;                                       /* returns 1K mem blocks;an001; dms;*/
-      EXTMemoryTot *= (long) 1024l;                                             /* convert to bytes     ;an001; dms;*/
+  InRegs.h.ah = (unsigned char) 0x52;
+  intdosx(&InRegs,&OutRegs,&SegRegs);
 
-      Sub1_Message(EXTMemAvlMsg,STDOUT,Utility_Msg_Class,&EXTMemoryTot);        /* display available    ;an001; dms;*/
+  FP_SEG(SysVarsPtr) = SegRegs.es;
+  FP_OFF(SysVarsPtr) = OutRegs.x.bx;
+  if ((SysVarsPtr) -> ExtendedMemory != 0)
+  {
+      EXTMemoryTot = (long) (SysVarsPtr) -> ExtendedMemory;
+      EXTMemoryTot *= (long) 1024l;
+      Sub0_Message(NewLineMsg,STDOUT,Utility_Msg_Class);
+      Sub1_Message(EXTMemoryMsg,STDOUT,Utility_Msg_Class,&EXTMemoryTot);
+
+      xms_kb = query_xms_free_kb();
+      if (xms_kb != 0xFFFFu) {
+          EXTMemoryTot = (unsigned long int) xms_kb * 1024l;
+          Sub1_Message(EXTMemAvlMsg,STDOUT,Utility_Msg_Class,&EXTMemoryTot);
+      } else {
+          OutRegs.x.cflag = 0;
+          InRegs.x.ax = GetExtended;
+          int86(CASSETTE, &InRegs, &OutRegs);
+          EXTMemoryTot = (long) OutRegs.x.ax;
+          EXTMemoryTot *= (long) 1024l;
+          Sub1_Message(EXTMemAvlMsg,STDOUT,Utility_Msg_Class,&EXTMemoryTot);
+      }
   }
 
-                                                                                                                                 /* ;an000; */
-  return;                                                                                                                        /* ;an000; */
-                                                                                                                                 /* ;an000; */
-  }                                     /* end of DisplayExtendedSummary */                                                      /* ;an000; */
-                                                                                                                                 /* ;an000; */
-                                                                                                                                 /* ;an000; */
-                                                                                                                                 /* ;an000; */
-                                                                                                                                 /* ;an000; */
-                                                                                                                                /* ;an000; */
-/*컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴컴�*/                                                  /* ;an000; */
-                                                                                                                                 /* ;an000; */
+  InRegs.x.ax = 0x3306;
+  InRegs.x.dx = 0;
+  intdos(&InRegs, &OutRegs);
+  if ((OutRegs.h.dh & 0x10) != 0) {
+      printf("\n   CK-DOS is resident in the High Memory Area.\n");
+  }
+
+  return;
+  }
+
 void DisplayEMSSummary()                                                                                                         /* ;an000; */
   {                                                                                                                              /* ;an000; */
                                                                                                                                  /* ;an000; */

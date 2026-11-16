@@ -157,6 +157,12 @@ ASSUME	CS:SYSINITSEG,DS:NOTHING,ES:NOTHING,SS:NOTHING
 	extrn	Multi_Pass:NEAR 			;AN024;
 	extrn	BadLoad:near
 	extrn	Error_Line:near
+	extrn	Dos_High_Flag:byte
+	extrn	Dos_Umb_Flag:byte
+	extrn	Umb_Head_Seg:word
+	extrn	Conv_End_Seg:word
+	extrn	Xms_Entry_Ptr:dword
+	extrn	Init_XMS_And_UMBs:near
 
 	PUBLIC	CURRENT_DOS_LOCATION
 	PUBLIC	FINAL_DOS_LOCATION
@@ -230,6 +236,11 @@ MSDOS			LABEL	DWORD
 ENTRY_POINT		LABEL	DWORD
 			DW	0000
 FINAL_DOS_LOCATION	DW	0000
+Low_Stub_Seg_Save	DW	0000
+Temp_Dos_Seg_Save	DW	0000
+Reloc_Target_Entry	DW	0003h, 0000h
+Dos_In_HMA		DB	0
+Bucket_Start_Off	DW	0
 DEVICE_LIST		DD	00000000
 
 SYSI_Country		LABEL	DWORD		;J.K. 5/29/86 Pointer to
@@ -484,6 +495,7 @@ SYSIN:
 	MOV	AX,[CURRENT_DOS_LOCATION]   ; Where it is (set by BIOS)
 	MOV	DS,AX
 	MOV	AX,[FINAL_DOS_LOCATION]     ; Where it is going (set by BIOS)
+	MOV	CS:[Low_Stub_Seg_Save],AX
 	MOV	ES,AX
 
 	ASSUME	ES:NOTHING
@@ -495,7 +507,8 @@ SYSIN:
 	REP	MOVSW
 
 	LDS	SI,[DEVICE_LIST]	; Set for call to DOSINIT
-	MOV	DX,[MEMORY_SIZE]	; Set for call to DOSINIT
+	MOV	DX,CS
+	SUB	DX,10h			; Keep temporary high DOSGROUP below SYSINITSEG!
 
 	CLI
 	MOV	AX,CS
@@ -515,6 +528,8 @@ LOCSTACK LABEL BYTE
 	mov	word ptr [dosinfo], ax
 	mov	ax, word ptr es:[di.SYSI_InitVars+2]
 	mov	word ptr [dosinfo+2],ax ;set the sysvar pointer
+	mov	cs:[Temp_Dos_Seg_Save],ax
+	mov	word ptr cs:[Reloc_Target_Entry+2],ax
 
 	mov	ax, word ptr es:[di.SYSI_Country_Tab]
 	mov	word ptr [SYSI_Country],ax
@@ -555,8 +570,8 @@ Not_386_System: 				  ;AN003;
 	MOV	AL,ES:[DI.SYSI_NUMIO]
 	MOV	DriveNumber,AL		; Save start of installable block drvs
 
-	MOV	AX,CS
-	SUB	AX,11H			; room for header we will copy shortly
+	MOV	AX,CS:[Temp_Dos_Seg_Save]
+	SUB	AX,11H			; room for temp PSP below temporary high DOSGROUP
 	mov	cx, [SingleBufferSize]	;AN020;Temporary Single buffer area
 	shr	cx, 1			;AN020;
 	shr	cx, 1			;AN020;
@@ -601,7 +616,7 @@ ASSUME	DS:NOTHING
 	CLD				; MAKE SURE
 ; DOSINIT has set up a default "process" (PHP) at DS:0. We will move it out
 ; of the way by putting it just below SYSINIT at end of memory.
-	MOV	BX,CS
+	MOV	BX,CS:[Temp_Dos_Seg_Save]
 	SUB	BX,10H
 	MOV	ES,BX
 	XOR	SI,SI
@@ -643,7 +658,8 @@ ASSUME	DS:NOTHING
 	INT	21H			;SELECT THE DISK
 ;J.K.  2/23/87	Modified to handle INSTALL= command.
 NODRVSET:
-	CALL	DOCONF			;DO THE CONFIG STUFF
+	CALL	DOCONF			;DO THE CONFIG STUFF (Pass 0: DOS= and HIMEM.SYS)
+	CALL	Init_XMS_And_UMBs
 	inc	cs:Multi_Pass_Id	;AN027;
 	call	Multi_Pass		;AN027;
 	inc	cs:Multi_Pass_Id	;AN024;
@@ -974,6 +990,7 @@ MulTrk_Flag_Done:			    ;AN002;
 
 	PUSH	CS
 	POP	DS
+	CALL	Try_Relocate_DOS_To_HMA
 	INVOKE	ROUND
 	MOV	AL,[FILES]
 	SUB	AL,5
@@ -1303,6 +1320,14 @@ $$IF1:
 	    mov   ds:[bx.HASH_COUNT], ax	;AN000;
 ;	$ENDIF					;AN000;
 $$EN1:
+	cmp	cs:[Dos_In_HMA], 0
+	je	Low_Buff_Alloc
+	cmp	cs:[H_Buffers], 0
+	jne	Low_Buff_Alloc
+	call	Try_Alloc_Buffers_In_HMA
+	jc	Low_Buff_Alloc
+	jmp	BUF1
+Low_Buff_Alloc:
 	invoke Round				;AN000; get [MEMHI]:[MEMLO]
 	mov	al, DEVMARK_BUF 		;AN005; ='B'
 	call	SetDevMark			;AN005;
@@ -1673,6 +1698,7 @@ Set_Sysinit_Base:
 ;------------------------------------------------------------------------------
 ;Skip_SYSINIT_BASE:				;AN021;
 
+	CALL	Finalize_DOS_And_Arena_Top
 	INVOKE	ROUND
 	MOV	BX,[MEMHI]
 	MOV	AX,[AREA]
@@ -2220,6 +2246,279 @@ $$IF26:
 	JNZ $$DO21
 	ret					;AN000;
 Set_Buffer	endp
+
+; ---------------------------------------------------------------------------
+; Try_Relocate_DOS_To_HMA: moves DOSGROUP to FFFF:0010h when DOS=HIGH and
+; XMS AH=01h grants the 64 KB High Memory Area.
+; ---------------------------------------------------------------------------
+Try_Relocate_DOS_To_HMA proc near
+	push	ax
+	push	bx
+	push	cx
+	push	dx
+	push	si
+	push	di
+	push	ds
+	push	es
+
+	push	cs
+	pop	ds
+	assume	ds:SYSINITSEG
+
+	cmp	[Dos_High_Flag], 0
+	je	TRH_Done
+	cmp	word ptr [Xms_Entry_Ptr+2], 0
+	je	TRH_Done
+
+	; Request HMA (AH=01h, DX=0FFFFh)
+	mov	ah, 01h
+	mov	dx, 0FFFFh
+	call	dword ptr [Xms_Entry_Ptr]
+	cmp	ax, 1
+	jne	TRH_Done
+
+	; Enable A20 globally (AH=03h) and locally (AH=05h)
+	mov	ah, 03h
+	call	dword ptr [Xms_Entry_Ptr]
+	mov	ah, 05h
+	call	dword ptr [Xms_Entry_Ptr]
+
+	; Compute final ENDMEM (Conv_End_Seg if UMBs, else MEMORY_SIZE)
+	mov	bx, [MEMORY_SIZE]
+	cmp	[Conv_End_Seg], 0
+	je	TRH_Got_End
+	mov	bx, [Conv_End_Seg]
+TRH_Got_End:
+	mov	ax, 0FFFFh
+	mov	dx, word ptr [Xms_Entry_Ptr]
+	mov	cx, word ptr [Xms_Entry_Ptr+2]
+	mov	si, [Umb_Head_Seg]
+	mov	di, [Conv_End_Seg]
+	call	dword ptr [Reloc_Target_Entry]
+
+	mov	word ptr [dosinfo+2], 0FFFFh
+	mov	word ptr [SYSI_Country+2], 0FFFFh
+	mov	[Dos_In_HMA], 1
+
+TRH_Done:
+	pop	es
+	pop	ds
+	pop	di
+	pop	si
+	pop	dx
+	pop	cx
+	pop	bx
+	pop	ax
+	ret
+Try_Relocate_DOS_To_HMA endp
+
+; ---------------------------------------------------------------------------
+; Try_Alloc_Buffers_In_HMA: places hash table + all disk buffers in HMA
+; (FFFFh:[LS_HMA_NEXT..FFE0h]).
+;   In:  DS:BX -> BuffInfo
+;   Out: CF=0 if placed in HMA, CF=1 to fall back to conventional memory
+; ---------------------------------------------------------------------------
+Try_Alloc_Buffers_In_HMA proc near
+	assume	ds:nothing
+	push	ax
+	push	bx
+	push	cx
+	push	dx
+	push	si
+	push	di
+	push	ds
+	push	es
+
+	; Compute required bytes = BufferBuckets*8 + Buffers*SingleBufferSize + 32
+	mov	ax, cs:[BufferBuckets]
+	mov	cx, size BUFFER_HASH_ENTRY
+	mul	cx
+	mov	si, ax			; SI = hash table bytes
+
+	mov	ax, cs:[Buffers]
+	mul	cs:[SingleBufferSize]
+	or	dx, dx
+	jnz	TABH_Fail
+	add	ax, si
+	jc	TABH_Fail
+	add	ax, 32
+	jc	TABH_Fail		; AX = total bytes needed
+
+	mov	es, cs:[Low_Stub_Seg_Save]
+	mov	di, es:[0008h]		; LS_HMA_NEXT in FFFFh
+	cmp	di, 0FFD0h
+	jae	TABH_Fail
+	mov	cx, 0FFE0h
+	sub	cx, di
+	cmp	ax, cx
+	jbe	TABH_Proceed
+TABH_Fail:
+	jmp	TABH_Fail_Exit
+TABH_Proceed:
+
+	; Place HASH_PTR at FFFFh:DI
+	mov	word ptr ds:[bx.HASH_PTR], di
+	mov	word ptr ds:[bx.HASH_PTR+2], 0FFFFh
+	add	di, si
+	inc	di
+	and	di, 0FFFEh		; word-aligned start of first bucket in FFFFh
+
+	lds	bx, ds:[bx.HASH_PTR]	; DS:BX -> hash table in FFFFh
+	mov	ax, 0FFFFh
+	mov	es, ax
+	xor	dx, dx
+
+TABH_Buck_Lp:
+	inc	dl
+	mov	cs:[Bucket_Start_Off], di
+	mov	word ptr ds:[bx.BUFFER_BUCKET], di
+	mov	word ptr ds:[bx.BUFFER_BUCKET+2], 0FFFFh
+	mov	word ptr ds:[bx.DIRTY_COUNT], 0
+	xor	cx, cx
+	mov	ax, di
+
+TABH_Buf_Lp:
+	call	Set_Buffer_Info		; sets BUF_PREV, BUF_NEXT=AX+SingleBufferSize, advances AX
+	inc	cx
+	cmp	dl, cs:[NthBuck]
+	jbe	TABH_Grp1
+	cmp	cl, cs:[MaxNumBuf2]
+	jmp	short TABH_Chk_Last
+TABH_Grp1:
+	cmp	cl, cs:[MaxNumBuf1]
+TABH_Chk_Last:
+	jne	TABH_Next_Buf
+	; Close circular list using Bucket_Start_Off!
+	push	si
+	mov	si, cs:[Bucket_Start_Off]
+	mov	word ptr es:[di.BUF_NEXT], si
+	mov	word ptr es:[si.BUF_PREV], di
+	pop	si
+TABH_Next_Buf:
+	mov	di, ax
+	jne	TABH_Buf_Lp
+
+	add	bx, size BUFFER_HASH_ENTRY
+	dec	cs:[BufferBuckets]
+	jnz	TABH_Buck_Lp
+
+	; Update LS_HMA_NEXT in LOW_STUB_SEG for INT 2Fh AX=4A01h/4A02h!
+	add	di, 15
+	and	di, 0FFF0h
+	mov	es, cs:[Low_Stub_Seg_Save]
+	mov	es:[0008h], di
+
+	pop	es
+	pop	ds
+	pop	di
+	pop	si
+	pop	dx
+	pop	cx
+	pop	bx
+	pop	ax
+	clc
+	ret
+
+TABH_Fail_Exit:
+	pop	es
+	pop	ds
+	pop	di
+	pop	si
+	pop	dx
+	pop	cx
+	pop	bx
+	pop	ax
+	stc
+	ret
+Try_Alloc_Buffers_In_HMA endp
+
+; ---------------------------------------------------------------------------
+; Finalize_DOS_And_Arena_Top:
+;   - If DOS was not moved to HMA, moves DOSGROUP from Temp_Dos_Seg_Save down
+;     to [MEMHI] and advances [MEMHI].
+;   - Initializes CONV_END_ARENA bridge MCB at 9FFFh if UMBs exist.
+;   - Expands [AREA] MCB size up to conventional memory top so all temporary
+;     high DOSGROUP space is reclaimed into the main free conventional block.
+; ---------------------------------------------------------------------------
+Finalize_DOS_And_Arena_Top proc near
+	push	ax
+	push	bx
+	push	cx
+	push	dx
+	push	si
+	push	di
+	push	ds
+	push	es
+
+	push	cs
+	pop	ds
+	assume	ds:SYSINITSEG
+
+	cmp	[Dos_In_HMA], 0
+	jne	FDAT_Fix_Arena
+
+	; Relocate DOSGROUP down to [MEMHI] (DOS=LOW or no HMA)
+	involved_round_lbl:
+	call	ROUND
+	mov	al, 'D'
+	; Allocate low space for DOSGROUP at [MEMHI]
+	mov	bx, [MEMORY_SIZE]
+	cmp	[Conv_End_Seg], 0
+	je	FDAT_Low_End
+	mov	bx, [Conv_End_Seg]
+FDAT_Low_End:
+	mov	ax, [MEMHI]
+	mov	dx, word ptr [Xms_Entry_Ptr]
+	mov	cx, word ptr [Xms_Entry_Ptr+2]
+	mov	si, [Umb_Head_Seg]
+	mov	di, [Conv_End_Seg]
+	call	dword ptr [Reloc_Target_Entry]	; returns CX = byte size of DOSGROUP
+	mov	word ptr [dosinfo+2], ax
+	mov	word ptr [SYSI_Country+2], ax
+	mov	[MEMLO], cx
+	call	ROUND
+
+FDAT_Fix_Arena:
+	mov	dx, [MEMORY_SIZE]
+	cmp	[Conv_End_Seg], 0
+	je	FDAT_Expand_Area
+
+	; Initialize CONV_END_ARENA bridge MCB at 9FFFh ('Z' until AX=5803h BX=1)
+	mov	dx, [Conv_End_Seg]
+	mov	es, dx
+	mov	byte ptr es:[0], 'Z'
+	mov	word ptr es:[1], 0008h
+	mov	ax, [Umb_Head_Seg]
+	sub	ax, dx
+	dec	ax
+	mov	word ptr es:[3], ax
+	mov	word ptr es:[8], 4353h		; 'SC'
+	mov	word ptr es:[10], 0
+	mov	word ptr es:[12], 0
+	mov	word ptr es:[14], 0
+
+FDAT_Expand_Area:
+	mov	ax, [AREA]
+	dec	ax
+	mov	es, ax				; ES = [AREA] MCB header
+	mov	bx, dx
+	sub	bx, [AREA]			; new size up to DX (A000h or 9FFFh)
+	mov	es:[arena_size], bx
+	cmp	[Conv_End_Seg], 0
+	je	FDAT_Done
+	mov	byte ptr es:[arena_signature], 'M' ; 9FFFh holds the 'Z' block!
+
+FDAT_Done:
+	pop	es
+	pop	ds
+	pop	di
+	pop	si
+	pop	dx
+	pop	cx
+	pop	bx
+	pop	ax
+	ret
+Finalize_DOS_And_Arena_Top endp
 
 ;
 Set_EMS_Buffer	    proc    near

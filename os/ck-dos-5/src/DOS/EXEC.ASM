@@ -85,6 +85,8 @@ include version.inc
 
 	I_Need	   Temp_Var2,WORD	     ;AN000;file type from $open
 	I_Need	   SETVER_TAB,DWORD	     ;pointer to SETVER program list
+	I_Need	   AllocMethod,BYTE
+	I_Need	   UMB_LINK_STATE,BYTE
 	I_Need	   Special_Version,WORD      ;AN007;special version number
 	I_Need	   Fake_Count,BYTE	     ;AN008;fake version count
 
@@ -360,25 +362,44 @@ exec_bomb:
 	RestoreReg  <BP,AX>
 	JMP	Exec_Ret_Err
 
+exec_no_mem_near:
+	JMP	exec_no_mem
+
 exec_allocate:
 	DOSAssume   CS,<DS>,"EXEC/exec_allocate"
+	TEST	BYTE PTR [AllocMethod],80h
+	JZ	exec_alloc_std_max
+	CMP	BYTE PTR [UMB_LINK_STATE],0
+	JZ	exec_alloc_std_max
+	PUSH	AX
+	CALL	Query_Max_UMB_Paras	; BX = largest free UMB block
+	POP	AX
+	MOV	CX,AX
+	ADD	CX,10h
+	JC	exec_alloc_std_max
+	ADD	CX,exec_min_BSS
+	JC	exec_alloc_std_max
+	CMP	BX,CX
+	JAE	exec_have_max_bx
+exec_alloc_std_max:
 	PUSH	AX
 	MOV	BX,0FFFFh		; see how much room in arena
 	PUSH	DS
 	invoke	$ALLOC			; should have carry set and BX has max
 	POP	DS
 	POP	AX
+exec_have_max_bx:
 	ADD	AX,10h			; room for header
 	CMP	BX,11h			; enough room for a header
-	JB	exec_no_mem
+	JB	exec_no_mem_near
 	CMP	AX,BX			; is there enough for bare image?
-	JA	exec_no_mem
+	JA	exec_no_mem_near
 	TEST	exec_load_high,-1	; if load high, use max
 	JNZ	exec_BX_max		; use max
 	ADD	AX,exec_min_BSS 	; go for min allocation
-	JC	exec_no_mem		; oops! carry
+	JC	exec_no_mem_near	; oops! carry
 	CMP	AX,BX			; enough space?
-	JA	exec_no_mem		; nope...
+	JA	exec_no_mem_near	; nope...
 	SUB	AX,exec_min_BSS
 	ADD	AX,exec_max_BSS 	; go for the MAX
 	JC	exec_BX_max
@@ -394,7 +415,7 @@ exec_got_block:
 	MOV	exec_size,BX
 	invoke	$ALLOC			; get the space
 	POP	DS
-	JC	exec_no_mem
+	JC	exec_no_mem_near
 	MOV	exec_load_block,AX
 	ADD	AX,10h
 	TEST	exec_load_high,-1
@@ -559,16 +580,42 @@ exec_com_file:
 	LODSW				; get load address
 	MOV	exec_dma,AX
 	MOV	AX,0FFFFh
-	JMP	SHORT exec_read_block	; read it all!
+	JMP	exec_read_block		; read it all!
 
 ; We must allocate the max possible size block (ick!)  and set up
 ; CS=DS=ES=SS=PDB pointer, IP=100, SP=max size of block.
 ;
 exec_alloc_com_file:
+	TEST	BYTE PTR CS:[AllocMethod],80h
+	JZ	exec_com_std_max
+	CMP	BYTE PTR CS:[UMB_LINK_STATE],0
+	JZ	exec_com_std_max
+	MOV	BX,exec_fh
+	XOR	CX,CX
+	XOR	DX,DX
+	MOV	AL,2
+	invoke	$LSEEK			; DX:AX = .COM file size
+	JC	exec_com_std_max
+	OR	DX,DX
+	JNZ	exec_com_std_max
+	CMP	AX,0FD00h
+	JA	exec_com_std_max
+	MOV	CL,4
+	SHR	AX,CL
+	ADD	AX,20h			; PSP (10h) + rounded tail + min stack
+	PUSH	AX
+	CALL	Query_Max_UMB_Paras	; BX = largest free UMB block
+	POP	AX
+	CMP	BX,AX
+	JAE	exec_com_got_max
+exec_com_std_max:
 	MOV	BX,0FFFFh
 	invoke	$ALLOC			; largest piece available as error
+exec_com_got_max:
 	OR	BX,BX
-	JZ	exec_no_memj
+	JNZ	exec_com_sz_ok
+	JMP	exec_no_mem
+exec_com_sz_ok:
 	MOV	exec_size,BX		; save size of allocation block
 	PUSH	BX
 	invoke	$ALLOC			; largest piece available as error
@@ -601,7 +648,9 @@ exec_read_block:
 	jmp	exec_bad_file
 OkRead:
 	CMP	AX,SI			; did we read them all?
-	JZ	exec_no_memj		; exactly the wrong number... no memory
+	JNZ	OkRead_Fit
+	JMP	exec_no_mem		; exactly the wrong number... no memory
+OkRead_Fit:
 	TEST	BYTE PTR exec_func,exec_func_overlay
 	JNZ	exec_set_PDB		; no starto, chumo!
 	MOV	AX,exec_DMA
@@ -966,4 +1015,29 @@ Procedure    Reset_Version,near 	;AN008;MS.
 dont_reset:
 	return
 EndProc Reset_Version,near		;AN008;;MS.
+
+Procedure    Query_Max_UMB_Paras,near
+	PUSH   DS
+	PUSH   ES
+	PUSH   DI
+	PUSH   CX
+	PUSH   CS
+	POP    DS
+	ASSUME DS:DOSGROUP
+	MOV    AL,[AllocMethod]
+	PUSH   AX
+	AND    AL,03h
+	OR     AL,40h			; High-Only (UMBs only)
+	MOV    [AllocMethod],AL
+	MOV    BX,0FFFFh
+	invoke $ALLOC			; returns BX = largest free UMB block
+	POP    AX
+	MOV    CS:[AllocMethod],AL
+	POP    CX
+	POP    DI
+	POP    ES
+	POP    DS
+	ASSUME DS:NOTHING
+	return
+EndProc Query_Max_UMB_Paras
 

@@ -218,6 +218,45 @@ here:						;  loop forever.
 ;  Turn APPEND off during initialization processing
 ;
 okdos:
+	; Handle COMMAND /? when invoked as a secondary shell (PDB_Parent_PID != ES)
+	mov	ax, es
+	cmp	es:[PDB_Parent_PID], ax
+	je	cmd_no_qmark
+	mov	si, 0081h
+	mov	cl, ds:[0080h]
+	xor	ch, ch
+cmd_qm_lp:
+	jcxz	cmd_no_qmark
+	cmp	byte ptr ds:[si], '/'
+	jne	cmd_qm_nx
+	cmp	cx, 2
+	jb	cmd_no_qmark
+	mov	al, ds:[si+1]
+	cmp	al, 'C'
+	je	cmd_no_qmark		; stop before /C <command-line>!
+	cmp	al, 'c'
+	je	cmd_no_qmark
+	cmp	al, '?'
+	je	cmd_do_qmark
+cmd_qm_nx:
+	inc	si
+	dec	cx
+	jmp	cmd_qm_lp
+cmd_no_qmark:
+	jmp	cmd_after_qmark
+cmd_do_qmark:
+	call	cmd_qm_msg
+	db	'Starts a new instance of the CK-DOS 5.0 Command Interpreter.',13,10,13,10
+	db	'COMMAND [[drive:]path] [device] [/E:nnnnn] [/P] [/C string] [/MSG]',13,10,'$'
+cmd_qm_msg:
+	pop	dx
+	push	cs
+	pop	ds
+	mov	ah, 09h
+	int	21h
+	mov	ax, 4C00h
+	int	21h
+cmd_after_qmark:
 	mov	ax,AppendInstall		;AN042; see if append installed
 	int	2fh				;AN042;
 	cmp	al,0				;AN042; append installed?

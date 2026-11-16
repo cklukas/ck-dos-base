@@ -81,6 +81,38 @@ cp_len	    equ     ($ - cp_list)	 ;AN001;
 
 
 START1:
+	; Check for /? in PSP command tail (DS:0081h)
+	MOV	SI,0081h
+	MOV	CL,DS:[0080h]
+	XOR	CH,CH
+MORE_CHK_HELP:
+	JCXZ	MORE_NO_HELP
+	CMP	BYTE PTR DS:[SI],'/'
+	JNE	MORE_NEXT_CH
+	CMP	CX,2
+	JB	MORE_NO_HELP
+	CMP	BYTE PTR DS:[SI+1],'?'
+	JE	MORE_DO_HELP
+MORE_NEXT_CH:
+	INC	SI
+	DEC	CX
+	JMP	MORE_CHK_HELP
+MORE_NO_HELP:
+	JMP	MORE_AFTER_HELP
+MORE_DO_HELP:
+	CALL	MORE_HELP_TXT
+	DB	'Displays output one screen at a time.',13,10,13,10
+	DB	'MORE < [drive:][path]filename',13,10
+	DB	'command-name | MORE',13,10,'$'
+MORE_HELP_TXT:
+	POP	DX
+	PUSH	CS
+	POP	DS
+	MOV	AH,09h
+	INT	21h
+	MOV	AX,4C00h
+	INT	21h
+MORE_AFTER_HELP:
 	CALL	SYSLOADMSG		 ;AN000;
 	.IF C				 ;AN000;
 	  CALL	  SYSDISPMSG		 ;AN000;

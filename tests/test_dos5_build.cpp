@@ -83,6 +83,10 @@ DOSBASE_TEST(dos5_tree_contains_zero_prebuilt_binaries) {
     DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "HELP" / "HELP.ASM"));
     DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "HELP" / "HELPDATA.INC"));
     DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "SETVER" / "SETVER.ASM"));
+    DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "DOSKEY" / "DOSKEY.ASM"));
+    DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "LOADFIX" / "LOADFIX.ASM"));
+    DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "CMD" / "EXPAND" / "EXPAND.ASM"));
+    DOSBASE_TEST_EXPECT(fs::is_regular_file(dos5_src / "DEV" / "HIMEM" / "HIMEM.ASM"));
     DOSBASE_TEST_EXPECT(!fs::exists(dos5_src / "DOS" / "IFS.ASM"));
     DOSBASE_TEST_EXPECT(!fs::exists(dos5_src / "DOS" / "EXTATTR.ASM"));
     DOSBASE_TEST_EXPECT(!fs::exists(dos5_src / "CMD" / "IFSFUNC"));
@@ -175,6 +179,72 @@ DOSBASE_TEST(dos5_dosui_edit_and_help_assemble_link_and_convert) {
                                "SETVERXX");
         DOSBASE_TEST_EXPECT_EQ(std::string(reinterpret_cast<const char*>(&img[code_off + 18]), 4),
                                "CKSV");
+    }
+
+    // Verify clean-room HIMEM.SYS (DEV/HIMEM/HIMEM.ASM -> XMSXXXX0 character device)
+    const fs::path dev_root = fs::path(DOSBASE_SOURCE_DIR) / "os" / "ck-dos-5" / "src" / "DEV";
+    fs::copy_file(dev_root / "HIMEM" / "HIMEM.ASM", d / "HIMEM.ASM",
+                  fs::copy_options::overwrite_existing);
+    DOSBASE_TEST_EXPECT_EQ(
+        dosbase::bootstrap_test::run_tool(tool_dir, "ckmasm", {"-I.", "HIMEM.ASM,HIMEM.OBJ,NUL,NUL;"}, d),
+        0);
+    DOSBASE_TEST_EXPECT_EQ(
+        dosbase::bootstrap_test::run_tool(tool_dir, "cklink", {"HIMEM.OBJ,HIMEM.EXE,NUL,;"}, d), 0);
+    DOSBASE_TEST_EXPECT_EQ(
+        dosbase::bootstrap_test::run_tool(tool_dir, "ckexe2bin", {"HIMEM.EXE", "HIMEM.SYS"}, d), 0);
+    {
+        std::ifstream in(d / "HIMEM.SYS", std::ios::binary);
+        std::vector<unsigned char> sys((std::istreambuf_iterator<char>(in)),
+                                       std::istreambuf_iterator<char>());
+        DOSBASE_TEST_EXPECT(sys.size() > 1024u && sys.size() < 8192u);
+        DOSBASE_TEST_EXPECT_EQ(std::string(reinterpret_cast<const char*>(&sys[10]), 8),
+                               "XMSXXXX0");
+    }
+
+    // Verify DOSKEY.COM (starts with MOV AX, 0D700h / MOV BX, 434Bh host fast-path probe) and LOADFIX.COM
+    for (const char* stem : {"DOSKEY", "LOADFIX"}) {
+        fs::copy_file(cmd_root / stem / (std::string(stem) + ".ASM"),
+                      d / (std::string(stem) + ".ASM"),
+                      fs::copy_options::overwrite_existing);
+        DOSBASE_TEST_EXPECT_EQ(
+            dosbase::bootstrap_test::run_tool(
+                tool_dir, "ckmasm", {"-I.", std::string(stem) + ".ASM," + stem + ".OBJ,NUL,NUL;"}, d),
+            0);
+        DOSBASE_TEST_EXPECT_EQ(
+            dosbase::bootstrap_test::run_tool(
+                tool_dir, "cklink", {std::string(stem) + ".OBJ," + stem + ".EXE,NUL,;"}, d),
+            0);
+        DOSBASE_TEST_EXPECT_EQ(
+            dosbase::bootstrap_test::run_tool(
+                tool_dir, "ckexe2bin", {std::string(stem) + ".EXE", std::string(stem) + ".COM"}, d),
+            0);
+        const fs::path com_p = d / (std::string(stem) + ".COM");
+        DOSBASE_TEST_EXPECT(fs::is_regular_file(com_p));
+        std::ifstream in(com_p, std::ios::binary);
+        std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)),
+                                         std::istreambuf_iterator<char>());
+        DOSBASE_TEST_EXPECT(bytes.size() > 512u && bytes.size() < 0xFF00u);
+        DOSBASE_TEST_EXPECT(!(bytes[0] == 'M' && bytes[1] == 'Z'));
+        if (std::string(stem) == "DOSKEY") {
+            // B8 00 D7 BB 4B 43 = MOV AX, 0D700h / MOV BX, 434Bh
+            DOSBASE_TEST_EXPECT(bytes[0] == 0xB8u && bytes[1] == 0x00u && bytes[2] == 0xD7u);
+            DOSBASE_TEST_EXPECT(bytes[3] == 0xBBu && bytes[4] == 0x4Bu && bytes[5] == 0x43u);
+        }
+    }
+
+    // Verify EXPAND.EXE (SZDD + KWAJ decompressor)
+    fs::copy_file(cmd_root / "EXPAND" / "EXPAND.ASM", d / "EXPAND.ASM",
+                  fs::copy_options::overwrite_existing);
+    DOSBASE_TEST_EXPECT_EQ(
+        dosbase::bootstrap_test::run_tool(tool_dir, "ckmasm", {"-I.", "EXPAND.ASM,EXPAND.OBJ,NUL,NUL;"}, d),
+        0);
+    DOSBASE_TEST_EXPECT_EQ(
+        dosbase::bootstrap_test::run_tool(tool_dir, "cklink", {"EXPAND.OBJ,EXPAND.EXE,NUL,;"}, d), 0);
+    {
+        std::ifstream in(d / "EXPAND.EXE", std::ios::binary);
+        char hdr[2]{0, 0};
+        in.read(hdr, 2);
+        DOSBASE_TEST_EXPECT(hdr[0] == 'M' && hdr[1] == 'Z');
     }
 }
 #endif

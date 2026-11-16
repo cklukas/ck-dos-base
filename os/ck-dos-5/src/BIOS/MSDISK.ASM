@@ -1804,6 +1804,17 @@ not_floppy:
 	cmp	ah, 15h
 	je	ps2_30_Problem
 not_ps2_30:
+	cmp	ah, 02h
+	jb	normal_orig13
+	cmp	ah, 03h
+	ja	normal_orig13
+	push	ax
+	mov	ax, es
+	cmp	ax, 0F000h
+	pop	ax
+	jb	normal_orig13
+	jmp	bounce_high_io
+normal_orig13:
 	CALL	ORIG13			; SIMULATE INT 13
 	JC	GOTERR13_br		; ERROR?
 	RET	2			; NO, RETURN AND CLEAR FLAGS
@@ -2263,6 +2274,168 @@ BAD13:
 	MOV	SP,BP
 	RESTOREREG  <BP,BX,BX,CX,DX>
 	RET	2
+bh_orig_cnt	db	0
+
+bounce_high_io:
+	popf				; discard initial PUSHF from BLOCK13
+	mov	cs:[bh_orig_cnt], al
+	push	ds
+	push	es
+	push	si
+	push	di
+	push	dx
+	push	cx
+	push	bx
+	push	ax
+	mov	cs:[bp_save_bh], bp
+	mov	bp, sp
+	cld
+
+bh_sec_loop:
+	; Normalize user ES:BX when in UMB (< F000h) so multi-sector I/O never wraps 64K
+	mov	ax, [bp+12]
+	cmp	ax, 0F000h
+	jae	bh_chk_a20_1
+	mov	bx, [bp+2]
+	cmp	bx, 0FE00h
+	jb	bh_no_norm
+	mov	cl, 4
+	shr	bx, cl
+	add	[bp+12], bx
+	and	word ptr [bp+2], 000Fh
+	jmp	short bh_no_norm
+
+bh_chk_a20_1:
+	in	al, 92h
+	test	al, 02h
+	jnz	bh_no_norm
+	or	al, 02h
+	and	al, 0FEh
+	out	92h, al
+
+bh_no_norm:
+	cmp	byte ptr [bp+1], 03h	; ROMWRITE?
+	jne	bh_do_bios
+	mov	ds, [bp+12]
+	mov	si, [bp+2]
+	push	cs
+	pop	es
+	mov	di, offset DISKSECTOR
+	mov	cx, 256
+	rep	movsw
+
+bh_do_bios:
+	push	cs
+	pop	es
+	mov	bx, offset DISKSECTOR
+	mov	ah, [bp+1]
+	mov	al, 1
+	mov	cx, [bp+4]
+	mov	dx, [bp+6]
+	pushf
+	call	ORIG13
+	jnc	bh_after_bios
+	jmp	bh_err
+bh_after_bios:
+
+	cmp	byte ptr [bp+1], 02h	; ROMREAD?
+	jne	bh_next_sec
+	cmp	word ptr [bp+12], 0F000h
+	jb	bh_copy_out
+	in	al, 92h
+	test	al, 02h
+	jnz	bh_copy_out
+	or	al, 02h
+	and	al, 0FEh
+	out	92h, al
+bh_copy_out:
+	push	cs
+	pop	ds
+	mov	si, offset DISKSECTOR
+	mov	es, [bp+12]
+	mov	di, [bp+2]
+	mov	cx, 256
+	rep	movsw
+
+bh_next_sec:
+	add	word ptr [bp+2], 200h
+	dec	byte ptr [bp]
+	jz	bh_ok
+
+	; Advance CHS ([bp+4]=CX, [bp+6]=DX) by 1 sector using BIOS AH=08h geometry
+	mov	ah, 08h
+	mov	dl, byte ptr [bp+6]
+	push	bp
+	pushf
+	call	ORIG13
+	pop	bp
+	jc	bh_inc_floppy
+	and	cl, 3Fh
+	jz	bh_inc_floppy
+	mov	bl, cl			; bl = max sector (1..63)
+	mov	bh, dh			; bh = max head (0-based)
+	mov	cx, [bp+4]
+	mov	dx, [bp+6]
+	mov	al, cl
+	and	al, 3Fh
+	inc	al
+	cmp	al, bl
+	jbe	bh_set_cl
+	mov	al, 1
+	inc	dh
+	cmp	dh, bh
+	jbe	bh_set_cl
+	xor	dh, dh
+	inc	ch
+	jnz	bh_set_cl
+	add	cl, 40h
+bh_set_cl:
+	and	cl, 0C0h
+	or	cl, al
+	mov	[bp+4], cx
+	mov	[bp+6], dx
+	jmp	bh_sec_loop
+
+bh_inc_floppy:
+	inc	cl
+	mov	[bp+4], cx
+	jmp	bh_sec_loop
+
+bh_ok:
+	mov	al, cs:[bh_orig_cnt]
+	mov	[bp], al
+	mov	byte ptr [bp+1], 0
+	mov	bp, cs:[bp_save_bh]
+	pop	ax
+	pop	bx
+	pop	cx
+	pop	dx
+	pop	di
+	pop	si
+	pop	es
+	pop	ds
+	clc
+	ret	2
+
+bh_err:
+	mov	[bp+1], ah
+	mov	byte ptr [bp], 0
+	mov	bp, cs:[bp_save_bh]
+	pop	ax
+	pop	bx
+	pop	cx
+	pop	dx
+	pop	di
+	pop	si
+	pop	es
+	pop	ds
+	stc
+	ret	2
+
+bp_save_bh	dw	0
+
+
+
 BLOCK13 ENDP
 	PAGE
 	INCLUDE MSIOCTL.INC

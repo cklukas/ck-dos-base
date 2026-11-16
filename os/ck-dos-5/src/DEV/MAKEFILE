@@ -25,6 +25,8 @@ all:
         $(make)
         cd ..\xmaem
         $(make)
+        cd ..\himem
+        $(make)
 	cd ..
 
 

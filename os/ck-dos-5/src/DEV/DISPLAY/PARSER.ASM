@@ -211,6 +211,7 @@ CODE	      SEGMENT  PUBLIC BYTE 'CODE'
 
 
 .XLIST
+NO_PARSE_HELP EQU 1
 INCLUDE     PARSE.ASM	    ; Parsing code						 ;AN000;
 .LIST
 

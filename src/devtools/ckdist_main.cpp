@@ -764,10 +764,54 @@ void build_dos5_dosui_tools(const fs::path& tool_dir, const fs::path& out_stage)
         throw std::runtime_error("[CK-DOS 5.0] SETVER.EXE missing after cklink");
     }
 
+    auto build_flat_com = [&](const char* subdir, const char* stem) -> fs::path {
+        const fs::path d = out_stage / "CMD" / subdir;
+        if (!fs::is_directory(d)) {
+            throw std::runtime_error(std::string("[CK-DOS 5.0] missing CMD/") + subdir + " source directory");
+        }
+        const std::string asm_spec = std::string(stem) + ".ASM," + stem + ".OBJ,NUL,NUL;";
+        if (run_process({ckmasm.string(), "-I.", asm_spec}, d) != 0) {
+            throw std::runtime_error(std::string("[CK-DOS 5.0] ckmasm failed on CMD/") + subdir + "/" + stem + ".ASM");
+        }
+        const std::string lnk_spec = std::string(stem) + ".OBJ," + stem + ".EXE,NUL,;";
+        if (run_process({cklink.string(), lnk_spec}, d) != 0) {
+            throw std::runtime_error(std::string("[CK-DOS 5.0] cklink failed on ") + stem + ".EXE");
+        }
+        const std::string com_name = std::string(stem) + ".COM";
+        if (run_process({ckexe2bin.string(), std::string(stem) + ".EXE", com_name}, d) != 0) {
+            throw std::runtime_error(std::string("[CK-DOS 5.0] ckexe2bin failed on ") + com_name);
+        }
+        fs::remove(find_ci(d, std::string(stem) + ".EXE"), ec);
+        const fs::path com_out = find_ci(d, com_name);
+        validate_flat_com_image(com_out, com_name.c_str());
+        return com_out;
+    };
+
+    const fs::path doskey_com = build_flat_com("DOSKEY", "DOSKEY");
+    const fs::path loadfix_com = build_flat_com("LOADFIX", "LOADFIX");
+
+    const fs::path expand_dir = out_stage / "CMD" / "EXPAND";
+    if (!fs::is_directory(expand_dir)) {
+        throw std::runtime_error("[CK-DOS 5.0] missing CMD/EXPAND source directory");
+    }
+    if (run_process({ckmasm.string(), "-I.", "EXPAND.ASM,EXPAND.OBJ,NUL,NUL;"}, expand_dir) != 0) {
+        throw std::runtime_error("[CK-DOS 5.0] ckmasm failed on CMD/EXPAND/EXPAND.ASM");
+    }
+    if (run_process({cklink.string(), "EXPAND.OBJ,EXPAND.EXE,NUL,;"}, expand_dir) != 0) {
+        throw std::runtime_error("[CK-DOS 5.0] cklink failed on EXPAND.EXE");
+    }
+    const fs::path expand_exe = find_ci(expand_dir, "EXPAND.EXE");
+    if (!fs::is_regular_file(expand_exe) || fs::file_size(expand_exe) == 0) {
+        throw std::runtime_error("[CK-DOS 5.0] EXPAND.EXE missing after cklink");
+    }
+
     std::cout << "[CK-DOS 5.0] Built first-party tools: EDIT.COM ("
               << fs::file_size(edit_com) << " bytes), HELP.COM ("
               << fs::file_size(help_com) << " bytes), SETVER.EXE ("
-              << fs::file_size(setver_exe) << " bytes)\n";
+              << fs::file_size(setver_exe) << " bytes), DOSKEY.COM ("
+              << fs::file_size(doskey_com) << " bytes), LOADFIX.COM ("
+              << fs::file_size(loadfix_com) << " bytes), EXPAND.EXE ("
+              << fs::file_size(expand_exe) << " bytes)\n";
 }
 
 void build_dos_source_stage(const std::string& os_label,
@@ -1294,6 +1338,7 @@ OsMediaSpec make_dos5_media_spec(const std::string& version) {
         "@ECHO OFF\r\n"
         "PATH A:\\;A:\\DOS\r\n"
         "PROMPT $P$G\r\n"
+        "LH A:\\DOS\\DOSKEY >NUL\r\n"
         "ECHO.\r\n"
         "ECHO CK-DOS 5.00 (Clean-Room Release " + version + ")\r\n"
         "ECHO   Type INSTALL to install CK-DOS 5.00 onto hard drive C:\r\n"
@@ -1303,6 +1348,7 @@ OsMediaSpec make_dos5_media_spec(const std::string& version) {
         "@ECHO OFF\r\n"
         "PATH C:\\DOS;C:\\DEVTOOLS\r\n"
         "PROMPT $P$G\r\n"
+        "LH C:\\DOS\\DOSKEY >NUL\r\n"
         "ECHO CK-DOS 5.00 (Clean-Room Release " + version + ")\r\n"
         "VER\r\n";
     s.install_bat =
@@ -1371,9 +1417,22 @@ void build_os_media_set(const fs::path& stage,
     std::vector<std::pair<std::string, fs::path>> cmd_files;
     std::vector<std::pair<std::string, fs::path>> dev_files;
     collect_built_dos_payload(stage, cmd_files, dev_files);
+    if (spec.is_dos5) {
+        const fs::path himem_sys = find_ci(stage / "DEV" / "HIMEM", "HIMEM.SYS");
+        if (!fs::is_regular_file(himem_sys)) {
+            throw std::runtime_error("[CK-DOS 5.0] missing built DEV/HIMEM/HIMEM.SYS");
+        }
+        cmd_files.emplace_back("HIMEM.SYS", himem_sys);
+        std::sort(cmd_files.begin(), cmd_files.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
+    }
 
-    const std::string cfg_floppy = "FILES=30\r\nBUFFERS=20\r\n";
-    const std::string cfg_hdd = "FILES=40\r\nBUFFERS=25\r\nDEVICE=C:\\DEV\\ANSI.SYS\r\n";
+    const std::string cfg_floppy = spec.is_dos5
+        ? "FILES=30\r\nBUFFERS=20\r\nDEVICE=A:\\DOS\\HIMEM.SYS\r\nDOS=HIGH,UMB\r\n"
+        : "FILES=30\r\nBUFFERS=20\r\n";
+    const std::string cfg_hdd = spec.is_dos5
+        ? "FILES=30\r\nBUFFERS=20\r\nDEVICE=C:\\DOS\\HIMEM.SYS\r\nDOS=HIGH,UMB\r\nDEVICEHIGH=C:\\DEV\\ANSI.SYS\r\n"
+        : "FILES=40\r\nBUFFERS=25\r\nDEVICE=C:\\DEV\\ANSI.SYS\r\n";
 
     // 1. Build 1.44 MB All-in-One Boot + Install Floppy
     const fs::path img_1440 = dist_dir / (spec.prefix + "-floppy-1440k.img");
@@ -1414,10 +1473,17 @@ void build_os_media_set(const fs::path& stage,
         d1_cmds.insert("EDIT.COM");
         d1_cmds.insert("HELP.COM");
         d1_cmds.insert("SETVER.EXE");
+        d1_cmds.insert("DOSKEY.COM");
+        d1_cmds.insert("LOADFIX.COM");
+        d1_cmds.insert("EXPAND.EXE");
+        d1_cmds.insert("HIMEM.SYS");
     }
-    const std::set<std::string> d1_devs = {
+    std::set<std::string> d1_devs = {
         "ANSI.SYS", "COUNTRY.SYS", "DISPLAY.SYS", "DRIVER.SYS",
         "KEYBOARD.SYS", "RAMDRIVE.SYS", "VDISK.SYS"};
+    if (spec.is_dos5) {
+        d1_devs.insert("HIMEM.SYS");
+    }
 
     const fs::path img_720_1 = dist_dir / (spec.prefix + "-floppy-720k-disk1.img");
     const fs::path img_720_2 = dist_dir / (spec.prefix + "-floppy-720k-disk2.img");
@@ -1840,6 +1906,34 @@ void verify_boot_media_with_qemu(const fs::path& dist_dir,
 
             type_cmd("cls\n");
             std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            type_cmd("mem\n");
+            wait_for_tokens({"CK-DOS is resident in the High Memory Area.", "largest executable program size"},
+                            "MEM HMA status");
+            std::cout << "QEMU utility verified: dos5 MEM (DOS=HIGH,UMB in HMA)\n";
+
+            type_cmd("cls\n");
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            type_cmd("doskey /?\n");
+            wait_for_tokens({"Edits command lines, recalls CK-DOS commands, and creates macros.", "DOSKEY"},
+                            "DOSKEY.COM /?");
+            std::cout << "QEMU utility verified: dos5 DOSKEY.COM /?\n";
+
+            type_cmd("cls\n");
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            type_cmd("loadfix /?\n");
+            wait_for_tokens({"Loads a program above the first 64K", "LOADFIX"},
+                            "LOADFIX.COM /?");
+            std::cout << "QEMU utility verified: dos5 LOADFIX.COM /?\n";
+
+            type_cmd("cls\n");
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            type_cmd("expand /?\n");
+            wait_for_tokens({"Expands one or more compressed files.", "EXPAND"},
+                            "EXPAND.EXE /?");
+            std::cout << "QEMU utility verified: dos5 EXPAND.EXE /?\n";
+
+            type_cmd("cls\n");
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
             type_cmd("edit /?\n");
             wait_for_tokens({"Starts the CK-DOS Editor", "EDIT [[drive:][path]filename]"}, "EDIT.COM /?");
             std::cout << "QEMU utility verified: dos5 EDIT.COM /?\n";
@@ -1872,10 +1966,61 @@ void verify_boot_media_with_qemu(const fs::path& dist_dir,
 #endif
 }
 
+void stage_vm_boot_dir(const fs::path& stage,
+                       const fs::path& boot_out,
+                       bool is_dos5) {
+    std::error_code ec;
+    fs::remove_all(boot_out, ec);
+    fs::create_directories(boot_out / "DOS");
+
+    const fs::path msboot_path = find_ci(stage / "BOOT", "MSBOOT.BIN");
+    const fs::path io_sys = find_ci(stage / "BIOS", "IO.SYS");
+    const fs::path msdos_sys = find_ci(stage / "DOS", "MSDOS.SYS");
+    const fs::path command_com = find_ci(stage / "CMD" / "COMMAND", "COMMAND.COM");
+
+    fs::copy_file(msboot_path, boot_out / "MSBOOT.BIN", fs::copy_options::overwrite_existing);
+    fs::copy_file(io_sys, boot_out / "IO.SYS", fs::copy_options::overwrite_existing);
+    fs::copy_file(msdos_sys, boot_out / "MSDOS.SYS", fs::copy_options::overwrite_existing);
+    fs::copy_file(command_com, boot_out / "COMMAND.COM", fs::copy_options::overwrite_existing);
+
+    std::vector<std::pair<std::string, fs::path>> cmd_files;
+    std::vector<std::pair<std::string, fs::path>> dev_files;
+    collect_built_dos_payload(stage, cmd_files, dev_files);
+
+    for (const auto& [name, p] : cmd_files) {
+        fs::copy_file(p, boot_out / "DOS" / name, fs::copy_options::overwrite_existing);
+    }
+    for (const auto& [name, p] : dev_files) {
+        fs::copy_file(p, boot_out / "DOS" / name, fs::copy_options::overwrite_existing);
+    }
+
+    if (is_dos5) {
+        const fs::path himem_sys = find_ci(stage / "DEV" / "HIMEM", "HIMEM.SYS");
+        if (!fs::is_regular_file(himem_sys)) {
+            throw std::runtime_error("[CK-DOS 5.0] missing built DEV/HIMEM/HIMEM.SYS for stage-vm");
+        }
+        fs::copy_file(himem_sys, boot_out / "HIMEM.SYS", fs::copy_options::overwrite_existing);
+        fs::copy_file(himem_sys, boot_out / "DOS" / "HIMEM.SYS", fs::copy_options::overwrite_existing);
+        write_text_file(boot_out / "CONFIG.SYS",
+                        "FILES=30\r\nBUFFERS=20\r\nDEVICE=\\DOS\\HIMEM.SYS\r\nDOS=HIGH,UMB\r\n");
+        write_text_file(boot_out / "AUTOEXEC.BAT",
+                        "@ECHO OFF\r\nPROMPT $P$G\r\nPATH C:\\DOS;A:\\DOS;A:\\\r\nLH DOSKEY >NUL\r\nVER\r\n");
+    } else {
+        write_text_file(boot_out / "CONFIG.SYS", "FILES=30\r\nBUFFERS=20\r\n");
+        write_text_file(boot_out / "AUTOEXEC.BAT",
+                        "@ECHO OFF\r\nPROMPT $P$G\r\nPATH C:\\DOS;A:\\DOS;A:\\\r\nVER\r\n");
+    }
+
+    std::cout << "Staged " << (is_dos5 ? "CK-DOS 5.0" : "CK-DOS 4.0") << " VM boot directory at "
+              << boot_out.string() << " (" << (cmd_files.size() + dev_files.size()) << " DOS/* payloads)\n";
+}
+
 void print_usage() {
     std::cerr << "Usage:\n"
               << "  ckdist verify-build [--os dos4|dos5|all] [--repo-root DIR] [--tool-dir DIR]\n"
               << "                      [--verify-manifest JSON] [--write-manifest JSON]\n"
+              << "  ckdist stage-vm [--os dos4|dos5|all] [--repo-root DIR] [--tool-dir DIR] --output DIR\n"
+              << "                  [--verify-manifest JSON]\n"
               << "  ckdist build-dos-tools [--repo-root DIR] [--tool-dir DIR] --out-dir DIR\n"
               << "  ckdist release [--os dos4|dos5|all] [--repo-root DIR] [--tool-dir DIR] --output DIR\n"
               << "                 [--version VER] [--platform PLAT] [--verify-manifest JSON]\n"
@@ -1950,6 +2095,26 @@ int main(int argc, char** argv) {
                 build_and_verify_dos5_tree(
                     repo_root, tool_dir, scratch.path(), stage5,
                     os_target == OsTarget::Dos5 ? write_manifest : fs::path{});
+            }
+            return 0;
+        }
+        if (subcmd == "stage-vm") {
+            if (output_dir.empty()) {
+                std::cerr << "ckdist stage-vm requires --output\n";
+                return 1;
+            }
+            fs::create_directories(output_dir);
+            ScratchDir scratch("ckdist-stage-vm");
+            if (includes_dos4(os_target)) {
+                fs::path stage4;
+                build_and_verify_dos4_tree(repo_root, tool_dir, scratch.path(), stage4,
+                                           {}, verify_manifest);
+                stage_vm_boot_dir(stage4, output_dir / "boot" / "dos4", false);
+            }
+            if (includes_dos5(os_target)) {
+                fs::path stage5;
+                build_and_verify_dos5_tree(repo_root, tool_dir, scratch.path(), stage5, {});
+                stage_vm_boot_dir(stage5, output_dir / "boot" / "dos5", true);
             }
             return 0;
         }

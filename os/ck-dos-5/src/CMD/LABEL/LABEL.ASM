@@ -358,6 +358,36 @@ DBCSev_Seg	   dw	0	   ;AC000;D segment of DBCS EV
 Main_Begin Proc Near
    mov	sp,offset End_Stack_Area   ;Move stack to user area(Added in DOS 3.20)
    cld
+   mov	si,0081h
+   mov	cl,ds:[0080h]
+   xor	ch,ch
+Label_Chk_Help:
+   jcxz	Label_No_Help
+   cmp	byte ptr ds:[si],'/'
+   jne	Label_Next_Help
+   cmp	cx,2
+   jb	Label_No_Help
+   cmp	byte ptr ds:[si+1],'?'
+   je	Label_Do_Help
+Label_Next_Help:
+   inc	si
+   dec	cx
+   jmp	Label_Chk_Help
+Label_No_Help:
+   jmp	Label_After_Help
+Label_Do_Help:
+   call	Label_Help_Str
+   db	'Creates, changes, or deletes the volume label of a disk.',13,10,13,10
+   db	'LABEL [drive:][label]',13,10,'$'
+Label_Help_Str:
+   pop	dx
+   push	cs
+   pop	ds
+   mov	ah,09h
+   int	21h
+   mov	ax,4C00h
+   int	21h
+Label_After_Help:
    call Preload_Messages	   ;AN000;M Check DOS version & load msgs
    call Drive_Setup		   ;Get Drive letters
    call Find_Old_Label		   ;Get label if exist

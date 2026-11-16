@@ -18,6 +18,7 @@ title	       C to PARSER interface
 ;	extrn	sysparse:far
 
 	public	_parse
+	public	_query_xms_free_kb
 
 ;-------------------------------------------------------------------
 ;FarSW	 equ	 0	 ; make sysparse be a NEAR proc
@@ -60,6 +61,7 @@ _DATA	segment word public 'DATA'
 
 ;-------------------------------------------------------------------
 .xlist
+NO_PARSE_HELP EQU 1
 include parse.asm		; include the parser
 .list
 ;-------------------------------------------------------------------
@@ -159,6 +161,36 @@ _parse	proc	near
 	ret
 
 _parse	endp
+
+; Returns unsigned int: total free XMS KB (AH=08h DX), or 0FFFFh if no XMS
+_query_xms_free_kb proc near
+	push	bx
+	push	cx
+	push	dx
+	push	es
+	mov	ax, 4300h
+	int	2Fh
+	cmp	al, 80h
+	jne	qx_none
+	mov	ax, 4310h
+	int	2Fh
+	mov	word ptr cs:[qx_vec], bx
+	mov	word ptr cs:[qx_vec+2], es
+	mov	ah, 08h
+	xor	bl, bl
+	call	dword ptr cs:[qx_vec]
+	mov	ax, dx
+	jmp	short qx_done
+qx_none:
+	mov	ax, 0FFFFh
+qx_done:
+	pop	es
+	pop	dx
+	pop	cx
+	pop	bx
+	ret
+qx_vec	dd	0
+_query_xms_free_kb endp
 
 _TEXT	ends			; end code segment
 	end

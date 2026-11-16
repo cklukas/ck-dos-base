@@ -224,6 +224,10 @@ nocheck:
     call    cmd_copy
 
 switcheck:
+    call    check_internal_help
+    jnc     no_int_help_sw
+    jmp     Cmd_done
+no_int_help_sw:
     test    [CHKDRV], fSwitchAllowed		; Does the command take switches
     jnz     realwork				; Yes, process the command
     call    noswit				; No, check to see if any switches
@@ -649,6 +653,89 @@ test_append	proc near
 	ret
 
 test_append	endp
+
+; Checks CS:81h (length CS:80h) for /? on internal commands; prints help & sets CF=1
+check_internal_help proc near
+	cmp	bx, offset TRANGROUP:TCOMMAND	; leave REM untouched in batch files
+	je	cih_no
+	push	ax
+	push	cx
+	push	si
+	mov	si, 81h
+	mov	cl, ds:[80h]
+	xor	ch, ch
+	xor	ah, ah
+cih_scan:
+	jcxz	cih_pop_no
+	mov	al, ds:[si]
+	cmp	al, '"'
+	jne	cih_notq
+	xor	ah, 1
+	jmp	cih_adv
+cih_notq:
+	or	ah, ah
+	jnz	cih_adv
+	cmp	al, '/'
+	jne	cih_adv
+	cmp	cx, 2
+	jb	cih_pop_no
+	cmp	byte ptr ds:[si+1], '?'
+	je	cih_found
+cih_adv:
+	inc	si
+	dec	cx
+	jmp	cih_scan
+
+cih_pop_no:
+	pop	si
+	pop	cx
+	pop	ax
+cih_no:
+	clc
+	ret
+
+cih_found:
+	pop	si
+	pop	cx
+	pop	ax
+	call	cih_strs
+	db	'CK-DOS 5.0 Internal Command: ',0
+	db	13,10,'Type HELP ',0
+	db	' for full syntax, switches, and examples.',13,10,0
+cih_strs:
+	pop	di
+	call	cih_out_cs
+	call	cih_out_id
+	call	cih_out_cs
+	call	cih_out_id
+	call	cih_out_cs
+	stc
+	ret
+
+cih_out_cs:
+	mov	dl, cs:[di]
+	inc	di
+	or	dl, dl
+	jz	cih_ret
+	mov	ah, 02h
+	int	21h
+	jmp	cih_out_cs
+
+cih_out_id:
+	mov	si, offset TRANGROUP:IDLEN+1
+	mov	cl, ds:[IDLEN]
+	xor	ch, ch
+cih_id_lp:
+	jcxz	cih_ret
+	mov	dl, ds:[si]
+	mov	ah, 02h
+	int	21h
+	inc	si
+	dec	cx
+	jmp	cih_id_lp
+cih_ret:
+	ret
+check_internal_help endp
 
 TRANCODE    ENDS
 	    END

@@ -91,6 +91,7 @@ MSG_SERVICES <ANSI.CL1> 								 ;AN000;
 MSG_SERVICES <ANSI.CL2> 								 ;AN000;
 MSG_SERVICES <ANSI.CLA> 								 ;AN000;
 
+NO_PARSE_HELP EQU 1
 INCLUDE     PARSE.ASM	    ; Parsing code						 ;AN000;
 .LIST
 

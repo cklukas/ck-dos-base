@@ -167,6 +167,7 @@ DATARES SEGMENT PUBLIC BYTE
 	PUBLIC	TRNSEG
 	PUBLIC	TrnMvFlg
 	PUBLIC	VERVAL
+	PUBLIC	LH_ACTIVE
 	PUBLIC	VolName
 	PUBLIC	VOLSER			;AN000;
 	PUBLIC	yes_char
@@ -470,6 +471,7 @@ RESTDIR 	DB	0
 PERMCOM 	DB	0			; TRUE => permanent command
 SINGLECOM	DW	0			; TRUE => single command version
 VERVAL		DW	-1
+LH_ACTIVE	DB	0
 fFail		DB	0			; TRUE => FAIL all INT 24s
 IFFLAG		DB	0			; TRUE => If statement in progress
 

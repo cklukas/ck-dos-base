@@ -502,8 +502,8 @@ Org3:
 	je	Org_file		;AN000;
 	cmp	Cmd_Indicator, 'D'      ;AN000; Device= command?
 	je	Org_file		;AN000;
-	cmp	Cmd_Indicator, 'J'      ;AN000; IFS= command?
-	je	Org_file		;AN000;
+	cmp	Cmd_Indicator, 'U'      ; DeviceHigh= command?
+	je	Org_file		;
 	cmp	Cmd_Indicator, 'S'      ;AN000; Shell= is a special one!!!
 	je	Org_file		;AN000;
 	cmp	Cmd_Indicator, '1'      ;AN013; SWITCHES= command?
@@ -1501,7 +1501,9 @@ COMTAB	LABEL	BYTE
 ;;;;	   DB	   8,"AVAILDEV",'A'     ; NO LONGER SUPPORTED
 	DB	7,"BUFFERS",  'B'
 	DB	5,"BREAK",    'C'
+	DB     10,"DEVICEHIGH",'U'
 	DB	6,"DEVICE",   'D'
+	DB	3,"DOS",      'O'
 	DB	5,"FILES",    'F'
 	DB	4,"FCBS",     'X'
 	DB	9,"LASTDRIVE",'L'

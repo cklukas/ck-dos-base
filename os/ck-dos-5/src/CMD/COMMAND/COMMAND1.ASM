@@ -345,6 +345,7 @@ DATARES SEGMENT PUBLIC BYTE
 	EXTRN	PIPEFLAG:BYTE
 	EXTRN	RETCODE:WORD
 	EXTRN	SINGLECOM:WORD
+	EXTRN	LH_ACTIVE:BYTE
 DATARES ENDS
 
 BATARENA	SEGMENT PUBLIC PARA	;AC000;
@@ -454,9 +455,58 @@ ASSUME	ES:RESGROUP				;AN000;
 ;
 EXT_EXEC:
 	push	dx				;AN000; save the command name offset
+	mov	byte ptr cs:[LH_APPLIED], 0
+	cmp	byte ptr cs:[LH_ACTIVE], 0
+	je	EXT_EXEC_DO
+	push	ax
+	push	bx
+	mov	ax, 5800h
+	int	int_command
+	mov	cs:[LH_OLD_STRAT], al
+	mov	ax, 5802h
+	int	int_command
+	mov	cs:[LH_OLD_UMB], al
+	mov	ax, 5803h
+	mov	bx, 0001h
+	int	int_command
+	jc	EXT_EXEC_NO_UMB
+	mov	ax, 5801h
+	mov	bx, 0080h			; High First, then Low fallback
+	int	int_command
+	mov	byte ptr cs:[LH_APPLIED], 1
+EXT_EXEC_NO_UMB:
+	pop	bx
+	pop	ax
+EXT_EXEC_DO:
 	INT	int_command			; Do the EXEC
+	pushf
+	mov	byte ptr cs:[LH_ACTIVE], 0
+	cmp	byte ptr cs:[LH_APPLIED], 0
+	je	EXT_EXEC_REST_DONE
+	push	ax
+	push	bx
+	mov	byte ptr cs:[LH_APPLIED], 0
+	xor	bh, bh
+	mov	bl, cs:[LH_OLD_STRAT]
+	mov	ax, 5801h
+	int	int_command
+	xor	bh, bh
+	mov	bl, cs:[LH_OLD_UMB]
+	mov	ax, 5803h
+	int	int_command
+	pop	bx
+	pop	ax
+EXT_EXEC_REST_DONE:
+	popf
 	pop	dx				;AN000; restore the command name offset
-	JC	EXEC_ERR			; EXEC failed
+	JC	EXEC_ERR_J			; EXEC failed
+	JMP	SHORT EXEC_WAIT
+EXEC_ERR_J:
+	JMP	EXEC_ERR
+
+LH_APPLIED	DB	0
+LH_OLD_STRAT	DB	0
+LH_OLD_UMB	DB	0
 ;
 ; The exec has completed.  Retrieve the exit code.
 ;

@@ -95,6 +95,15 @@ SYSINITVAR  LABEL   WORD		; [SYSTEM]
 	I_am	UMB_LINK_STATE,BYTE,<0>	; [SYSTEM] 0=unlinked, 1=UMBs linked to arena
 	I_am	UMB_HEAD,WORD,<0>	; [SYSTEM] first UMB arena paragraph (0 if none)
 	I_am	CONV_END_ARENA,WORD,<0>	; [SYSTEM] bridge MCB at top of conventional RAM
+	I_am	DOS_TEMP_SIZE_BYTES,WORD,<0> ; [SYSTEM] total bytes of DOSGROUP + boot DPBs
+	I_am	LOW_STUB_SEG,WORD,<0>	; [SYSTEM] low conventional stub segment
+
+	; Exact offset 00C0h in CONSTANTS = 00D0h in DOSGROUP (FFFF:00D0h = 1000C0h)
+	; so PSP:0005h CP/M CALL 5 lands cleanly on a JMP FAR when A20 is enabled!
+	ORG	0C0h
+	PUBLIC	CALL5_HMA_JMP
+CALL5_HMA_JMP	LABEL BYTE
+	DB	0EAh, 0, 0, 0, 0
 
 	PUBLIC	DEFAULT_SETVER_TABLE,DEFAULT_SETVER_END
 DEFAULT_SETVER_TABLE LABEL BYTE

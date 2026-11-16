@@ -14,6 +14,7 @@
 ;-----------------------------------------------------------------------;
 
 include xma2emsp.inc			; include parser things
+NO_PARSE_HELP EQU 1
 include parse.asm
 
 GET_PARMS PROC

@@ -1,0 +1,11 @@
+#*********************** Makefile for HIMEM.SYS ***************************
+
+all: himem.sys
+
+himem.obj: himem.asm
+	masm -Mx -t -I. himem.asm,himem.obj;
+
+himem.sys: himem.obj makefile
+	link himem.obj,himem.exe,nul,;
+	exe2bin himem.exe himem.sys
+	del himem.exe

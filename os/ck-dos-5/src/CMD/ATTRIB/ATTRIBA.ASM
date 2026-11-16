@@ -95,7 +95,7 @@ const	   segment word public 'CONST'
 const	   ends
 _bss	   segment word public 'BSS'
 _bss	   ends
-pgroup	   group base,_text
+pgroup	   group _text
 dgroup	   group null, _data, const, _bss, stack
 
 	   page

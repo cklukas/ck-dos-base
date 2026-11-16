@@ -313,6 +313,11 @@ byte *v[];
                         {
                                 switch(toupper( *(v[i]+j+1)))
                                 {
+                                     case '?' :
+                                         printf("Compares two files or sets of files and displays the differences.\n\n");
+                                         printf("FC [/A] [/C] [/L] [/LBn] [/N] [/T] [/W] [/nnnn] file1 file2\n");
+                                         printf("FC /B file1 file2\n");
+                                         exit(0);
                                      case 'A' :
                                              fAbbrev = TRUE;
                                          break;

@@ -216,6 +216,7 @@ EXTRN	    TABLE:WORD	     ; table for variable storage used by INIT module.	    
 EXTRN	    DEVICE_NUM:WORD							    ;AN000;
 
 .XLIST
+NO_PARSE_HELP EQU 1
 INCLUDE     PARSE.ASM	    ; Parsing code					    ;AN000;
 .LIST
 

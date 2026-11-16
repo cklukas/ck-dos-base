@@ -231,6 +231,36 @@ START:
 HEADER	DB	"Vers 2.40"
 
 DSTRT:
+	mov	si,0081h
+	mov	cl,ds:[0080h]
+	xor	ch,ch
+deb_chk_help:
+	jcxz	deb_no_help
+	cmp	byte ptr ds:[si],'/'
+	jne	deb_next_help
+	cmp	cx,2
+	jb	deb_no_help
+	cmp	byte ptr ds:[si+1],'?'
+	je	deb_do_help
+deb_next_help:
+	inc	si
+	dec	cx
+	jmp	deb_chk_help
+deb_no_help:
+	jmp	deb_after_help
+deb_do_help:
+	call	deb_help_str
+	db	'Runs Debug, a program testing and editing tool.',13,10,13,10
+	db	'DEBUG [[drive:][path]filename [testfile-parameters]]',13,10,'$'
+deb_help_str:
+	pop	dx
+	push	cs
+	pop	ds
+	mov	ah,09h
+	int	21h
+	mov	ax,4C00h
+	int	21h
+deb_after_help:
 ;=========================================================================
 ; invoke PRE_LOAD_MESSAGE here.  If the messages were not loaded we will
 ; exit with an appropriate error message.

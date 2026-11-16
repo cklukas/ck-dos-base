@@ -197,6 +197,7 @@ QusSW	equ	0	; Support quoted string format
 ;.xlist
 assume ds:nothing				;AN007;!!!Parse.ASM sometimes assumes DS
 						;      to access its own variable!!!
+NO_PARSE_HELP EQU 1
 	include PARSE.ASM			;together with PSDATA.INC
 assume ds:code					;AN007;
 ;.list

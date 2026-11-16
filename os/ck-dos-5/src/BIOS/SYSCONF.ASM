@@ -210,6 +210,7 @@ XMAEM_file	db	'XMAEM.SYS',0	;AN029;
 ;******************************************************************************
 .xlist
 	include PSOPTION.INC			;Parsing options for SYSCONF.
+NO_PARSE_HELP EQU 1
 	include PARSE.ASM			;together with PSDATA.INC
 .list
 ;Control block definitions for PARSER.
@@ -594,6 +595,19 @@ Swit_K		label	byte	;AN019;
 ;local variables
 P_Swit_K	db     0	;AN019;
 
+	PUBLIC	Dos_High_Flag, Dos_Umb_Flag, Umb_Head_Seg, Conv_End_Seg, Xms_Entry_Ptr
+	PUBLIC	Init_XMS_And_UMBs
+Dos_High_Flag	db	0
+Dos_Umb_Flag	db	0
+Umb_Head_Seg	dw	0
+Conv_End_Seg	dw	0
+Xms_Entry_Ptr	dd	0
+Loading_UMB_MCB	dw	0
+Saved_Low_MemHi	dw	0
+Saved_Low_Lim	dw	0
+UMB_Slot_Count	dw	0
+UMB_Slots	dw	16 dup (0)
+
 ;******************************************************************************
 
 DOCONF:
@@ -807,14 +821,22 @@ TRYI:
 	cmp	Multi_Pass_Id, 3		;AN026; the third pass for INSTALL= ?
 	je	Multi_Try_I			;AN026;
 	cmp	ah, 'I' 			;AN018; INSTALL= command?
-	jne	TryB				;AN018; the first pass is for normal operation.
+	je	Found_Install_P1
+	jmp	TryB				;AN018; the first pass is for normal operation.
+Found_Install_P1:
 	or	Install_Flag, HAVE_INSTALL_CMD	;AN018; Set the flag
 	jmp	coff				;AN018; and handles the next command
 
 Multi_Try_XMAEM:				;AN029;
+	cmp	ah, 'O'				; DOS=HIGH|LOW[,UMB|NOUMB]?
+	jne	Multi_Try_Dev0
+	mov	byte ptr es:[si-1], 0FFh	; mark handled for Pass 1
+	call	Parse_Dos_Cmd
+	jmp	Coff
+Multi_Try_Dev0:
 	cmp	ah, 'D' 			;AN029; device= command?
 	jne	Multi_Try_Buff			;AN029; no skip it.
-	call	Chk_XMAEM			;AN029; is it for XMAEM.SYS?
+	call	Chk_XMAEM			;AN029; is it HIMEM.SYS or XMAEM.SYS?
 	jnz	Multi_Pass_FIlter		;AN029; no skip it.
 	mov	byte ptr es:[si-1], 0FFh	;AN029; mark this command as a Null command for the next pass.
 	jmp	TryDJ				;AN029; execute this command.
@@ -1267,12 +1289,22 @@ $$SR40:
 ;------------------------------------------------------------------------------
 TRYDJ:
 	and	cs:IFS_Flag, NOT_IFS	;AN000; Reset the flag
+	mov	cs:[Loading_UMB_MCB], 0
 	CMP	AH,'D'
 	JZ	GOTDJ
+	CMP	AH,'U'
+	JZ	GOT_DEVHIGH
+	CMP	AH,'O'
+	JNE	NOT_DOS_PASS1
+	call	Parse_Dos_Cmd
+	jmp	Coff
+NOT_DOS_PASS1:
 	JMP	TRYQ
 
+GOT_DEVHIGH:
+	call	Prep_UMB_For_Device	; switches MEMHI/ALLOCLIM into UMB if one fits!
 GOTDJ:
-	MOV	BX,CS			;DEVICE= or IFS= command.
+	MOV	BX,CS			;DEVICE= or DEVICEHIGH= command.
 	MOV	DS,BX
 
 	MOV	WORD PTR [BPB_ADDR],SI
@@ -1394,6 +1426,7 @@ BADBRK:
 	jnz	Skip0_ResetMEMHI	;AN004; then do not
 	dec	cs:[MEMHI]		   ;AN004;Adjust MEMHI by a paragrah of DEVMARK.
 Skip0_ResetMEMHI:
+	call	Abort_UMB_Device_Load
 	cmp	byte ptr es:[si], CR	;file name is CR? (Somebody entered "device=" without filename)
 	jne	BADBRK_1
 	jmp	BADOP			;show "Unrecognized command in CONFIG.SYS"
@@ -1452,6 +1485,7 @@ ERASE_DEV_do:				;AC000;; Modified to show message "Error in CONFIG.SYS..."
 	jnz	Skip1_ResetMEMHI	;AN004; then do not
 	dec	[MEMHI] 		;AN004;Adjust MEMHI by a paragrah of DEVMARK.
 Skip1_ResetMEMHI:
+	call	Abort_UMB_Device_Load
 	cmp	ConfigMsgFlag, 0	;AN015;
 	je	No_Error_Line_Msg	;AN015;
 	call	Error_Line		;AN021; No "Error in CONFIG.SYS" msg for device driver. DCR D493
@@ -1461,8 +1495,8 @@ No_Error_Line_Msg:			;AN015;
 
 Was_Device_Com: 			;AN000;
 	MOV	AX,WORD PTR [BREAK_ADDR+2]
-	CMP	AX,[MEMORY_SIZE]
-	JB	BREAKOK
+	CMP	AX,[ALLOCLIM]
+	JBE	BREAKOK
 	POP	SI
 	POP	ES
 	JMP	BADBRK
@@ -1586,6 +1620,7 @@ ENDDEV:
 	inc	cs:MultDeviceFlag	;AN001; Possibly multiple device driver.
 	JMP	GOODLD			;OTHERWISE PRETEND WE LOADED IT IN
 COFFJ3: mov	cs:MultDeviceFlag, 0	;AN001; Reset the flag
+	call	Commit_UMB_Device_Load
 	JMP	COFF
 
 Bad_BPB_Size_Sector:
@@ -1599,6 +1634,7 @@ Bad_BPB_Size_Sector:
 	jnz	Skip2_ResetMEMHI	;AN004; then do not
 	dec	[MEMHI] 		;AN004;Adjust MEMHI by a paragrah of DEVMARK.
 Skip2_ResetMEMHI:
+	call	Abort_UMB_Device_Load
 	JMP	COFF
 
 
@@ -2696,6 +2732,12 @@ CX_Got_Tail0:				;AN029;
 	pop	ds			;AN029;
 	push	si			;AN029;
 	pop	di			;AN029;now es:di -> filename,0
+	push	di
+	mov	cx, 10
+	mov	si, offset HIMEM_File	; match HIMEM.SYS,0
+	repe	cmpsb
+	pop	di
+	je	CX_Ret
 	mov	cx, 9			;AN029;
 	mov	si, offset XMAEM_File	;AN029;ds:si -> XMAEM.SYS,0
 	repe	cmpsb			;AN029;
@@ -2707,6 +2749,402 @@ CX_Ret: 				;AN029;
 	pop	es			;AN029;
 	ret				;AN029;
 Chk_XMAEM	endp
+
+HIMEM_File	db	'HIMEM.SYS',0
+
+; ---------------------------------------------------------------------------
+; Parse_Dos_Cmd: parses ES:SI (uppercase) for HIGH, LOW, UMB, NOUMB
+; ---------------------------------------------------------------------------
+Parse_Dos_Cmd	proc	near
+	push	ax
+	push	si
+PDC_Next_Tok:
+	mov	al, es:[si]
+	cmp	al, CR
+	je	PDC_Done
+	cmp	al, LF
+	je	PDC_Done
+	or	al, al
+	jz	PDC_Done
+	cmp	al, ' '
+	je	PDC_Skip1
+	cmp	al, TAB
+	je	PDC_Skip1
+	cmp	al, ','
+	je	PDC_Skip1
+	cmp	al, '='
+	je	PDC_Skip1
+	jmp	short PDC_Chk_High
+
+PDC_Skip1:
+	inc	si
+	jmp	short PDC_Next_Tok
+
+PDC_Done:
+	pop	si
+	pop	ax
+	ret
+
+PDC_Chk_High:
+	; Check HIGH
+	cmp	word ptr es:[si], 4948h		; 'HI'
+	jne	PDC_Chk_Low
+	cmp	word ptr es:[si+2], 4847h	; 'GH'
+	jne	PDC_Skip_Word
+	mov	cs:[Dos_High_Flag], 1
+	add	si, 4
+	jmp	short PDC_Next_Tok
+
+PDC_Chk_Low:
+	cmp	word ptr es:[si], 4F4Ch		; 'LO'
+	jne	PDC_Chk_Umb
+	cmp	byte ptr es:[si+2], 'W'
+	jne	PDC_Skip_Word
+	mov	cs:[Dos_High_Flag], 0
+	add	si, 3
+	jmp	short PDC_Next_Tok
+
+PDC_Chk_Umb:
+	cmp	word ptr es:[si], 4D55h		; 'UM'
+	jne	PDC_Chk_NoUmb
+	cmp	byte ptr es:[si+2], 'B'
+	jne	PDC_Skip_Word
+	mov	cs:[Dos_Umb_Flag], 1
+	add	si, 3
+	jmp	short PDC_Next_Tok
+
+PDC_Chk_NoUmb:
+	cmp	word ptr es:[si], 4F4Eh		; 'NO'
+	jne	PDC_Skip_Word
+	cmp	word ptr es:[si+2], 4D55h	; 'UM'
+	jne	PDC_Skip_Word
+	cmp	byte ptr es:[si+4], 'B'
+	jne	PDC_Skip_Word
+	mov	cs:[Dos_Umb_Flag], 0
+	add	si, 5
+PDC_Jmp_Next:
+	jmp	PDC_Next_Tok
+
+PDC_Skip_Word:
+	mov	al, es:[si]
+	cmp	al, CR
+	je	PDC_Done
+	cmp	al, LF
+	je	PDC_Done
+	or	al, al
+	jz	PDC_Done
+	cmp	al, ','
+	je	PDC_Jmp_Next
+	cmp	al, ' '
+	je	PDC_Jmp_Next
+	inc	si
+	jmp	short PDC_Skip_Word
+Parse_Dos_Cmd	endp
+
+; ---------------------------------------------------------------------------
+; Init_XMS_And_UMBs: called after Pass 0 (HIMEM.SYS + DOS= parsed).
+; Queries XMS entry and claims UMBs into DOS MCB chain if DOS=UMB.
+; ---------------------------------------------------------------------------
+Init_XMS_And_UMBs proc near
+	push	ax
+	push	bx
+	push	cx
+	push	dx
+	push	si
+	push	di
+	push	ds
+	push	es
+
+	push	cs
+	pop	ds
+	assume	ds:SYSINITSEG
+
+	mov	ax, 4300h
+	int	2Fh
+	cmp	al, 80h
+	jne	IXU_Done
+	mov	ax, 4310h
+	int	2Fh
+	mov	word ptr [Xms_Entry_Ptr], bx
+	mov	word ptr [Xms_Entry_Ptr+2], es
+
+	cmp	[Dos_Umb_Flag], 0
+	jne	IXU_Start_Claim
+IXU_Done:
+	jmp	IXU_Done_Exit
+IXU_Start_Claim:
+
+	mov	[UMB_Slot_Count], 0
+	mov	di, offset UMB_Slots
+IXU_Claim_Lp:
+	cmp	[UMB_Slot_Count], 8
+	jae	IXU_Build_Chain
+	mov	ah, 10h
+	mov	dx, 0FFFFh		; query largest free UMB
+	call	dword ptr [Xms_Entry_Ptr]
+	or	dx, dx
+	jz	IXU_Build_Chain
+	cmp	dx, 4
+	jb	IXU_Build_Chain
+	mov	ah, 10h			; allocate that UMB
+	call	dword ptr [Xms_Entry_Ptr]
+	cmp	ax, 1
+	jne	IXU_Build_Chain
+	mov	[di], bx		; UMB segment
+	mov	[di+2], dx		; UMB size in paras
+	add	di, 4
+	inc	[UMB_Slot_Count]
+	jmp	short IXU_Claim_Lp
+
+IXU_Build_Chain:
+	mov	cx, [UMB_Slot_Count]
+	jcxz	IXU_Done
+
+	; Simple bubble sort of UMB_Slots by ascending segment
+	cmp	cx, 1
+	jbe	IXU_Sorted
+IXU_Sort_Outer:
+	mov	si, offset UMB_Slots
+	mov	bx, cx
+	dec	bx
+IXU_Sort_Inner:
+	mov	ax, [si]
+	cmp	ax, [si+4]
+	jbe	IXU_Sort_Nx
+	xchg	ax, [si+4]
+	mov	[si], ax
+	mov	ax, [si+2]
+	xchg	ax, [si+6]
+	mov	[si+2], ax
+IXU_Sort_Nx:
+	add	si, 4
+	dec	bx
+	jnz	IXU_Sort_Inner
+	loop	IXU_Sort_Outer
+
+IXU_Sorted:
+	mov	si, offset UMB_Slots
+	mov	ax, [si]
+	mov	[Umb_Head_Seg], ax
+	mov	ax, [MEMORY_SIZE]
+	dec	ax
+	mov	[Conv_End_Seg], ax	; 9FFFh bridge MCB
+
+	mov	cx, [UMB_Slot_Count]
+IXU_MCB_Lp:
+	mov	ax, [si]		; seg S_i
+	mov	dx, [si+2]		; len L_i
+	mov	es, ax
+	cmp	cx, 1
+	je	IXU_Last_MCB
+	; Non-last UMB: free MCB ('M', size = L_i - 2) + bridge MCB at S_i + L_i - 1
+	mov	byte ptr es:[0], 'M'
+	mov	word ptr es:[1], 0
+	sub	dx, 2
+	mov	word ptr es:[3], dx
+	mov	di, 8
+	push	cx
+	mov	cx, 4
+	xor	ax, ax
+	rep	stosw
+	pop	cx
+
+	mov	ax, [si]
+	add	ax, [si+2]
+	dec	ax			; bridge seg = S_i + L_i - 1
+	mov	es, ax
+	mov	byte ptr es:[0], 'M'
+	mov	word ptr es:[1], 0008h
+	mov	dx, [si+4]		; S_{i+1}
+	sub	dx, ax
+	dec	dx
+	mov	word ptr es:[3], dx
+	mov	word ptr es:[8], 4353h	; 'SC'
+	mov	word ptr es:[10], 0
+	add	si, 4
+	loop	IXU_MCB_Lp
+	jmp	IXU_Done_Exit
+
+IXU_Last_MCB:
+	mov	byte ptr es:[0], 'Z'
+	mov	word ptr es:[1], 0
+	dec	dx
+	mov	word ptr es:[3], dx
+	mov	di, 8
+	xor	ax, ax
+	mov	cx, 4
+	rep	stosw
+
+IXU_Done_Exit:
+	pop	es
+	pop	ds
+	pop	di
+	pop	si
+	pop	dx
+	pop	cx
+	pop	bx
+	pop	ax
+	ret
+Init_XMS_And_UMBs endp
+
+; ---------------------------------------------------------------------------
+; DEVICEHIGH= UMB allocation & commit/abort helpers
+;   ES:SI -> ASCIIZ driver filename in CONFBOT
+; ---------------------------------------------------------------------------
+Prep_UMB_For_Device proc near
+	cmp	cs:[Umb_Head_Seg], 0
+	jne	PUD_Start
+	ret
+PUD_Start:
+	push	ax
+	push	bx
+	push	cx
+	push	dx
+	push	ds
+	push	es
+
+	; Measure driver file size in paragraphs
+	push	es
+	pop	ds
+	assume	ds:nothing
+	mov	dx, si
+	mov	ax, OPEN shl 8
+	stc
+	int	21h
+	jc	PUD_Pop_Ret
+	mov	bx, ax
+	xor	cx, cx
+	xor	dx, dx
+	mov	ax, (LSEEK shl 8) or 2
+	int	21h
+	push	ax
+	push	dx
+	mov	ah, CLOSE
+	int	21h
+	pop	dx
+	pop	ax
+	add	ax, 15
+	adc	dx, 0
+	mov	cl, 4
+	shr	ax, cl
+	mov	cl, 12
+	shl	dx, cl
+	or	ax, dx
+	add	ax, 2			; + DEVMARK para + safety para -> needed paras in AX
+
+	; Walk UMB MCB chain starting at Umb_Head_Seg for first free block >= AX
+	mov	bx, cs:[Umb_Head_Seg]
+PUD_Walk:
+	mov	es, bx
+	cmp	word ptr es:[1], 0	; free?
+	jne	PUD_Next
+	cmp	word ptr es:[3], ax
+	jae	PUD_Found
+PUD_Next:
+	cmp	byte ptr es:[0], 'Z'
+	je	PUD_Pop_Ret
+	add	bx, es:[3]
+	inc	bx
+	jmp	short PUD_Walk
+
+PUD_Found:
+	push	cs
+	pop	ds
+	assume	ds:SYSINITSEG
+	call	ROUND
+	mov	ax, [MEMHI]
+	mov	[Saved_Low_MemHi], ax
+	mov	ax, [ALLOCLIM]
+	mov	[Saved_Low_Lim], ax
+	mov	[Loading_UMB_MCB], bx
+	mov	ax, bx
+	inc	ax
+	mov	[MEMHI], ax
+	mov	[MEMLO], 0
+	add	ax, es:[3]
+	mov	[ALLOCLIM], ax
+
+PUD_Pop_Ret:
+	pop	es
+	pop	ds
+	pop	dx
+	pop	cx
+	pop	bx
+	pop	ax
+PUD_Ret:
+	ret
+Prep_UMB_For_Device endp
+
+Abort_UMB_Device_Load proc near
+	cmp	cs:[Loading_UMB_MCB], 0
+	je	AUD_Ret
+	push	ax
+	mov	ax, cs:[Saved_Low_MemHi]
+	mov	cs:[MEMHI], ax
+	mov	cs:[MEMLO], 0
+	mov	ax, cs:[Saved_Low_Lim]
+	mov	cs:[ALLOCLIM], ax
+	mov	cs:[Loading_UMB_MCB], 0
+	pop	ax
+AUD_Ret:
+	ret
+Abort_UMB_Device_Load endp
+
+Commit_UMB_Device_Load proc near
+	cmp	cs:[Loading_UMB_MCB], 0
+	jne	CUD_Start
+	ret
+CUD_Start:
+	push	ax
+	push	bx
+	push	cx
+	push	es
+
+	call	ROUND			; round UMB MEMHI:MEMLO
+	mov	bx, cs:[Loading_UMB_MCB]
+	mov	es, bx
+	mov	ax, cs:[MEMHI]
+	sub	ax, bx
+	dec	ax			; AX = paragraphs used inside UMB (incl. DEVMARK)
+	jbe	CUD_Restore
+
+	mov	cx, es:[3]		; original free UMB size
+	mov	word ptr es:[1], 0008h	; system owner
+	mov	word ptr es:[8], 4453h	; 'SD'
+	mov	word ptr es:[10], 0
+	sub	cx, ax
+	cmp	cx, 2
+	jb	CUD_Restore		; keep entire MCB if remainder < 2 paras
+
+	; Split remainder free UMB MCB at BX + 1 + AX
+	mov	es:[3], ax
+	push	dx
+	mov	dl, es:[0]
+	mov	byte ptr es:[0], 'M'
+	add	bx, ax
+	inc	bx
+	mov	es, bx
+	dec	cx
+	mov	es:[0], dl
+	mov	word ptr es:[1], 0
+	mov	es:[3], cx
+	mov	word ptr es:[8], 0
+	pop	dx
+
+CUD_Restore:
+	mov	ax, cs:[Saved_Low_MemHi]
+	mov	cs:[MEMHI], ax
+	mov	cs:[MEMLO], 0
+	mov	ax, cs:[Saved_Low_Lim]
+	mov	cs:[ALLOCLIM], ax
+	mov	cs:[Loading_UMB_MCB], 0
+	pop	es
+	pop	cx
+	pop	bx
+	pop	ax
+CUD_Ret:
+	ret
+Commit_UMB_Device_Load endp
 
 ;Chk_IBMCACHE	 proc	 near		 ;AN024;AN026; Don't need this any more.
 					 ; IBMDOS is going to handle this through 4Bh call.

@@ -218,6 +218,12 @@ SysParse proc near			;AN000;
 ENDIF					;AN000;(of FarSW)
 ;	$SALUT	(4,9,17,41)
 	mov	psdata_seg:$P_Flags,0	;AC034; Clear all internal flags
+IFNDEF NO_PARSE_HELP
+	or	cx,cx
+	jnz	$P_Skip_Help_Scan
+	call	$P_Check_Help_Switch
+$P_Skip_Help_Scan:
+ENDIF
 IF	TimeSw				;AN039; FOR TIME ONLY
 	MOV    PSDATA_SEG:$P_ORIG_ORD,CX ;AN039; ORIGINAL ORDINAL FROM CX
 	MOV    PSDATA_SEG:$P_ORIG_STACK,SP ;AN039; ORIGINAL VALUE OF STACK FROM SP
@@ -2972,3 +2978,161 @@ $P_DBCS_EXIT:				;AN000;
 	POP	DS			;AN000;
 	RET				;AN000;
 $P_Chk_DBCS ENDP			;AN000;
+
+IFNDEF NO_PARSE_HELP
+$P_Check_Help_Switch PROC NEAR
+	push	ax
+	push	bx
+	push	cx
+	push	si
+	push	es
+	mov	ah,62h
+	int	21h
+	mov	es,bx
+	mov	si,0081h
+	mov	cl,es:[0080h]
+	xor	ch,ch
+	xor	ah,ah			; ah = quote state (0 or 1)
+$P_CHS_Loop:
+	jcxz	$P_CHS_None
+	mov	al,es:[si]
+	cmp	al,'"'
+	jne	$P_CHS_NotQ
+	xor	ah,1
+	jmp	$P_CHS_Adv
+$P_CHS_NotQ:
+	or	ah,ah
+	jnz	$P_CHS_Adv
+	cmp	al,'/'
+	jne	$P_CHS_Adv
+	cmp	cx,2
+	jb	$P_CHS_None
+	cmp	byte ptr es:[si+1],'?'
+	je	$P_CHS_Found
+$P_CHS_Adv:
+	inc	si
+	dec	cx
+	jmp	$P_CHS_Loop
+$P_CHS_None:
+	pop	es
+	pop	si
+	pop	cx
+	pop	bx
+	pop	ax
+	ret
+
+$P_CHS_Found:
+	; Extract basename from PSP:[002Ch] environment argv[0] onto stack [bp-16]
+	mov	bp,sp
+	sub	sp,16
+	mov	byte ptr ss:[bp-16],'C'
+	mov	byte ptr ss:[bp-15],'O'
+	mov	byte ptr ss:[bp-14],'M'
+	mov	byte ptr ss:[bp-13],'M'
+	mov	byte ptr ss:[bp-12],'A'
+	mov	byte ptr ss:[bp-11],'N'
+	mov	byte ptr ss:[bp-10],'D'
+	mov	byte ptr ss:[bp-9],0
+
+	mov	ax,es:[002Ch]
+	or	ax,ax
+	jz	$P_CHS_Print
+	mov	es,ax
+	xor	di,di
+	mov	cx,7FFFh
+$P_CHS_EnvScan:
+	cmp	byte ptr es:[di],0
+	jne	$P_CHS_EnvNext
+	cmp	byte ptr es:[di+1],0
+	je	$P_CHS_GotArgv0
+$P_CHS_EnvNext:
+	inc	di
+	loop	$P_CHS_EnvScan
+	jmp	$P_CHS_Print
+
+$P_CHS_GotArgv0:
+	add	di,2
+	cmp	word ptr es:[di],1
+	jne	$P_CHS_Print
+	add	di,2
+	mov	bx,di			; bx = start of basename
+$P_CHS_BaseScan:
+	mov	al,es:[di]
+	or	al,al
+	jz	$P_CHS_CopyBase
+	inc	di
+	cmp	al,'\'
+	je	$P_CHS_SetBase
+	cmp	al,'/'
+	je	$P_CHS_SetBase
+	cmp	al,':'
+	jne	$P_CHS_BaseScan
+$P_CHS_SetBase:
+	mov	bx,di
+	jmp	$P_CHS_BaseScan
+
+$P_CHS_CopyBase:
+	cmp	byte ptr es:[bx],0
+	je	$P_CHS_Print
+	xor	si,si
+$P_CHS_CpLp:
+	mov	al,es:[bx]
+	or	al,al
+	jz	$P_CHS_TermBase
+	cmp	al,'.'
+	je	$P_CHS_TermBase
+	cmp	al,'a'
+	jb	$P_CHS_UpOk
+	cmp	al,'z'
+	ja	$P_CHS_UpOk
+	sub	al,20h
+$P_CHS_UpOk:
+	mov	ss:[bp+si-16],al
+	inc	bx
+	inc	si
+	cmp	si,12
+	jb	$P_CHS_CpLp
+$P_CHS_TermBase:
+	mov	byte ptr ss:[bp+si-16],0
+
+$P_CHS_Print:
+	call	$P_After_Strs
+	db	'CK-DOS 5.0 ',0
+	db	' Utility',13,10,13,10,'Usage: ',0
+	db	' [parameters]',13,10,'Type HELP ',0
+	db	' for complete options and examples.',13,10,0
+$P_After_Strs:
+	pop	di
+	call	$P_Out_CS
+	call	$P_Out_Name
+	call	$P_Out_CS
+	call	$P_Out_Name
+	call	$P_Out_CS
+	call	$P_Out_Name
+	call	$P_Out_CS
+	mov	ax,4C00h
+	int	21h
+
+$P_Out_CS:
+	mov	dl,cs:[di]
+	inc	di
+	or	dl,dl
+	jz	$P_Out_Ret
+	mov	ah,02h
+	int	21h
+	jmp	$P_Out_CS
+
+$P_Out_Name:
+	xor	si,si
+$P_ON_Lp:
+	mov	dl,ss:[bp+si-16]
+	or	dl,dl
+	jz	$P_Out_Ret
+	mov	ah,02h
+	int	21h
+	inc	si
+	jmp	$P_ON_Lp
+$P_Out_Ret:
+	ret
+$P_Check_Help_Switch ENDP
+ENDIF
