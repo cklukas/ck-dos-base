@@ -257,17 +257,23 @@ int main(int argc, char** argv) {
                     start = sep + 1;
                 }
             }
+            if (argc > 0 && argv[0] != nullptr) {
+                std::error_code ec;
+                const std::filesystem::path exe_p = std::filesystem::weakly_canonical(argv[0], ec);
+                if (!ec && exe_p.has_parent_path()) {
+                    const std::filesystem::path rt_inc = exe_p.parent_path().parent_path() / "runtime" / "include";
+                    if (std::filesystem::is_directory(rt_inc, ec)) {
+                        pp_opts.include_dirs.push_back(rt_inc);
+                    }
+                }
+            }
         }
 
-        if (pp_opts.defines.find("MSDOS") == pp_opts.defines.end()) {
-            pp_opts.defines["MSDOS"] = "1";
-        }
-        if (pp_opts.defines.find("_MSDOS") == pp_opts.defines.end()) {
-            pp_opts.defines["_MSDOS"] = "1";
-        }
-        if (pp_opts.defines.find("M_I86") == pp_opts.defines.end()) {
-            pp_opts.defines["M_I86"] = "1";
-        }
+        pp_opts.defines.try_emplace("__CKCL__", "1");
+        pp_opts.defines.try_emplace("MSDOS", "1");
+        pp_opts.defines.try_emplace("_MSDOS", "1");
+        pp_opts.defines.try_emplace("__DOS__", "1");
+        pp_opts.defines.try_emplace("M_I86", "1");
         switch (cc_opts.model) {
             case dosbase::devtools::MemoryModel::small_model:
                 pp_opts.defines.try_emplace("M_I86SM", "1");

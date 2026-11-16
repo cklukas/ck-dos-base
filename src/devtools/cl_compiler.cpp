@@ -492,6 +492,7 @@ struct Expr {
     std::shared_ptr<Expr> third;
     std::vector<std::shared_ptr<Expr>> args;
     int temp_bp_offset = 0;
+    int far_call_bp_offset = 0;
 };
 
 using ExprPtr = std::shared_ptr<Expr>;
@@ -514,11 +515,21 @@ enum class StmtKind {
     label_stmt,
 };
 
+struct LocalBraceItem {
+    std::size_t offset = 0;
+    TypePtr type;
+    ExprPtr expr;
+    bool is_string_bytes = false;
+    std::string str_bytes;
+};
+
 struct LocalVar {
     std::string name;
     TypePtr type;
     int bp_offset = 0;  // negative offset from BP
     ExprPtr init;
+    bool has_brace_init = false;
+    std::vector<LocalBraceItem> brace_inits;
     bool is_register = false;
     bool is_volatile = false;
     int var_id = 0;
@@ -617,7 +628,8 @@ public:
     SegmentBuf code;   // seg 1: _TEXT
     SegmentBuf data;   // seg 2: _DATA
     SegmentBuf cnst;   // seg 3: CONST
-    std::size_t bss_size = 0;  // seg 4: _BSS
+    std::size_t bss_size = 0;      // seg 4: _BSS
+    std::size_t far_bss_size = 0;  // seg 5: <MOD>_FAR_BSS (optional, outside DGROUP)
 
     [[nodiscard]] std::vector<std::uint8_t> build() const {
         std::vector<std::uint8_t> out;
@@ -676,26 +688,40 @@ public:
         }
 
         // 3. LNAMES
+        std::string mod_up = opts_.module_name;
+        const auto slash = mod_up.find_last_of("/\\");
+        if (slash != std::string::npos) mod_up = mod_up.substr(slash + 1);
+        const auto dot = mod_up.find('.');
+        if (dot != std::string::npos) mod_up.resize(dot);
+        for (char& c : mod_up) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
         std::string code_name = "_TEXT";
         if (opts_.model == MemoryModel::medium_model || opts_.model == MemoryModel::large_model) {
-            std::string mod_up = opts_.module_name;
-            for (char& c : mod_up) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
             code_name = mod_up + "_TEXT";
         }
         {
             std::vector<std::uint8_t> b;
-            for (const std::string& name : std::vector<std::string>{
-                     "", "DGROUP", code_name, "CODE", "_DATA", "DATA", "CONST", "_BSS", "BSS"}) {
+            std::vector<std::string> lnames = {
+                "", "DGROUP", code_name, "CODE", "_DATA", "DATA", "CONST", "_BSS", "BSS"};
+            if (far_bss_size > 0) {
+                lnames.push_back(mod_up + "_FAR_BSS");
+                lnames.push_back("FAR_BSS");
+            }
+            for (const std::string& name : lnames) {
                 put_str(b, name);
             }
             emit_rec(0x96, b);
         }
 
-        // 4. SEGDEF (1: _TEXT, 2: _DATA, 3: CONST, 4: _BSS)
+        // 4. SEGDEF (1: _TEXT, 2: _DATA, 3: CONST, 4: _BSS, [5: <MOD>_FAR_BSS])
         auto emit_segdef = [&](std::uint8_t acbp, std::size_t size, int name_idx, int class_idx) {
             std::vector<std::uint8_t> b;
-            b.push_back(acbp);
-            put_u16(b, static_cast<std::uint16_t>(size));
+            if (size == 0x10000U) {
+                b.push_back(static_cast<std::uint8_t>(acbp | 0x02U));  // Big bit = 64 KB
+                put_u16(b, 0);
+            } else {
+                b.push_back(acbp);
+                put_u16(b, static_cast<std::uint16_t>(size));
+            }
             put_idx(b, name_idx);
             put_idx(b, class_idx);
             put_idx(b, 1);  // overlay ""
@@ -705,6 +731,9 @@ public:
         emit_segdef(0x48, data.data.size(), 5, 6);
         emit_segdef(0x48, cnst.data.size(), 7, 7);
         emit_segdef(0x48, bss_size, 8, 9);
+        if (far_bss_size > 0) {
+            emit_segdef(0x68, far_bss_size, 10, 11);
+        }
 
         // 5. GRPDEF: DGROUP = { CONST (3), _BSS (4), _DATA (2) }
         {
@@ -732,9 +761,10 @@ public:
         }
 
         // 7. PUBDEF (grouped by segment)
-        for (int seg = 1; seg <= 4; ++seg) {
+        const int max_seg = (far_bss_size > 0) ? 5 : 4;
+        for (int seg = 1; seg <= max_seg; ++seg) {
             std::vector<std::uint8_t> b;
-            int grp = (seg == 1) ? 0 : 1;
+            int grp = (seg == 1 || seg == 5) ? 0 : 1;
             for (const PubSym& p : pubs_) {
                 if (p.seg != seg) continue;
                 if (b.empty()) {
@@ -807,9 +837,9 @@ public:
                     } else if (f.target_seg == 0) {
                         frame_method = 2;  // external
                         frame_idx = f.target_ext;
-                    } else if (f.target_seg == 1) {
-                        frame_method = 0;  // seg _TEXT
-                        frame_idx = 1;
+                    } else if (f.target_seg == 1 || f.target_seg == 5) {
+                        frame_method = 0;  // seg _TEXT or <MOD>_FAR_BSS
+                        frame_idx = f.target_seg;
                     } else {
                         frame_method = 1;  // group DGROUP
                         frame_idx = 1;
@@ -1145,9 +1175,12 @@ private:
     }
 
     // Declarator parsing (handles pointers, near/far, parens, arrays, functions)
+    enum class PtrDist { unspecified, force_near, force_far };
+
     struct DeclWrap {
         enum class Kind { ptr, array, func };
         Kind kind;
+        PtrDist dist = PtrDist::unspecified;
         bool is_far = false;
         bool is_pascal = false;
         bool is_interrupt = false;
@@ -1159,19 +1192,30 @@ private:
     TypePtr parse_declarator(TypePtr base, const DeclSpecs& ds, std::string* out_name) {
         std::vector<DeclWrap> wraps;
         parse_decl_inner(wraps, out_name, ds);
-        // Build type outside-in from base: wrappers at the end wrap `base`?
-        // Wait: `int *f()` -> ptr wraps `int`, func wraps `ptr`? No: in C `int *f()` means
-        // `f` is a function returning `int*`! So `func` is applied LAST to `base`,
-        // wait: `(*p)()` means `p` is pointer to function!
-        // In our recursive descent, inner wraps are pushed BEFORE outer pointer stars:
-        //   1. `*` pushes ptr to `prefix_ptrs`
-        //   2. direct_declarator recurses into `(...)` and then parses trailing `[]` / `()`
-        //   3. `prefix_ptrs` are appended AFTER trailing `[]`/`()`, so applying `wraps` in
-        //      reverse order (outermost first) builds the exact C type!
+        bool saw_ptr = false;
         TypePtr cur = std::move(base);
         for (auto it = wraps.rbegin(); it != wraps.rend(); ++it) {
             if (it->kind == DeclWrap::Kind::ptr) {
-                cur = make_ptr(std::move(cur), it->is_far);
+                saw_ptr = true;
+                if (cur->kind == TypeKind::t_func) {
+                    if (it->is_interrupt) {
+                        cur->is_interrupt = true;
+                        cur->is_far = true;
+                    } else if (it->dist == PtrDist::force_far) {
+                        cur->is_far = true;
+                    } else if (it->dist == PtrDist::force_near) {
+                        cur->is_far = false;
+                    }
+                    const bool fn_far = cur->is_far;
+                    cur->cached_size = fn_far ? 4 : 2;
+                    cur = make_ptr(std::move(cur), fn_far);
+                } else {
+                    const bool is_far = (it->dist == PtrDist::force_far)
+                                            ? true
+                                            : ((it->dist == PtrDist::force_near) ? false
+                                                                                 : default_far_data());
+                    cur = make_ptr(std::move(cur), is_far);
+                }
             } else if (it->kind == DeclWrap::Kind::array) {
                 cur = make_array(std::move(cur), it->array_len);
             } else {
@@ -1180,13 +1224,19 @@ private:
                 fn->base = std::move(cur);
                 fn->params = it->params;
                 fn->is_vararg = it->is_vararg;
-                fn->is_far = it->is_far;
+                fn->is_far = it->is_far || it->is_interrupt;
                 fn->is_pascal = it->is_pascal;
                 fn->is_interrupt = it->is_interrupt;
                 fn->cached_size = fn->is_far ? 4 : 2;
                 fn->cached_align = 2;
                 cur = std::move(fn);
             }
+        }
+        if (!saw_ptr && cur && cur->kind != TypeKind::t_func && ds.has_far) {
+            if (cur->kind != TypeKind::t_array) {
+                cur = std::make_shared<CType>(*cur);
+            }
+            cur->is_far = true;
         }
         return cur;
     }
@@ -1203,6 +1253,7 @@ private:
         while (true) {
             bool mod_far = ds.has_far;
             bool mod_near = ds.has_near;
+            bool mod_interrupt = false;
             while (at(Tok::kw_const) || at(Tok::kw_volatile) ||
                    at(Tok::kw_near) || at(Tok::kw_far) || at(Tok::kw_huge) ||
                    at(Tok::kw_cdecl) || at(Tok::kw_pascal) || at(Tok::kw_interrupt)) {
@@ -1218,19 +1269,24 @@ private:
                     decl_pascal = true; decl_cdecl = false;
                 } else if (at(Tok::kw_interrupt)) {
                     decl_interrupt = true;
+                    mod_interrupt = true;
                 }
                 ++pos_;
             }
             if (!match(Tok::star)) break;
+            PtrDist dist = mod_far ? PtrDist::force_far
+                                   : (mod_near ? PtrDist::force_near : PtrDist::unspecified);
             bool is_far = mod_far ? true : (mod_near ? false : default_far_data());
-            ptrs.push_back({DeclWrap::Kind::ptr, is_far, false, false, false, 0, {}});
+            ptrs.push_back({DeclWrap::Kind::ptr, dist, is_far, false, mod_interrupt, false, 0, {}});
         }
 
         std::vector<DeclWrap> inner_after;
         if (at(Tok::lparen) &&
             (peek(1).kind == Tok::star || peek(1).kind == Tok::lparen ||
              peek(1).kind == Tok::kw_near || peek(1).kind == Tok::kw_far ||
-             peek(1).kind == Tok::kw_cdecl || peek(1).kind == Tok::kw_pascal)) {
+             peek(1).kind == Tok::kw_huge || peek(1).kind == Tok::kw_interrupt ||
+             peek(1).kind == Tok::kw_cdecl || peek(1).kind == Tok::kw_pascal ||
+             peek(1).kind == Tok::kw_const || peek(1).kind == Tok::kw_volatile)) {
             consume(Tok::lparen, "");
             parse_decl_inner(inner_after, out_name, ds);
             consume(Tok::rparen, "expected ')' in declarator");
@@ -1247,7 +1303,7 @@ private:
                     len = static_cast<std::size_t>(eval_const_expr(parse_expr_cond()));
                 }
                 consume(Tok::rbracket, "expected ']'");
-                suffixes.push_back({DeclWrap::Kind::array, false, false, false, false, len, {}});
+                suffixes.push_back({DeclWrap::Kind::array, PtrDist::unspecified, false, false, false, false, len, {}});
             } else if (match(Tok::lparen)) {
                 std::vector<ParamDecl> params;
                 bool is_vararg = false;
@@ -1264,7 +1320,7 @@ private:
                             std::string pname;
                             TypePtr ptype = parse_declarator(pds.base_type, pds, &pname);
                             if (ptype->kind == TypeKind::t_array) {
-                                ptype = make_ptr(ptype->base, default_far_data());
+                                ptype = make_ptr(ptype->base, ptype->is_far || default_far_data());
                             } else if (ptype->kind == TypeKind::t_func) {
                                 ptype = make_ptr(ptype, ptype->is_far);
                             }
@@ -1280,10 +1336,10 @@ private:
                     }
                 }
                 consume(Tok::rparen, "expected ')'");
-                bool is_far = decl_far ? true : (decl_near ? false : default_far_code());
+                bool is_far = (decl_far || decl_interrupt) ? true : (decl_near ? false : default_far_code());
                 bool is_pas = decl_pascal && !decl_cdecl;
                 suffixes.push_back(
-                    {DeclWrap::Kind::func, is_far, is_pas, decl_interrupt, is_vararg, 0, params});
+                    {DeclWrap::Kind::func, PtrDist::unspecified, is_far, is_pas, decl_interrupt, is_vararg, 0, params});
             } else {
                 break;
             }
@@ -1491,6 +1547,15 @@ private:
         }
 
         ExprPtr e = parse_expr_assign();
+        while (opts_.model != MemoryModel::small_model && e && e->kind == ExprKind::cast &&
+               e->type && e->type->kind == TypeKind::t_ptr && e->lhs) {
+            if (e->lhs->kind == ExprKind::str_lit || e->lhs->kind == ExprKind::var ||
+                (e->lhs->kind == ExprKind::unary && e->lhs->op == Tok::amp)) {
+                e = e->lhs;
+            } else {
+                break;
+            }
+        }
         InitItem item;
         item.offset = base_off;
         item.type = type;
@@ -1507,6 +1572,76 @@ private:
         } else {
             item.int_val = eval_const_expr(e);
         }
+        out.push_back(std::move(item));
+    }
+
+    void parse_local_brace_initializer(const TypePtr& type,
+                                       std::size_t base_off,
+                                       std::vector<LocalBraceItem>& out) {
+        if (type->kind == TypeKind::t_array && is_byte_scalar(type->base) && at(Tok::str_lit)) {
+            std::string s = consume(Tok::str_lit, "").text;
+            s.push_back('\0');
+            if (type->array_len > 0 && s.size() > type->array_len) {
+                s.resize(type->array_len);
+            }
+            LocalBraceItem item;
+            item.offset = base_off;
+            item.type = type;
+            item.is_string_bytes = true;
+            item.str_bytes = std::move(s);
+            out.push_back(std::move(item));
+            return;
+        }
+        if (match(Tok::lbrace)) {
+            if (type->kind == TypeKind::t_array) {
+                if (is_byte_scalar(type->base) && at(Tok::str_lit) &&
+                    (peek(1).kind == Tok::rbrace ||
+                     (peek(1).kind == Tok::comma && peek(2).kind == Tok::rbrace))) {
+                    parse_local_brace_initializer(type, base_off, out);
+                    (void)match(Tok::comma);
+                    consume(Tok::rbrace, "expected '}' in initializer");
+                    return;
+                }
+                std::size_t idx = 0;
+                const std::size_t elem_sz = type_size(type->base);
+                while (!at(Tok::rbrace) && !at(Tok::eof)) {
+                    parse_local_brace_initializer(type->base, base_off + idx * elem_sz, out);
+                    ++idx;
+                    if (!match(Tok::comma)) break;
+                }
+                if (type->array_len == 0 && idx > 0) {
+                    type->array_len = idx;
+                    type->cached_size = elem_sz * idx;
+                }
+            } else if (type->kind == TypeKind::t_struct || type->kind == TypeKind::t_union) {
+                std::size_t fi = 0;
+                while (!at(Tok::rbrace) && !at(Tok::eof)) {
+                    if (fi < type->fields.size()) {
+                        parse_local_brace_initializer(type->fields[fi].type,
+                                                      base_off + type->fields[fi].offset, out);
+                        if (type->kind == TypeKind::t_union) {
+                            while (match(Tok::comma) && !at(Tok::rbrace) && !at(Tok::eof)) {
+                                (void)parse_expr_assign();
+                            }
+                            break;
+                        }
+                        ++fi;
+                    } else {
+                        (void)parse_expr_assign();
+                    }
+                    if (!match(Tok::comma)) break;
+                }
+            } else {
+                parse_local_brace_initializer(type, base_off, out);
+                (void)match(Tok::comma);
+            }
+            consume(Tok::rbrace, "expected '}' in initializer");
+            return;
+        }
+        LocalBraceItem item;
+        item.offset = base_off;
+        item.type = type;
+        item.expr = parse_expr_assign();
         out.push_back(std::move(item));
     }
 
@@ -1530,7 +1665,9 @@ private:
                         continue;
                     }
                     if (ds.is_extern) {
-                        std::string asm_name = mangle_name(name, ds.is_pascal, false);
+                        const bool is_pas =
+                            (type->kind == TypeKind::t_func) ? type->is_pascal : ds.is_pascal;
+                        std::string asm_name = mangle_name(name, is_pas, false);
                         global_syms[name] = {name, type, true, false, true, 0, asm_name};
                         continue;
                     }
@@ -1548,30 +1685,45 @@ private:
                         globals.push_back(std::move(gv));
                         continue;
                     }
-                    std::size_t sz = std::max<std::size_t>(2, type_size(type));
-                    if (sz % 2 != 0) ++sz;
-                    next_local_offset_ -= static_cast<int>(sz);
-                    min_local_offset_ = std::min(min_local_offset_, next_local_offset_);
                     const int vid = next_var_id_++;
-                    local_scopes_.back()[name] = {
-                        name, type, false, false, false, next_local_offset_, {}};
+                    local_scopes_.back()[name] = {name, type, false, false, false, 0, {}};
                     ExprPtr init;
+                    bool has_brace = false;
+                    std::vector<LocalBraceItem> brace_inits;
                     if (match(Tok::assign)) {
-                        if (at(Tok::lbrace)) {
-                            // Local aggregate brace initializer: consume for now
-                            int depth = 1;
-                            ++pos_;
-                            while (!at(Tok::eof) && depth > 0) {
-                                if (at(Tok::lbrace)) ++depth;
-                                else if (at(Tok::rbrace)) --depth;
-                                ++pos_;
+                        if (at(Tok::lbrace) ||
+                            (type->kind == TypeKind::t_array && is_byte_scalar(type->base) &&
+                             at(Tok::str_lit))) {
+                            has_brace = true;
+                            parse_local_brace_initializer(type, 0, brace_inits);
+                            if (type->kind == TypeKind::t_array && type->array_len == 0 &&
+                                !brace_inits.empty()) {
+                                const std::size_t elem_sz = type_size(type->base);
+                                if (brace_inits.back().is_string_bytes) {
+                                    type->array_len = brace_inits.back().str_bytes.size();
+                                } else if (elem_sz > 0) {
+                                    type->array_len = (brace_inits.back().offset / elem_sz) + 1;
+                                }
+                                type->cached_size = elem_sz * type->array_len;
                             }
                         } else {
                             init = parse_expr_assign();
                         }
                     }
-                    blk->locals.push_back(
-                        {name, type, next_local_offset_, init, ds.is_register, ds.is_volatile, vid});
+                    std::size_t sz = std::max<std::size_t>(2, type_size(type));
+                    if (sz % 2 != 0) ++sz;
+                    next_local_offset_ -= static_cast<int>(sz);
+                    min_local_offset_ = std::min(min_local_offset_, next_local_offset_);
+                    local_scopes_.back()[name].bp_offset = next_local_offset_;
+                    blk->locals.push_back({name,
+                                           type,
+                                           next_local_offset_,
+                                           init,
+                                           has_brace,
+                                           std::move(brace_inits),
+                                           ds.is_register,
+                                           ds.is_volatile,
+                                           vid});
                 } while (match(Tok::comma));
                 consume(Tok::semi, "expected ';'");
             } else {
@@ -1728,14 +1880,14 @@ private:
                 e->type = make_prim(TypeKind::t_short);
             } else {
                 e->type = l->type->kind == TypeKind::t_array
-                              ? make_ptr(base, default_far_data())
+                              ? make_ptr(base, l->type->is_far || default_far_data())
                               : l->type;
             }
         } else if (op == Tok::plus && r->type &&
                    (r->type->kind == TypeKind::t_ptr || r->type->kind == TypeKind::t_array)) {
             TypePtr base = r->type->base;
             e->type = r->type->kind == TypeKind::t_array
-                          ? make_ptr(base, default_far_data())
+                          ? make_ptr(base, r->type->is_far || default_far_data())
                           : r->type;
         } else if (op == Tok::shl || op == Tok::shr) {
             e->type = common_arith_type(l->type, make_prim(TypeKind::t_short));
@@ -1922,7 +2074,18 @@ private:
                 e->type = (sub->type && sub->type->base) ? sub->type->base
                                                          : make_prim(TypeKind::t_short);
             } else if (k == Tok::amp) {
-                e->type = make_ptr(sub->type, default_far_data());
+                bool ptr_far = default_far_data();
+                if (opts_.model != MemoryModel::small_model && sub &&
+                    sub->kind == ExprKind::unary && sub->op == Tok::star && sub->lhs &&
+                    sub->lhs->type && sub->lhs->type->is_far) {
+                    ptr_far = true;
+                } else if (sub && sub->type && sub->type->kind == TypeKind::t_func) {
+                    ptr_far = sub->type->is_far;
+                } else if (sub && sub->type && sub->type->kind != TypeKind::t_ptr &&
+                           sub->type->is_far) {
+                    ptr_far = true;
+                }
+                e->type = make_ptr(sub->type, ptr_far);
             } else {
                 e->type = sub->type;
             }
@@ -1962,12 +2125,24 @@ private:
                     if (!match(Tok::comma)) break;
                 }
                 consume(Tok::rparen, "expected ')'");
-                if (is_aggregate_type(call->type) && !local_scopes_.empty()) {
-                    std::size_t rsz = std::max<std::size_t>(2, type_size(call->type));
-                    if (rsz % 2 != 0) ++rsz;
-                    next_local_offset_ -= static_cast<int>(rsz);
-                    min_local_offset_ = std::min(min_local_offset_, next_local_offset_);
-                    call->temp_bp_offset = next_local_offset_;
+                if (!local_scopes_.empty()) {
+                    if (is_aggregate_type(call->type)) {
+                        std::size_t rsz = std::max<std::size_t>(2, type_size(call->type));
+                        if (rsz % 2 != 0) ++rsz;
+                        next_local_offset_ -= static_cast<int>(rsz);
+                        min_local_offset_ = std::min(min_local_offset_, next_local_offset_);
+                        call->temp_bp_offset = next_local_offset_;
+                    }
+                    bool is_direct_global_call = false;
+                    if (call->lhs && call->lhs->kind == ExprKind::var) {
+                        const VarSymbol* vs = lookup_var(call->lhs->name);
+                        is_direct_global_call = (!vs || vs->is_global);
+                    }
+                    if (fn_type && fn_type->is_far && !is_direct_global_call) {
+                        next_local_offset_ -= 4;
+                        min_local_offset_ = std::min(min_local_offset_, next_local_offset_);
+                        call->far_call_bp_offset = next_local_offset_;
+                    }
                 }
                 e = std::move(call);
             } else if (at(Tok::dot) || at(Tok::arrow)) {
@@ -2127,10 +2302,18 @@ public:
         : omf_(omf), parser_(parser), opts_(opts) {}
 
     void emit_all() {
-        // 1. Emit globals into _DATA / _BSS / CONST
+        // 1. Emit globals into _DATA / _BSS / CONST / <MOD>_FAR_BSS
         for (const GlobalVar& gv : parser_.globals) {
             std::size_t sz = std::max<std::size_t>(1, type_size(gv.type));
             if (!gv.has_init) {
+                if (gv.type && gv.type->kind != TypeKind::t_ptr && gv.type->is_far) {
+                    std::size_t off = omf_.far_bss_size;
+                    omf_.far_bss_size += sz;
+                    global_locs_[gv.name] = {5, static_cast<std::uint16_t>(off)};
+                    far_global_syms_.insert(gv.name);
+                    if (!gv.is_static) omf_.add_pub(gv.name, 5, static_cast<std::uint16_t>(off));
+                    continue;
+                }
                 std::size_t off = omf_.bss_size;
                 omf_.bss_size += sz;
                 global_locs_[gv.name] = {4, static_cast<std::uint16_t>(off)};
@@ -2165,6 +2348,12 @@ public:
                             omf_.data.fixups.push_back({at, FixupKind::near_offset_dgroup, 3, 0});
                         }
                         write_u16(omf_.data.data, at, str_off);
+                    } else if (item.sym_ref.rfind("__L", 0) == 0) {
+                        const FixupKind fk = (item.type && item.type->is_far)
+                                                 ? FixupKind::far_ptr
+                                                 : FixupKind::near_offset_dgroup;
+                        write_u16(omf_.data.data, at, static_cast<std::uint16_t>(item.sym_addend));
+                        pending_data_fixups_.push_back({at, fk, item.sym_ref});
                     } else {
                         int ext = omf_.intern_ext(item.sym_ref);
                         omf_.data.fixups.push_back(
@@ -2207,6 +2396,7 @@ private:
         std::uint16_t offset = 0;
     };
     std::unordered_map<std::string, Loc> global_locs_;
+    std::unordered_set<std::string> far_global_syms_;
     std::unordered_map<std::string, std::uint16_t> string_pool_;
 
     // Deferred fixups for symbols that might be defined later in the same module
@@ -2216,6 +2406,7 @@ private:
         std::string sym_name;
     };
     std::vector<PendingCodeFixup> pending_fixups_;
+    std::vector<PendingCodeFixup> pending_data_fixups_;
 
     // Per-function state
     using LabelId = std::size_t;
@@ -2687,6 +2878,9 @@ private:
         if (s->post) s->post = fold_expr(s->post);
         for (LocalVar& lv : s->locals) {
             if (lv.init) lv.init = fold_expr(lv.init);
+            for (LocalBraceItem& bi : lv.brace_inits) {
+                if (bi.expr) bi.expr = fold_expr(bi.expr);
+            }
         }
         for (StmtPtr& sub : s->stmts) fold_stmt(sub);
         if (s->body) fold_stmt(s->body);
@@ -3227,7 +3421,7 @@ private:
                                 lv.bp_offset,
                                 false,
                                 lv.is_register,
-                                !lv.is_volatile && is_reg_eligible_type(lv.type),
+                                !lv.is_volatile && !lv.has_brace_init && is_reg_eligible_type(lv.type),
                                 false,
                                 0,
                                 0,
@@ -3238,6 +3432,9 @@ private:
                                 c.uses += 1;
                                 c.byte_savings += (lv.init->kind == ExprKind::int_lit) ? 2 : 1;
                                 c.score += 1 + 10 * loop_depth;
+                            }
+                            for (const LocalBraceItem& bi : lv.brace_inits) {
+                                if (bi.expr) walk_expr(bi.expr, loop_depth, false);
                             }
                         }
                         for (const StmtPtr& sub : s->stmts) walk_stmt(sub, loop_depth);
@@ -3503,6 +3700,11 @@ private:
                 e->temp_bp_offset = cur_agg_off;
                 min_total_off = std::min(min_total_off, cur_agg_off);
             }
+            if (e->kind == ExprKind::call && e->far_call_bp_offset != 0) {
+                cur_agg_off -= 4;
+                e->far_call_bp_offset = cur_agg_off;
+                min_total_off = std::min(min_total_off, cur_agg_off);
+            }
         };
         std::function<void(const StmtPtr&)> layout_tier2 = [&](const StmtPtr& s) {
             if (!s) return;
@@ -3517,6 +3719,9 @@ private:
                         min_total_off = std::min(min_total_off, cur_agg_off);
                     }
                     layout_tier2_expr(lv.init);
+                    for (const LocalBraceItem& bi : lv.brace_inits) {
+                        layout_tier2_expr(bi.expr);
+                    }
                 }
                 for (const StmtPtr& sub : s->stmts) layout_tier2(sub);
                 cur_agg_off = saved;
@@ -3584,7 +3789,104 @@ private:
         emit_u8(0x8B); emit_u8(0xD8);  // mov bx, ax
     }
 
+    static bool is_null_ptr_expr(const ExprPtr& e) {
+        if (!e) return false;
+        if (e->kind == ExprKind::int_lit && e->int_val == 0) return true;
+        if (e->kind == ExprKind::cast && e->type && e->type->kind == TypeKind::t_ptr &&
+            !e->type->is_far && e->type->base && e->type->base->kind == TypeKind::t_void) {
+            return is_null_ptr_expr(e->lhs);
+        }
+        return false;
+    }
+
+    static bool produces_dxax(const TypePtr& t) {
+        if (!t) return false;
+        if (is_32bit_scalar(t)) return true;
+        if ((t->kind == TypeKind::t_array || t->kind == TypeKind::t_func) && t->is_far) return true;
+        return false;
+    }
+
+    void emit_widen_to_32(const ExprPtr& src, const TypePtr& dst_type) {
+        if (!src || produces_dxax(src->type)) return;
+        if (opts_.model != MemoryModel::small_model && dst_type && dst_type->kind == TypeKind::t_ptr &&
+            dst_type->is_far && src->type) {
+            if (is_null_ptr_expr(src)) {
+                emit_u8(0x33); emit_u8(0xD2);  // xor dx, dx
+                return;
+            }
+            if ((src->type->kind == TypeKind::t_ptr || src->type->kind == TypeKind::t_array) &&
+                !src->type->is_far) {
+                emit_u8(0x8C); emit_u8(0xDA);  // mov dx, ds
+                return;
+            }
+            if (src->type->kind == TypeKind::t_func && !src->type->is_far) {
+                emit_u8(0x8C); emit_u8(0xCA);  // mov dx, cs
+                return;
+            }
+        }
+        emit_widen_dxax(src->type);
+    }
+
     void emit_local_init(const LocalVar& lv, bool& ax_is_zero) {
+        if (lv.has_brace_init) {
+            const std::size_t sz = type_size(lv.type);
+            if (sz > 0) {
+                if (sz <= 8) {
+                    if (!ax_is_zero) {
+                        emit_u8(0x33); emit_u8(0xC0);  // xor ax, ax
+                        ax_is_zero = true;
+                    }
+                    std::size_t off = 0;
+                    while (off + 2 <= sz) {
+                        emit_u8(0x89); emit_bp_rm(0, lv.bp_offset + static_cast<int>(off));
+                        off += 2;
+                    }
+                    if (off < sz) {
+                        emit_u8(0x88); emit_bp_rm(0, lv.bp_offset + static_cast<int>(off));
+                    }
+                } else {
+                    emit_u8(0x57);                 // push di
+                    emit_u8(0x16); emit_u8(0x07);  // push ss; pop es
+                    emit_u8(0x8D); emit_bp_rm(7, lv.bp_offset);  // lea di, [bp+d]
+                    if (!ax_is_zero) {
+                        emit_u8(0x33); emit_u8(0xC0);  // xor ax, ax
+                        ax_is_zero = true;
+                    }
+                    emit_u8(0xFC);  // cld
+                    const std::size_t words = sz / 2;
+                    emit_u8(0xB9); emit_u16(static_cast<std::uint16_t>(words));  // mov cx, words
+                    emit_u8(0xF3); emit_u8(0xAB);                                // rep stosw
+                    if ((sz & 1U) != 0U) emit_u8(0xAA);                          // stosb
+                    emit_u8(0x1E); emit_u8(0x07);  // push ds; pop es
+                    emit_u8(0x5F);                 // pop di
+                }
+            }
+            for (const LocalBraceItem& bi : lv.brace_inits) {
+                if (!bi.expr) continue;
+                if (bi.expr->kind == ExprKind::int_lit && bi.expr->int_val == 0) continue;
+                const int slot = lv.bp_offset + static_cast<int>(bi.offset);
+                ax_is_zero = false;
+                if (is_aggregate_type(bi.type)) {
+                    bool src_far = false;
+                    emit_agg_addr_to_bx(bi.expr, src_far);
+                    if (src_far) { emit_u8(0x8C); emit_u8(0xC1); }
+                    emit_u8(0x8D); emit_bp_rm(0, slot);
+                    emit_copy_agg(type_size(bi.type), false, src_far);
+                } else if (bi.expr->kind == ExprKind::int_lit && is_byte_scalar(bi.type)) {
+                    emit_u8(0xC6); emit_bp_rm(0, slot);
+                    emit_u8(static_cast<std::uint8_t>(bi.expr->int_val & 0xFF));
+                } else if (bi.expr->kind == ExprKind::int_lit && !is_32bit_scalar(bi.type)) {
+                    emit_u8(0xC7); emit_bp_rm(0, slot);
+                    emit_u16(static_cast<std::uint16_t>(bi.expr->int_val));
+                } else {
+                    emit_expr(bi.expr);
+                    if (is_32bit_scalar(bi.type)) emit_widen_to_32(bi.expr, bi.type);
+                    store_local(bi.type, slot);
+                }
+            }
+            invalidate_reg_caches();
+            return;
+        }
         if (!lv.init) return;
         if (is_aggregate_type(lv.type)) {
             ax_is_zero = false;
@@ -3643,7 +3945,7 @@ private:
         }
         ax_is_zero = false;
         emit_expr(lv.init);
-        if (is_32bit_scalar(lv.type)) emit_widen_dxax(lv.init->type);
+        if (is_32bit_scalar(lv.type)) emit_widen_to_32(lv.init, lv.type);
         store_local(lv.type, lv.bp_offset);
     }
 
@@ -3705,6 +4007,11 @@ private:
                 emit_u8(op);
             }
             emit_u8(0x8B); emit_u8(0xEC);  // mov bp, sp
+            emit_u8(0xB8);                 // mov ax, seg DGROUP
+            omf_.code.fixups.push_back({omf_.code.data.size(), FixupKind::seg_only, 2, 0});
+            emit_u16(0);
+            emit_u8(0x8E); emit_u8(0xD8);  // mov ds, ax
+            emit_u8(0xFC);                 // cld
         } else if (need_bp) {
             emit_u8(0x55);                 // push bp
             emit_u8(0x8B); emit_u8(0xEC);  // mov bp, sp
@@ -4220,6 +4527,60 @@ private:
                 }
                 return;
             }
+            if (opts_.model != MemoryModel::small_model && (lhs_ptr || rhs_ptr) &&
+                (produces_dxax(cond->lhs->type) || produces_dxax(cond->rhs->type))) {
+                if (cond->op == Tok::eq || cond->op == Tok::ne) {
+                    const Tok eff_op = jump_on_true ? cond->op : (cond->op == Tok::eq ? Tok::ne : Tok::eq);
+                    const TypePtr far_ptr_t =
+                        produces_dxax(cond->lhs->type) ? cond->lhs->type : cond->rhs->type;
+                    if (is_null_ptr_expr(cond->rhs)) {
+                        emit_expr(cond->lhs);
+                        emit_widen_to_32(cond->lhs, far_ptr_t);
+                        emit_u8(0x0B); emit_u8(0xC2);  // or ax, dx
+                        emit_jcc(eff_op == Tok::ne ? 0x75 : 0x74, target);
+                        return;
+                    }
+                    if (is_null_ptr_expr(cond->lhs)) {
+                        emit_expr(cond->rhs);
+                        emit_widen_to_32(cond->rhs, far_ptr_t);
+                        emit_u8(0x0B); emit_u8(0xC2);  // or ax, dx
+                        emit_jcc(eff_op == Tok::ne ? 0x75 : 0x74, target);
+                        return;
+                    }
+                    emit_expr(cond->lhs);
+                    emit_widen_to_32(cond->lhs, far_ptr_t);
+                    emit_u8(0x52);  // push dx
+                    emit_u8(0x50);  // push ax
+                    emit_expr(cond->rhs);
+                    emit_widen_to_32(cond->rhs, far_ptr_t);
+                    emit_u8(0x8B); emit_u8(0xD8);  // mov bx, ax
+                    emit_u8(0x8B); emit_u8(0xCA);  // mov cx, dx
+                    emit_u8(0x58);                 // pop ax
+                    emit_u8(0x5A);                 // pop dx
+                    if (eff_op == Tok::eq) {
+                        const LabelId skip = new_label();
+                        emit_u8(0x3B); emit_u8(0xD1);  // cmp dx, cx
+                        emit_jcc(0x75, skip);
+                        emit_u8(0x3B); emit_u8(0xC3);  // cmp ax, bx
+                        emit_jcc(0x74, target);
+                        bind_label(skip);
+                    } else {
+                        emit_u8(0x3B); emit_u8(0xD1);  // cmp dx, cx
+                        emit_jcc(0x75, target);
+                        emit_u8(0x3B); emit_u8(0xC3);  // cmp ax, bx
+                        emit_jcc(0x75, target);
+                    }
+                    return;
+                }
+                emit_expr(cond->lhs);
+                emit_u8(0x50);  // push ax (offset)
+                emit_expr(cond->rhs);
+                emit_u8(0x8B); emit_u8(0xC8);  // mov cx, ax (offset)
+                emit_u8(0x58);                 // pop ax
+                emit_u8(0x3B); emit_u8(0xC1);  // cmp ax, cx
+                emit_cond_jcc(false);
+                return;
+            }
         }
 
         if (const RegVar crv = find_expr_reg_var(cond); crv != RegVar::none) {
@@ -4419,6 +4780,9 @@ private:
                         }
                     } else {
                         emit_expr(s->expr);
+                        if (ret_type && is_32bit_scalar(ret_type)) {
+                            emit_widen_to_32(s->expr, ret_type);
+                        }
                     }
                 }
                 emit_jmp(epilogue_label_);
@@ -4521,6 +4885,7 @@ private:
                                   ? e->resolved_asm_name
                                   : (gf != parser_.global_syms.end() ? gf->second.asm_name
                                                                      : ("_" + e->name));
+            if (far_global_syms_.count(sym) > 0) return false;
             out = {DirectMem::dgroup_sym, 0, std::move(sym)};
             return true;
         }
@@ -5013,6 +5378,25 @@ private:
             }
             return;
         }
+        if (e->kind == ExprKind::var) {
+            auto gf = parser_.global_syms.find(e->name);
+            std::string sym = !e->resolved_asm_name.empty()
+                                  ? e->resolved_asm_name
+                                  : (gf != parser_.global_syms.end() ? gf->second.asm_name
+                                                                     : ("_" + e->name));
+            if (far_global_syms_.count(sym) > 0) {
+                bx_cache_active_ = false;
+                emit_u8(0xB8);  // mov ax, seg sym
+                pending_fixups_.push_back({omf_.code.data.size(), FixupKind::seg_only, sym});
+                emit_u16(0);
+                emit_u8(0x8E); emit_u8(0xC0);  // mov es, ax
+                emit_u8(0xBB);                 // mov bx, offset sym
+                pending_fixups_.push_back({omf_.code.data.size(), FixupKind::near_offset_code, sym});
+                emit_u16(0);
+                out_far = true;
+                return;
+            }
+        }
         if (e->kind == ExprKind::cast) {
             emit_lvalue_idx_disp(e->lhs, out_base, out_far, out_disp);
             return;
@@ -5160,6 +5544,26 @@ private:
                     }
                     break;
                 }
+                if (e->type && e->type->kind == TypeKind::t_array) {
+                    auto gf = parser_.global_syms.find(e->name);
+                    std::string sym = !e->resolved_asm_name.empty()
+                                          ? e->resolved_asm_name
+                                          : (gf != parser_.global_syms.end()
+                                                 ? gf->second.asm_name
+                                                 : ("_" + e->name));
+                    if (far_global_syms_.count(sym) > 0) {
+                        const std::size_t prev_pos = omf_.code.data.size();
+                        emit_u8(0xB8);  // mov ax, offset sym
+                        pending_fixups_.push_back(
+                            {omf_.code.data.size(), FixupKind::near_offset_code, sym});
+                        emit_u16(0);
+                        emit_u8(0xBA);  // mov dx, seg sym
+                        pending_fixups_.push_back({omf_.code.data.size(), FixupKind::seg_only, sym});
+                        emit_u16(0);
+                        preserve_bx_cache_since(prev_pos);
+                        break;
+                    }
+                }
                 if (is_aggregate_type(e->type)) {
                     DirectMem dm;
                     if (try_resolve_direct_mem(e, dm)) {
@@ -5244,15 +5648,26 @@ private:
                 if (is_byte_scalar(e->type)) {
                     if (is_signed_type(e->type)) emit_u8(0x98);
                     else { emit_u8(0x32); emit_u8(0xE4); }
-                } else if (is_32bit_scalar(e->type) && !is_32bit_scalar(e->lhs->type)) {
+                } else if (is_32bit_scalar(e->type) &&
+                           !(opts_.model != MemoryModel::small_model
+                                 ? produces_dxax(e->lhs->type)
+                                 : is_32bit_scalar(e->lhs->type))) {
+                    const bool check_null =
+                        (opts_.model != MemoryModel::small_model) && is_null_ptr_expr(e->lhs);
                     const bool near_to_far =
-                        e->type && e->type->kind == TypeKind::t_ptr && e->type->is_far &&
-                        e->lhs->type &&
+                        !check_null && e->type && e->type->kind == TypeKind::t_ptr &&
+                        e->type->is_far && e->lhs->type &&
                         (e->lhs->type->kind == TypeKind::t_ptr ||
                          e->lhs->type->kind == TypeKind::t_array) &&
                         !e->lhs->type->is_far;
+                    const bool near_fn_to_far =
+                        (opts_.model != MemoryModel::small_model) && !check_null && e->type &&
+                        e->type->kind == TypeKind::t_ptr && e->type->is_far && e->lhs->type &&
+                        e->lhs->type->kind == TypeKind::t_func && !e->lhs->type->is_far;
                     if (near_to_far) {
                         emit_u8(0x8C); emit_u8(0xDA);  // mov dx, ds
+                    } else if (near_fn_to_far) {
+                        emit_u8(0x8C); emit_u8(0xCA);  // mov dx, cs
                     } else if (is_signed_type(e->lhs->type)) {
                         emit_u8(0x99);  // cwd
                     } else {
@@ -5271,11 +5686,11 @@ private:
                 const LabelId l_end = new_label();
                 emit_branch(e->lhs, l_false, false);
                 emit_expr(e->rhs, need_value);
-                if (need_value && is_32bit_scalar(e->type)) emit_widen_dxax(e->rhs->type);
+                if (need_value && is_32bit_scalar(e->type)) emit_widen_to_32(e->rhs, e->type);
                 emit_jmp(l_end);
                 bind_label(l_false);
                 emit_expr(e->third, need_value);
-                if (need_value && is_32bit_scalar(e->type)) emit_widen_dxax(e->third->type);
+                if (need_value && is_32bit_scalar(e->type)) emit_widen_to_32(e->third, e->type);
                 bind_label(l_end);
                 break;
             }
@@ -5384,7 +5799,7 @@ private:
                     }
                 }
                 emit_expr(e->rhs);
-                if (is_32bit_scalar(e->type)) emit_widen_dxax(e->rhs->type);
+                if (is_32bit_scalar(e->type)) emit_widen_to_32(e->rhs, e->type);
                 DirectMem dm;
                 if (try_resolve_direct_mem(e->lhs, dm)) {
                     store_direct_mem(e->type, dm);
@@ -5646,6 +6061,10 @@ private:
             case ExprKind::unary: {
                 if (e->op == Tok::amp) {
                     if (!need_value) { emit_expr(e->lhs, false); break; }
+                    if (e->lhs && e->lhs->type && e->lhs->type->kind == TypeKind::t_func) {
+                        emit_expr(e->lhs, true);
+                        break;
+                    }
                     if (e->lhs && e->lhs->kind == ExprKind::unary && e->lhs->op == Tok::star &&
                         e->lhs->lhs) {
                         emit_expr(e->lhs->lhs, true);
@@ -6161,6 +6580,42 @@ private:
                     break;
                 }
 
+                if (opts_.model != MemoryModel::small_model && (lhs_ptr || rhs_ptr) &&
+                    (e->op == Tok::eq || e->op == Tok::ne) &&
+                    (produces_dxax(e->lhs->type) || produces_dxax(e->rhs->type))) {
+                    const TypePtr far_ptr_t =
+                        produces_dxax(e->lhs->type) ? e->lhs->type : e->rhs->type;
+                    if (is_null_ptr_expr(e->rhs)) {
+                        emit_expr(e->lhs);
+                        emit_widen_to_32(e->lhs, far_ptr_t);
+                        emit_u8(0x0B); emit_u8(0xC2);  // or ax, dx
+                        emit_cmp_setcc(e->op, false);
+                        break;
+                    }
+                    if (is_null_ptr_expr(e->lhs)) {
+                        emit_expr(e->rhs);
+                        emit_widen_to_32(e->rhs, far_ptr_t);
+                        emit_u8(0x0B); emit_u8(0xC2);  // or ax, dx
+                        emit_cmp_setcc(e->op, false);
+                        break;
+                    }
+                    emit_expr(e->lhs);
+                    emit_widen_to_32(e->lhs, far_ptr_t);
+                    emit_u8(0x52);  // push dx
+                    emit_u8(0x50);  // push ax
+                    emit_expr(e->rhs);
+                    emit_widen_to_32(e->rhs, far_ptr_t);
+                    emit_u8(0x8B); emit_u8(0xD8);  // mov bx, ax
+                    emit_u8(0x8B); emit_u8(0xCA);  // mov cx, dx
+                    emit_u8(0x58);                 // pop ax
+                    emit_u8(0x5A);                 // pop dx
+                    emit_u8(0x3B); emit_u8(0xD1);  // cmp dx, cx
+                    emit_u8(0x75); emit_u8(0x02);  // jne +2
+                    emit_u8(0x3B); emit_u8(0xC3);  // cmp ax, bx
+                    emit_cmp_setcc(e->op, false);
+                    break;
+                }
+
                 emit_expr(e->lhs);
                 const bool lhs_far_ptr = lhs_ptr && e->lhs->type->is_far;
                 if (lhs_far_ptr) emit_u8(0x52);  // push dx (preserve far segment)
@@ -6251,10 +6706,10 @@ private:
                         return;
                     }
                     emit_expr(arg);
-                    bool want32 = is_32bit_scalar(arg->type);
+                    bool want32 = produces_dxax(arg->type);
                     if (fn_type && idx < fn_type->params.size() && fn_type->params[idx].type) {
                         want32 = is_32bit_scalar(fn_type->params[idx].type);
-                        if (want32) emit_widen_dxax(arg->type);
+                        if (want32) emit_widen_to_32(arg, fn_type->params[idx].type);
                     }
                     if (want32) {
                         emit_u8(0x52);  // push dx (segment/high word first)
@@ -6293,13 +6748,12 @@ private:
                 } else {
                     emit_expr(e->lhs);
                     if (is_far) {
-                        // Store DX:AX in temporary [bp-...] or call via stack:
-                        // push dx; push ax; mov bx, sp; call far ptr ss:[bx]; add sp, 4
-                        emit_u8(0x52);
-                        emit_u8(0x50);
-                        emit_u8(0x8B); emit_u8(0xDC);  // mov bx, sp
-                        emit_u8(0x36); emit_u8(0xFF); emit_u8(0x1F);  // call far ptr ss:[bx]
-                        emit_u8(0x83); emit_u8(0xC4); emit_u8(0x04);  // add sp, 4
+                        if (e->lhs->type && !produces_dxax(e->lhs->type)) {
+                            emit_u8(0x8C); emit_u8(0xCA);  // mov dx, cs
+                        }
+                        emit_u8(0x89); emit_bp_rm(0, e->far_call_bp_offset);      // mov [bp+d], ax
+                        emit_u8(0x89); emit_bp_rm(2, e->far_call_bp_offset + 2);  // mov [bp+d+2], dx
+                        emit_u8(0xFF); emit_bp_rm(3, e->far_call_bp_offset);      // call far ptr [bp+d]
                     } else {
                         emit_u8(0xFF); emit_u8(0xD0);  // call ax
                     }
@@ -6735,6 +7189,24 @@ private:
             } else {
                 int ext = omf_.intern_ext(pf.sym_name);
                 omf_.code.fixups.push_back({pf.code_offset, pf.kind, 0, ext});
+            }
+        }
+        for (const PendingCodeFixup& df : pending_data_fixups_) {
+            auto it = global_locs_.find(df.sym_name);
+            if (it != global_locs_.end()) {
+                if (df.kind == FixupKind::near_offset_dgroup ||
+                    df.kind == FixupKind::near_offset_code ||
+                    df.kind == FixupKind::far_ptr) {
+                    const std::uint16_t cur = static_cast<std::uint16_t>(
+                        omf_.data.data[df.code_offset] |
+                        (static_cast<std::uint16_t>(omf_.data.data[df.code_offset + 1]) << 8));
+                    write_u16(omf_.data.data, df.code_offset,
+                              static_cast<std::uint16_t>(cur + it->second.offset));
+                }
+                omf_.data.fixups.push_back({df.code_offset, df.kind, it->second.seg, 0});
+            } else {
+                int ext = omf_.intern_ext(df.sym_name);
+                omf_.data.fixups.push_back({df.code_offset, df.kind, 0, ext});
             }
         }
     }

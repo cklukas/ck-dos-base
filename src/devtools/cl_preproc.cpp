@@ -706,7 +706,10 @@ std::string preprocess_c_source(std::string_view source,
                                   const fs::path& source_path,
                                   const PreprocOptions& options) {
     MacroTable macros;
+    macros["__CKCL__"] = MacroDef{false, {}, "1"};
     macros["MSDOS"] = MacroDef{false, {}, "1"};
+    macros["_MSDOS"] = MacroDef{false, {}, "1"};
+    macros["__DOS__"] = MacroDef{false, {}, "1"};
     macros["M_I86"] = MacroDef{false, {}, "1"};
     for (const auto& [k, v] : options.defines) {
         macros[k] = MacroDef{false, {}, v};

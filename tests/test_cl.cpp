@@ -854,3 +854,55 @@ DOSBASE_TEST(cl_32bit_direct_mem_and_shared_helpers) {
         DOSBASE_TEST_EXPECT_EQ(loop_headers, 1);
     }
 }
+
+DOSBASE_TEST(cl_medium_model_far_interrupt_and_brace_init) {
+    // 1. Medium model: <MOD>_TEXT segment, 4-byte function pointers, frame-based indirect far call,
+    //    static far array in <MOD>_FAR_BSS, near-to-far DS widening vs NULL 0000:0000, 32-bit far ==
+    {
+        const char* src =
+            "typedef int (*EmitFn)(void *ctx, const char __far *text, int len);\n"
+            "typedef void (__interrupt __far *BiosIsr)(void);\n"
+            "static volatile int g_break = 0;\n"
+            "static char __far g_source[1024];\n"
+            "static const char *const g_lines[] = { \"one\", \"two\" };\n"
+            "struct Topic { const char *const *lines; int count; };\n"
+            "const struct Topic g_topic = { g_lines, 2 };\n"
+            "static void __interrupt __far break_isr(void) {\n"
+            "    g_break = 1;\n"
+            "}\n"
+            "int invoke_emit(EmitFn fn, void *ctx, const char *near_str) {\n"
+            "    unsigned char box[] = { 1, 2, 3, 4 };\n"
+            "    const char __far *nul = (const char __far *)((void *)0);\n"
+            "    BiosIsr isr = break_isr;\n"
+            "    g_source[0] = box[2];\n"
+            "    if (fn == 0 || isr == 0 || nul != 0) return -1;\n"
+            "    return fn(ctx, near_str, (int)sizeof(box)) + g_source[0];\n"
+            "}\n";
+        CompileOptions opts;
+        opts.model = MemoryModel::medium_model;
+        opts.module_name = "ckbrun.c";
+        const auto obj = compile_c_to_omf(src, opts);
+        const auto recs = parse_omf_records(obj, 0, true);
+        const auto code = extract_code_bytes(recs);
+
+        // Verify LNAMES contains CKBRUN_TEXT and CKBRUN_FAR_BSS
+        const std::string dump = dump_all_omf(recs);
+        DOSBASE_TEST_EXPECT(dump.find("CKBRUN_TEXT") != std::string::npos);
+        DOSBASE_TEST_EXPECT(dump.find("CKBRUN_FAR_BSS") != std::string::npos);
+        DOSBASE_TEST_EXPECT(dump.find("FAR_BSS") != std::string::npos);
+        // Static g_lines referenced from g_topic must resolve locally without EXTDEF!
+        DOSBASE_TEST_EXPECT(!has_record_type(recs, OmfType::extdef));
+
+        // Interrupt handler loads DS = DGROUP (B8 xx xx 8E D8 FC) and ends with IRET (CF)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x8E, 0xD8, 0xFC}));
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0xCF}));
+
+        // Indirect far call uses call far ptr [bp+disp] (FF 5E xx or FF 9E xx xx), NOT ss:[bx] (36 FF 1F)
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x36, 0xFF, 0x1F}));
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0xFF, 0x5E}) || contains_seq(code, {0xFF, 0x9E}));
+
+        // Passing near_str to const char __far * widens segment via mov dx, ds (8C DA), and medium retf (CB)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x8C, 0xDA}));
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0xCB}));
+    }
+}
