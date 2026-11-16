@@ -226,14 +226,14 @@ Eliminate 5-byte long conditional jump thunks on short branches and boolean `0`/
 
 Implement Microsoft C 5.1's signature 16-bit optimization: keeping up to two hot scalar/pointer variables per function in callee-saved registers `SI` and `DI`.
 
-- [ ] **Liveness / safety & loop-weighted scoring pass:** Walk each function's AST before `emit_function` to identify candidate locals and parameters:
+- [x] **Liveness / safety & loop-weighted scoring pass:** Walk each function's AST before `emit_function` to identify candidate locals and parameters:
   - **Eligibility:** 16-bit integer or near pointer (`sizeof == 2`, not `volatile`, address `&v` never taken, not modified across `setjmp`).
   - **Scoring:** Explicit `register` keyword gets priority bonus; each read/write adds `1 + 10 * loop_depth`. Select the top 1–2 candidates for `SI` and `DI` when total savings exceed prologue/epilogue save/restore cost (`push si`/`pop si` = 2 bytes + optional 3-byte param load `mov si, [bp+off]`).
-- [ ] **Prologue / epilogue & parameter initialization:** Save/restore `SI` and/or `DI` around the function body (after `mov bp, sp; sub sp, frame_size`), and copy promoted parameters from `[bp+off]` into `SI`/`DI` on entry.
-- [ ] **Register-aware codegen across `emit_expr`:**
+- [x] **Prologue / epilogue & parameter initialization:** Save/restore `SI` and/or `DI` around the function body (after `mov bp, sp; sub sp, frame_size`), and copy promoted parameters from `[bp+off]` into `SI`/`DI` on entry.
+- [x] **Register-aware codegen across `emit_expr`:**
   - Reads/writes: `mov ax, si`, `mov si, ax`, `inc si` (1 byte!), `dec si` (1 byte!), `add si, imm`, `cmp si, rhs`.
   - Pointer dereference (`*p`, `p->field`, `p[const]`): when `p` lives in `SI` or `DI`, address memory directly via `[si]`, `[si+disp8]`, `[si+disp16]` (or `[di+...]`) without copying into `BX`.
-- [ ] **Unit & QEMU verification:** Add unit tests verifying `SI`/`DI` allocation, nested calls preserving `SI`/`DI`, and pointer dereferencing via `[si+disp]`; measure `.EXE` size reductions and run full QEMU verification.
+- [x] **Unit & QEMU verification:** Add unit tests verifying `SI`/`DI` allocation, nested calls preserving `SI`/`DI`, and pointer dereferencing via `[si+disp]`; measure `.EXE` size reductions and run full QEMU verification.
 
 ---
 

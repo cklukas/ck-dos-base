@@ -308,7 +308,7 @@ DOSBASE_TEST(cl_wp11_inplace_memory_ops_and_discarded_values) {
     // 1. 16-bit local/param ++, --, += emit direct memory instructions with zero push/pop/lea
     {
         const char* src =
-            "void step_16(int x, int *p) {\n"
+            "void step_16(volatile int x, int *p) {\n"
             "    x++;\n"
             "    --x;\n"
             "    x += 5;\n"
@@ -408,7 +408,7 @@ DOSBASE_TEST(cl_wp12_direct_mem_and_folded_addressing) {
     {
         const char* src =
             "struct Pair { int a; int b; };\n"
-            "int ptr_disp(struct Pair *p, int *arr, int v) {\n"
+            "int ptr_disp(volatile struct Pair *p, int *arr, int v) {\n"
             "    p->b = v;\n"
             "    return p->b + arr[3];\n"
             "}\n";
@@ -505,5 +505,69 @@ DOSBASE_TEST(cl_wp13_short_circuit_branches_and_jump_relaxation) {
             }
         }
         DOSBASE_TEST_EXPECT(found_valid_call);
+    }
+}
+
+DOSBASE_TEST(cl_wp14_si_di_register_allocation) {
+    // 1. Hot pointer + loop counter allocate to SI/DI, using [si]/[si+disp], inc si/di, push/pop si/di
+    {
+        const char* src =
+            "struct Item { int tag; int val; };\n"
+            "int sum_items(struct Item *p, int n) {\n"
+            "    int sum = 0;\n"
+            "    while (n > 0) {\n"
+            "        sum += p->val;\n"
+            "        p++;\n"
+            "        n--;\n"
+            "    }\n"
+            "    return sum;\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        // Saves/restores SI (0x56 / 0x5E) and DI (0x57 / 0x5F)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x56, 0x57}));
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x5F, 0x5E}));
+        // Uses [si+2] (8B 44 02) or [di+2] (8B 45 02) directly without copying pointer to BX
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x8B, 0x44, 0x02}) ||
+                            contains_seq(code, {0x8B, 0x45, 0x02}));
+        // Zero BX load `mov bx, [bp+4]` (8B 5E 04)
+        DOSBASE_TEST_EXPECT(!contains_seq(code, {0x8B, 0x5E, 0x04}));
+    }
+
+    // 2. Address-taken variable (&x) is never allocated to SI/DI, while register keyword var is
+    {
+        const char* src =
+            "void sink_ptr(int *p);\n"
+            "int addr_safety(void) {\n"
+            "    int taken = 1;\n"
+            "    register int fast = 0;\n"
+            "    sink_ptr(&taken);\n"
+            "    fast++;\n"
+            "    fast += taken;\n"
+            "    return fast;\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        // `fast` is in SI: xor si, si (33 F6) and inc si (0x46)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x33, 0xF6}));
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x46}));
+        // `taken` stays on stack: lea bx, [bp-2] (8D 5E FE)
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x8D, 0x5E, 0xFE}));
+    }
+
+    // 3. MS C cast-as-lvalue on register-allocated pointer variable (((int)sptr) = ..., ((char*)sptr)++)
+    {
+        const char* src =
+            "int cast_lval_reg(int start, int limit) {\n"
+            "    char *sptr;\n"
+            "    int n = 0;\n"
+            "    for (((int)sptr) = start; ((int)sptr) < limit && *sptr == ' '; ((char *)sptr)++) {\n"
+            "        n++;\n"
+            "    }\n"
+            "    return n;\n"
+            "}\n";
+        const auto obj = compile_c_to_omf(src, CompileOptions{});
+        const auto code = extract_code_bytes(parse_omf_records(obj, 0, true));
+        DOSBASE_TEST_EXPECT(!code.empty());
     }
 }

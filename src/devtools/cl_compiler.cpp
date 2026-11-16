@@ -9,6 +9,7 @@
 #include <cctype>
 #include <charconv>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -371,6 +372,8 @@ struct StructField {
 struct ParamDecl {
     std::string name;
     TypePtr type;
+    bool is_register = false;
+    bool is_volatile = false;
 };
 
 struct CType {
@@ -509,6 +512,8 @@ struct LocalVar {
     TypePtr type;
     int bp_offset = 0;  // negative offset from BP
     ExprPtr init;
+    bool is_register = false;
+    bool is_volatile = false;
 };
 
 struct Stmt {
@@ -940,6 +945,8 @@ private:
         bool is_typedef = false;
         bool is_static = false;
         bool is_extern = false;
+        bool is_register = false;
+        bool is_volatile = false;
         bool has_far = false;
         bool has_near = false;
         bool is_pascal = false;
@@ -966,8 +973,9 @@ private:
             if (k == Tok::kw_typedef) { ds.is_typedef = true; ++pos_; }
             else if (k == Tok::kw_static) { ds.is_static = true; ++pos_; }
             else if (k == Tok::kw_extern) { ds.is_extern = true; ++pos_; }
-            else if (k == Tok::kw_auto || k == Tok::kw_register ||
-                     k == Tok::kw_const || k == Tok::kw_volatile) { ++pos_; }
+            else if (k == Tok::kw_register) { ds.is_register = true; ++pos_; }
+            else if (k == Tok::kw_volatile) { ds.is_volatile = true; ++pos_; }
+            else if (k == Tok::kw_auto || k == Tok::kw_const) { ++pos_; }
             else if (k == Tok::kw_far || k == Tok::kw_huge) { ds.has_far = true; ++pos_; }
             else if (k == Tok::kw_near) { ds.has_near = true; ++pos_; }
             else if (k == Tok::kw_pascal) { ds.is_pascal = true; ++pos_; }
@@ -1250,7 +1258,7 @@ private:
                             } else if (ptype->kind == TypeKind::t_func) {
                                 ptype = make_ptr(ptype, ptype->is_far);
                             }
-                            params.push_back({pname, ptype});
+                            params.push_back({pname, ptype, pds.is_register, pds.is_volatile});
                             if (!match(Tok::comma)) break;
                         }
                     } else {
@@ -1305,7 +1313,12 @@ private:
                 (at(Tok::lbrace) || is_type_start())) {
                 // Function definition (ANSI or K&R parameter declarations before '{')
                 if (is_type_start()) {
-                    std::unordered_map<std::string, TypePtr> kr_types;
+                    struct KrParamInfo {
+                        TypePtr type;
+                        bool is_register = false;
+                        bool is_volatile = false;
+                    };
+                    std::unordered_map<std::string, KrParamInfo> kr_types;
                     while (is_type_start() && !at(Tok::lbrace) && !at(Tok::eof)) {
                         DeclSpecs pds = parse_decl_specs();
                         do {
@@ -1314,13 +1327,19 @@ private:
                             if (ptype->kind == TypeKind::t_array) {
                                 ptype = make_ptr(ptype->base, default_far_data());
                             }
-                            if (!pname.empty()) kr_types[pname] = ptype;
+                            if (!pname.empty()) {
+                                kr_types[pname] = {ptype, pds.is_register, pds.is_volatile};
+                            }
                         } while (match(Tok::comma));
                         consume(Tok::semi, "expected ';' in K&R parameter declaration");
                     }
                     for (ParamDecl& p : type->params) {
                         auto it = kr_types.find(p.name);
-                        if (it != kr_types.end()) p.type = it->second;
+                        if (it != kr_types.end()) {
+                            p.type = it->second.type;
+                            p.is_register = it->second.is_register;
+                            p.is_volatile = it->second.is_volatile;
+                        }
                     }
                 }
 
@@ -1531,7 +1550,8 @@ private:
                             init = parse_expr_assign();
                         }
                     }
-                    blk->locals.push_back({name, type, next_local_offset_, init});
+                    blk->locals.push_back(
+                        {name, type, next_local_offset_, init, ds.is_register, ds.is_volatile});
                 } while (match(Tok::comma));
                 consume(Tok::semi, "expected ';'");
             } else {
@@ -2168,6 +2188,9 @@ private:
 
     // Per-function state
     using LabelId = std::size_t;
+    enum class RegVar : std::uint8_t { none = 0, si = 6, di = 7 };
+    enum class PtrBase : std::uint8_t { si = 4, di = 5, bx = 7 };
+
     struct BranchSite {
         std::size_t raw_pos = 0;
         std::uint8_t orig_len = 0;
@@ -2182,6 +2205,10 @@ private:
     std::vector<BranchSite> branches_;
     LabelId epilogue_label_ = 0;
     std::vector<std::unordered_map<std::string, std::pair<TypePtr, int>>> local_vars_;
+    std::unordered_map<int, RegVar> reg_by_bp_off_;
+    bool use_si_ = false;
+    bool use_di_ = false;
+    std::size_t effective_frame_size_ = 0;
     std::vector<LabelId> break_stack_;
     std::vector<LabelId> continue_stack_;
     std::unordered_map<std::string, std::pair<LabelId, bool>> user_labels_;
@@ -2845,8 +2872,367 @@ private:
         emit_u8(0xE2); emit_u8(0xFA);                             // loop -6
     }
 
+    static bool is_reg_eligible_type(const TypePtr& t) {
+        if (!t || is_byte_scalar(t) || is_32bit_scalar(t)) return false;
+        if (t->kind == TypeKind::t_array || t->kind == TypeKind::t_func ||
+            t->kind == TypeKind::t_struct || t->kind == TypeKind::t_void) {
+            return false;
+        }
+        return type_size(t) == 2;
+    }
+
+    static std::uint8_t reg_num(RegVar rv) { return static_cast<std::uint8_t>(rv); }
+
+    RegVar find_reg_var(const std::string& name) const {
+        auto loc = find_local(name);
+        if (!loc) return RegVar::none;
+        auto it = reg_by_bp_off_.find(loc->second);
+        return it != reg_by_bp_off_.end() ? it->second : RegVar::none;
+    }
+
+    RegVar find_expr_reg_var(const ExprPtr& e) const {
+        const Expr* cur = e.get();
+        while (cur && cur->kind == ExprKind::cast && is_reg_eligible_type(cur->type)) {
+            cur = cur->lhs.get();
+        }
+        if (!cur || cur->kind != ExprKind::var) return RegVar::none;
+        return find_reg_var(cur->name);
+    }
+
+    void emit_mov_ax_regvar(RegVar rv) {
+        emit_u8(0x8B);
+        emit_u8(static_cast<std::uint8_t>(0xC0 | reg_num(rv)));  // mov ax, si/di
+    }
+
+    void emit_mov_regvar_ax(RegVar rv) {
+        emit_u8(0x89);
+        emit_u8(static_cast<std::uint8_t>(0xC0 | reg_num(rv)));  // mov si/di, ax
+    }
+
+    void emit_mov_regvar_imm(RegVar rv, std::uint16_t imm) {
+        const std::uint8_t rn = reg_num(rv);
+        if (imm == 0) {
+            emit_u8(0x33);
+            emit_u8(static_cast<std::uint8_t>(0xC0 | (rn << 3) | rn));  // xor si, si
+        } else {
+            emit_u8(static_cast<std::uint8_t>(0xB8 + rn));  // mov si/di, imm16
+            emit_u16(imm);
+        }
+    }
+
+    void emit_grp1_regvar_imm16(std::uint8_t subop, RegVar rv, std::uint16_t imm) {
+        const std::uint8_t rn = reg_num(rv);
+        const std::int16_t simm = static_cast<std::int16_t>(imm);
+        if (simm >= -128 && simm <= 127) {
+            emit_u8(0x83);
+            emit_u8(static_cast<std::uint8_t>(0xC0 | (subop << 3) | rn));
+            emit_u8(static_cast<std::uint8_t>(simm & 0xFF));
+        } else {
+            emit_u8(0x81);
+            emit_u8(static_cast<std::uint8_t>(0xC0 | (subop << 3) | rn));
+            emit_u16(imm);
+        }
+    }
+
+    void analyze_and_allocate_reg_vars(const FuncDef& fn) {
+        reg_by_bp_off_.clear();
+        use_si_ = false;
+        use_di_ = false;
+        effective_frame_size_ = fn.frame_size;
+        if (fn.type->is_interrupt || !fn.body) return;
+
+        struct RegCand {
+            int bp_off = 0;
+            bool is_param = false;
+            bool is_register = false;
+            bool eligible = false;
+            bool addr_taken = false;
+            int uses = 0;
+            int byte_savings = 0;
+            int score = 0;
+        };
+
+        std::unordered_map<int, RegCand> cands;
+        std::vector<int> all_local_offs;
+        std::vector<std::unordered_map<std::string, int>> sim_scopes;
+        sim_scopes.emplace_back();
+
+        auto lookup_sim = [&](const std::string& name) -> std::optional<int> {
+            for (auto it = sim_scopes.rbegin(); it != sim_scopes.rend(); ++it) {
+                auto f = it->find(name);
+                if (f != it->end()) return f->second;
+            }
+            return std::nullopt;
+        };
+
+        int arg_off = fn.type->is_far ? 6 : 4;
+        auto seed_param = [&](const ParamDecl& p) {
+            std::size_t sz = std::max<std::size_t>(2, type_size(p.type));
+            if (sz % 2 != 0) ++sz;
+            if (!p.name.empty()) {
+                sim_scopes.back()[p.name] = arg_off;
+                cands[arg_off] = {arg_off,
+                                  true,
+                                  p.is_register,
+                                  !p.is_volatile && is_reg_eligible_type(p.type),
+                                  false,
+                                  0,
+                                  0,
+                                  p.is_register ? 50 : 0};
+            }
+            arg_off += static_cast<int>(sz);
+        };
+        if (fn.type->is_pascal) {
+            for (auto it = fn.params.rbegin(); it != fn.params.rend(); ++it) seed_param(*it);
+        } else {
+            for (const ParamDecl& p : fn.params) seed_param(p);
+        }
+
+        bool calls_setjmp = false;
+
+        auto unwrap_base_ptr_var = [&](const ExprPtr& pexpr) -> std::optional<int> {
+            const Expr* cur = pexpr.get();
+            while (cur && cur->kind == ExprKind::binary &&
+                   (cur->op == Tok::plus || cur->op == Tok::minus) &&
+                   cur->rhs && cur->rhs->kind == ExprKind::int_lit && cur->lhs) {
+                cur = cur->lhs.get();
+            }
+            if (cur && cur->kind == ExprKind::var) return lookup_sim(cur->name);
+            return std::nullopt;
+        };
+
+        auto check_cast_lvalue = [&](const ExprPtr& lval) {
+            if (!lval || lval->kind != ExprKind::cast) return;
+            const Expr* cur = lval.get();
+            bool non_word = false;
+            while (cur && cur->kind == ExprKind::cast) {
+                if (!is_reg_eligible_type(cur->type)) non_word = true;
+                cur = cur->lhs.get();
+            }
+            if (non_word && cur && cur->kind == ExprKind::var) {
+                if (auto off = lookup_sim(cur->name)) {
+                    cands[*off].addr_taken = true;
+                }
+            }
+        };
+
+        std::function<void(const ExprPtr&, int, bool)> walk_expr =
+            [&](const ExprPtr& e, int loop_depth, bool under_addr) {
+                if (!e) return;
+                switch (e->kind) {
+                    case ExprKind::var:
+                        if (auto off = lookup_sim(e->name)) {
+                            auto& c = cands[*off];
+                            if (under_addr) {
+                                c.addr_taken = true;
+                            } else {
+                                c.uses += 1;
+                                c.byte_savings += 1;
+                                c.score += 1 + 10 * loop_depth;
+                            }
+                        }
+                        break;
+                    case ExprKind::unary:
+                        if (e->op == Tok::amp) {
+                            walk_expr(e->lhs, loop_depth, true);
+                        } else if (e->op == Tok::star) {
+                            if (auto off = unwrap_base_ptr_var(e->lhs)) {
+                                auto& c = cands[*off];
+                                c.byte_savings += 2;
+                                c.score += 2 + 6 * loop_depth;
+                            }
+                            walk_expr(e->lhs, loop_depth, false);
+                        } else if (e->op == Tok::inc || e->op == Tok::dec) {
+                            check_cast_lvalue(e->lhs);
+                            if (e->lhs && e->lhs->kind == ExprKind::var) {
+                                if (auto off = lookup_sim(e->lhs->name)) {
+                                    auto& c = cands[*off];
+                                    c.byte_savings += 1;
+                                    c.score += 2 + 6 * loop_depth;
+                                }
+                            }
+                            walk_expr(e->lhs, loop_depth, false);
+                        } else {
+                            walk_expr(e->lhs, loop_depth, false);
+                        }
+                        break;
+                    case ExprKind::member:
+                        if (e->is_arrow) {
+                            if (auto off = unwrap_base_ptr_var(e->lhs)) {
+                                auto& c = cands[*off];
+                                c.byte_savings += 2;
+                                c.score += 2 + 6 * loop_depth;
+                            }
+                            walk_expr(e->lhs, loop_depth, false);
+                        } else {
+                            walk_expr(e->lhs, loop_depth, under_addr);
+                        }
+                        break;
+                    case ExprKind::cast:
+                        walk_expr(e->lhs, loop_depth, under_addr);
+                        break;
+                    case ExprKind::assign:
+                        check_cast_lvalue(e->lhs);
+                        if (e->lhs && e->lhs->kind == ExprKind::var &&
+                            e->rhs && e->rhs->kind == ExprKind::int_lit) {
+                            if (auto off = lookup_sim(e->lhs->name)) {
+                                cands[*off].byte_savings += 1;
+                            }
+                        }
+                        walk_expr(e->lhs, loop_depth, false);
+                        walk_expr(e->rhs, loop_depth, false);
+                        break;
+                    case ExprKind::compound_assign:
+                        check_cast_lvalue(e->lhs);
+                        walk_expr(e->lhs, loop_depth, false);
+                        walk_expr(e->rhs, loop_depth, false);
+                        break;
+                    case ExprKind::binary:
+                    case ExprKind::comma:
+                        walk_expr(e->lhs, loop_depth, false);
+                        walk_expr(e->rhs, loop_depth, false);
+                        break;
+                    case ExprKind::ternary:
+                        walk_expr(e->lhs, loop_depth, false);
+                        walk_expr(e->rhs, loop_depth, false);
+                        walk_expr(e->third, loop_depth, false);
+                        break;
+                    case ExprKind::call:
+                        if (e->lhs && e->lhs->kind == ExprKind::var &&
+                            (e->lhs->name == "setjmp" || e->lhs->name == "_setjmp")) {
+                            calls_setjmp = true;
+                        }
+                        walk_expr(e->lhs, loop_depth, false);
+                        for (const ExprPtr& a : e->args) walk_expr(a, loop_depth, false);
+                        break;
+                    default:
+                        break;
+                }
+            };
+
+        std::function<void(const StmtPtr&, int)> walk_stmt =
+            [&](const StmtPtr& s, int loop_depth) {
+                if (!s) return;
+                switch (s->kind) {
+                    case StmtKind::block:
+                        sim_scopes.emplace_back();
+                        for (const LocalVar& lv : s->locals) {
+                            all_local_offs.push_back(lv.bp_offset);
+                            sim_scopes.back()[lv.name] = lv.bp_offset;
+                            cands[lv.bp_offset] = {
+                                lv.bp_offset,
+                                false,
+                                lv.is_register,
+                                !lv.is_volatile && is_reg_eligible_type(lv.type),
+                                false,
+                                0,
+                                0,
+                                lv.is_register ? 50 : 0};
+                            if (lv.init) {
+                                walk_expr(lv.init, loop_depth, false);
+                                auto& c = cands[lv.bp_offset];
+                                c.uses += 1;
+                                c.byte_savings += (lv.init->kind == ExprKind::int_lit) ? 2 : 1;
+                                c.score += 1 + 10 * loop_depth;
+                            }
+                        }
+                        for (const StmtPtr& sub : s->stmts) walk_stmt(sub, loop_depth);
+                        sim_scopes.pop_back();
+                        break;
+                    case StmtKind::expr:
+                    case StmtKind::return_stmt:
+                        walk_expr(s->expr, loop_depth, false);
+                        break;
+                    case StmtKind::if_stmt:
+                        walk_expr(s->cond, loop_depth, false);
+                        walk_stmt(s->body, loop_depth);
+                        walk_stmt(s->else_body, loop_depth);
+                        break;
+                    case StmtKind::while_stmt:
+                    case StmtKind::do_while_stmt:
+                        walk_expr(s->cond, loop_depth + 1, false);
+                        walk_stmt(s->body, loop_depth + 1);
+                        break;
+                    case StmtKind::for_stmt:
+                        walk_expr(s->expr, loop_depth, false);
+                        walk_expr(s->cond, loop_depth + 1, false);
+                        walk_expr(s->post, loop_depth + 1, false);
+                        walk_stmt(s->body, loop_depth + 1);
+                        break;
+                    case StmtKind::switch_stmt:
+                        walk_expr(s->cond, loop_depth, false);
+                        walk_stmt(s->body, loop_depth);
+                        break;
+                    case StmtKind::case_stmt:
+                    case StmtKind::default_stmt:
+                    case StmtKind::label_stmt:
+                        walk_stmt(s->body, loop_depth);
+                        break;
+                    default:
+                        break;
+                }
+            };
+
+        walk_stmt(fn.body, 0);
+        if (calls_setjmp) return;
+
+        std::vector<RegCand> viable;
+        for (const auto& [off, c] : cands) {
+            (void)off;
+            if (!c.eligible || c.addr_taken || c.uses < 2) continue;
+            const int overhead = c.is_param ? 5 : 2;
+            if (c.byte_savings > overhead || (c.is_register && c.uses >= 2) ||
+                (c.score >= 15 && c.uses >= 2)) {
+                viable.push_back(c);
+            }
+        }
+        std::sort(viable.begin(), viable.end(), [](const RegCand& a, const RegCand& b) {
+            if (a.score != b.score) return a.score > b.score;
+            if (a.byte_savings != b.byte_savings) return a.byte_savings > b.byte_savings;
+            return a.bp_off < b.bp_off;
+        });
+
+        if (viable.size() >= 1) {
+            reg_by_bp_off_[viable[0].bp_off] = RegVar::si;
+            use_si_ = true;
+        }
+        if (viable.size() >= 2) {
+            reg_by_bp_off_[viable[1].bp_off] = RegVar::di;
+            use_di_ = true;
+        }
+
+        if (!all_local_offs.empty()) {
+            bool all_promoted = true;
+            for (int loff : all_local_offs) {
+                if (reg_by_bp_off_.find(loff) == reg_by_bp_off_.end()) {
+                    all_promoted = false;
+                    break;
+                }
+            }
+            if (all_promoted) effective_frame_size_ = 0;
+        }
+    }
+
+    void emit_local_init(const LocalVar& lv) {
+        if (!lv.init) return;
+        auto rit = reg_by_bp_off_.find(lv.bp_offset);
+        if (rit != reg_by_bp_off_.end()) {
+            if (lv.init->kind == ExprKind::int_lit) {
+                emit_mov_regvar_imm(rit->second, static_cast<std::uint16_t>(lv.init->int_val));
+            } else {
+                emit_expr(lv.init);
+                emit_mov_regvar_ax(rit->second);
+            }
+            return;
+        }
+        emit_expr(lv.init);
+        if (is_32bit_scalar(lv.type)) emit_widen_dxax(lv.init->type);
+        store_local(lv.type, lv.bp_offset);
+    }
+
     void emit_function(const FuncDef& fn) {
         fold_stmt(fn.body);
+        analyze_and_allocate_reg_vars(fn);
         cur_func_ = &fn;
         fn_code_start_ = omf_.code.data.size();
         const std::size_t pf_start = pending_fixups_.size();
@@ -2868,12 +3254,19 @@ private:
         }
 
         // Bind params
+        std::vector<std::pair<int, RegVar>> param_reg_inits;
         int arg_off = fn.type->is_far ? 6 : 4;
         if (fn.type->is_interrupt) arg_off = 4;
         auto bind_param = [&](const ParamDecl& p) {
             std::size_t sz = std::max<std::size_t>(2, type_size(p.type));
             if (sz % 2 != 0) ++sz;
-            if (!p.name.empty()) local_vars_.back()[p.name] = {p.type, arg_off};
+            if (!p.name.empty()) {
+                local_vars_.back()[p.name] = {p.type, arg_off};
+                auto rit = reg_by_bp_off_.find(arg_off);
+                if (rit != reg_by_bp_off_.end()) {
+                    param_reg_inits.emplace_back(arg_off, rit->second);
+                }
+            }
             arg_off += static_cast<int>(sz);
         };
         if (fn.type->is_pascal) {
@@ -2883,7 +3276,8 @@ private:
         }
 
         // Prologue
-        const bool need_bp = fn.frame_size > 0 || !fn.params.empty() || fn.type->is_interrupt;
+        const bool need_bp =
+            effective_frame_size_ > 0 || !fn.params.empty() || fn.type->is_interrupt;
         if (fn.type->is_interrupt) {
             // push ax, bx, cx, dx, es, ds, si, di, bp
             for (std::uint8_t op : {0x50, 0x53, 0x51, 0x52, 0x06, 0x1E, 0x56, 0x57, 0x55}) {
@@ -2894,13 +3288,21 @@ private:
             emit_u8(0x55);                 // push bp
             emit_u8(0x8B); emit_u8(0xEC);  // mov bp, sp
         }
-        if (fn.frame_size > 0) {
-            if (fn.frame_size <= 127) {
+        if (effective_frame_size_ > 0) {
+            if (effective_frame_size_ <= 127) {
                 emit_u8(0x83); emit_u8(0xEC);
-                emit_u8(static_cast<std::uint8_t>(fn.frame_size));
+                emit_u8(static_cast<std::uint8_t>(effective_frame_size_));
             } else {
                 emit_u8(0x81); emit_u8(0xEC);
-                emit_u16(static_cast<std::uint16_t>(fn.frame_size));
+                emit_u16(static_cast<std::uint16_t>(effective_frame_size_));
+            }
+        }
+        if (!fn.type->is_interrupt) {
+            if (use_si_) emit_u8(0x56);  // push si
+            if (use_di_) emit_u8(0x57);  // push di
+            for (const auto& [poff, rv] : param_reg_inits) {
+                emit_u8(0x8B);
+                emit_bp_rm(reg_num(rv), poff);  // mov si/di, [bp+poff]
             }
         }
 
@@ -2909,14 +3311,24 @@ private:
         // Epilogue
         bind_label(epilogue_label_);
 
-        if (fn.frame_size > 0 || fn.type->is_interrupt) {
-            emit_u8(0x8B); emit_u8(0xE5);  // mov sp, bp
-        }
         if (fn.type->is_interrupt) {
+            if (effective_frame_size_ > 0 || fn.type->is_interrupt) {
+                emit_u8(0x8B); emit_u8(0xE5);  // mov sp, bp
+            }
             for (std::uint8_t op : {0x5D, 0x5F, 0x5E, 0x1F, 0x07, 0x5A, 0x59, 0x5B, 0x58, 0xCF}) {
                 emit_u8(op);
             }
         } else {
+            const std::size_t saved_regs = (use_si_ ? 2U : 0U) + (use_di_ ? 2U : 0U);
+            if (effective_frame_size_ > 0 && saved_regs > 0) {
+                emit_u8(0x8D);
+                emit_bp_rm(4, -static_cast<int>(effective_frame_size_ + saved_regs));  // lea sp, [bp-N]
+            }
+            if (use_di_) emit_u8(0x5F);  // pop di
+            if (use_si_) emit_u8(0x5E);  // pop si
+            if (effective_frame_size_ > 0) {
+                emit_u8(0x8B); emit_u8(0xE5);  // mov sp, bp
+            }
             if (need_bp) emit_u8(0x5D);  // pop bp
             if (fn.type->is_pascal) {
                 std::size_t param_bytes = 0;
@@ -2937,6 +3349,9 @@ private:
 
         relax_and_finalize_function(pf_start, cf_start);
 
+        reg_by_bp_off_.clear();
+        use_si_ = false;
+        use_di_ = false;
         local_vars_.clear();
         cur_func_ = nullptr;
     }
@@ -2991,7 +3406,39 @@ private:
             const bool rhs_ptr = cond->rhs->type && (cond->rhs->type->kind == TypeKind::t_ptr ||
                                                      cond->rhs->type->kind == TypeKind::t_array);
             if (!is_32bit_scalar(cond->lhs->type) && !is_32bit_scalar(cond->rhs->type)) {
-                if (cond->rhs->kind == ExprKind::int_lit) {
+                const RegVar lhs_rv = find_expr_reg_var(cond->lhs);
+                const RegVar rhs_rv = find_expr_reg_var(cond->rhs);
+                if (lhs_rv != RegVar::none &&
+                    (cond->rhs->kind == ExprKind::int_lit || rhs_rv != RegVar::none)) {
+                    const std::uint8_t lrn = reg_num(lhs_rv);
+                    if (cond->rhs->kind == ExprKind::int_lit) {
+                        const std::uint16_t imm = static_cast<std::uint16_t>(cond->rhs->int_val);
+                        if (imm == 0) {
+                            emit_u8(0x85);
+                            emit_u8(static_cast<std::uint8_t>(0xC0 | (lrn << 3) | lrn));  // test si, si
+                        } else {
+                            emit_grp1_regvar_imm16(7, lhs_rv, imm);  // cmp si, imm
+                        }
+                    } else {
+                        emit_u8(0x3B);
+                        emit_u8(static_cast<std::uint8_t>(0xC0 | (lrn << 3) | reg_num(rhs_rv)));  // cmp si, di
+                    }
+                } else if (lhs_rv != RegVar::none) {
+                    DirectMem dm;
+                    if (try_resolve_word_mem(cond->rhs, dm)) {
+                        emit_u8(0x3B);
+                        if (dm.kind == DirectMem::bp_rel) {
+                            emit_bp_rm(reg_num(lhs_rv), dm.disp);  // cmp si, [bp+d]
+                        } else {
+                            emit_u8(static_cast<std::uint8_t>((reg_num(lhs_rv) << 3) | 0x06));
+                            emit_dgroup_disp(dm.sym, dm.disp);     // cmp si, [sym+d]
+                        }
+                    } else {
+                        emit_expr(cond->rhs);
+                        emit_u8(0x39);
+                        emit_u8(static_cast<std::uint8_t>(0xC0 | reg_num(lhs_rv)));  // cmp si, ax
+                    }
+                } else if (cond->rhs->kind == ExprKind::int_lit) {
                     const std::uint16_t imm = static_cast<std::uint16_t>(cond->rhs->int_val);
                     emit_expr(cond->lhs);
                     if (imm == 0) {
@@ -2999,6 +3446,10 @@ private:
                     } else {
                         emit_u8(0x3D); emit_u16(imm);   // cmp ax, imm16
                     }
+                } else if (rhs_rv != RegVar::none) {
+                    emit_expr(cond->lhs);
+                    emit_u8(0x3B);
+                    emit_u8(static_cast<std::uint8_t>(0xC0 | reg_num(rhs_rv)));  // cmp ax, si
                 } else if (DirectMem dm; try_resolve_word_mem(cond->rhs, dm)) {
                     emit_expr(cond->lhs);
                     emit_op_ax_direct_mem(0x3B, dm);  // cmp ax, [bp+d] / [sym+d]
@@ -3087,6 +3538,13 @@ private:
             }
         }
 
+        if (const RegVar crv = find_expr_reg_var(cond); crv != RegVar::none) {
+            const std::uint8_t rn = reg_num(crv);
+            emit_u8(0x85);
+            emit_u8(static_cast<std::uint8_t>(0xC0 | (rn << 3) | rn));  // test si, si
+            emit_jcc(jump_on_true ? 0x75 : 0x74, target);
+            return;
+        }
         emit_expr(cond);
         if (is_32bit_scalar(cond->type)) {
             emit_u8(0x0B); emit_u8(0xC2);  // or ax, dx
@@ -3108,11 +3566,7 @@ private:
                 local_vars_.emplace_back();
                 for (const LocalVar& lv : s->locals) {
                     local_vars_.back()[lv.name] = {lv.type, lv.bp_offset};
-                    if (lv.init) {
-                        emit_expr(lv.init);
-                        if (is_32bit_scalar(lv.type)) emit_widen_dxax(lv.init->type);
-                        store_local(lv.type, lv.bp_offset);
-                    }
+                    emit_local_init(lv);
                 }
                 for (const StmtPtr& sub : s->stmts) emit_stmt(sub);
                 local_vars_.pop_back();
@@ -3246,11 +3700,7 @@ private:
             local_vars_.emplace_back();
             for (const LocalVar& lv : s->locals) {
                 local_vars_.back()[lv.name] = {lv.type, lv.bp_offset};
-                if (lv.init) {
-                    emit_expr(lv.init);
-                    if (is_32bit_scalar(lv.type)) emit_widen_dxax(lv.init->type);
-                    store_local(lv.type, lv.bp_offset);
-                }
+                emit_local_init(lv);
             }
             for (const StmtPtr& sub : s->stmts) emit_switch_body(sub, cases, def_lbl);
             local_vars_.pop_back();
@@ -3316,6 +3766,7 @@ private:
         if (!e) return false;
         if (e->kind == ExprKind::var) {
             if (e->type && e->type->kind == TypeKind::t_func) return false;
+            if (find_reg_var(e->name) != RegVar::none) return false;
             if (auto loc = find_local(e->name)) {
                 out = {DirectMem::bp_rel, loc->second, ""};
                 return true;
@@ -3462,17 +3913,20 @@ private:
         }
     }
 
-    void emit_bx_rm(std::uint8_t reg_or_op, int disp) {
+    void emit_idx_rm(PtrBase base, std::uint8_t reg_or_op, int disp) {
+        const std::uint8_t rm = static_cast<std::uint8_t>(base);
         if (disp == 0) {
-            emit_u8(static_cast<std::uint8_t>(0x07 | ((reg_or_op & 7) << 3)));
+            emit_u8(static_cast<std::uint8_t>(rm | ((reg_or_op & 7) << 3)));
         } else if (disp >= -128 && disp <= 127) {
-            emit_u8(static_cast<std::uint8_t>(0x47 | ((reg_or_op & 7) << 3)));
+            emit_u8(static_cast<std::uint8_t>(0x40 | rm | ((reg_or_op & 7) << 3)));
             emit_u8(static_cast<std::uint8_t>(disp & 0xFF));
         } else {
-            emit_u8(static_cast<std::uint8_t>(0x87 | ((reg_or_op & 7) << 3)));
+            emit_u8(static_cast<std::uint8_t>(0x80 | rm | ((reg_or_op & 7) << 3)));
             emit_u16(static_cast<std::uint16_t>(disp));
         }
     }
+
+    void emit_bx_rm(std::uint8_t reg_or_op, int disp) { emit_idx_rm(PtrBase::bx, reg_or_op, disp); }
 
     bool can_emit_ptr_to_bx_preserving_ax_dx(const ExprPtr& ptr_expr) const {
         if (!ptr_expr || !ptr_expr->type) return false;
@@ -3488,6 +3942,7 @@ private:
             return can_emit_lvalue_bx_preserving_ax_dx(ptr_expr);
         }
         if (ptr_expr->type->kind == TypeKind::t_ptr && !ptr_expr->type->is_far) {
+            if (find_expr_reg_var(ptr_expr) != RegVar::none) return true;
             DirectMem dm;
             return try_resolve_direct_mem(ptr_expr, dm);
         }
@@ -3507,7 +3962,7 @@ private:
         return false;
     }
 
-    void emit_ptr_to_bx(const ExprPtr& ptr_expr, bool& out_far, int& inout_disp) {
+    void emit_ptr_to_idx(const ExprPtr& ptr_expr, PtrBase& out_base, bool& out_far, int& inout_disp) {
         if (ptr_expr && ptr_expr->kind == ExprKind::binary &&
             (ptr_expr->op == Tok::plus || ptr_expr->op == Tok::minus) &&
             ptr_expr->lhs && ptr_expr->lhs->type &&
@@ -3518,21 +3973,27 @@ private:
                 std::max<std::size_t>(1, type_size(ptr_expr->lhs->type->base));
             const int delta = static_cast<int>(
                 static_cast<std::int16_t>(ptr_expr->rhs->int_val) * static_cast<int>(elem_sz));
-            emit_ptr_to_bx(ptr_expr->lhs, out_far, inout_disp);
+            emit_ptr_to_idx(ptr_expr->lhs, out_base, out_far, inout_disp);
             inout_disp += (ptr_expr->op == Tok::plus ? delta : -delta);
             return;
         }
         if (ptr_expr && ptr_expr->type && ptr_expr->type->kind == TypeKind::t_array &&
             ptr_expr->kind == ExprKind::member) {
             int sub_disp = 0;
-            emit_lvalue_bx_disp(ptr_expr, out_far, sub_disp);
+            emit_lvalue_idx_disp(ptr_expr, out_base, out_far, sub_disp);
             inout_disp += sub_disp;
             return;
         }
         if (ptr_expr && ptr_expr->type && ptr_expr->type->kind == TypeKind::t_ptr &&
             !ptr_expr->type->is_far) {
+            if (const RegVar rv = find_expr_reg_var(ptr_expr); rv != RegVar::none) {
+                out_base = (rv == RegVar::si) ? PtrBase::si : PtrBase::di;
+                out_far = false;
+                return;
+            }
             DirectMem dm;
             if (try_resolve_direct_mem(ptr_expr, dm)) {
+                out_base = PtrBase::bx;
                 out_far = false;
                 if (dm.kind == DirectMem::bp_rel) {
                     emit_u8(0x8B); emit_bp_rm(3, dm.disp);  // mov bx, [bp+d]
@@ -3543,6 +4004,7 @@ private:
                 return;
             }
         }
+        out_base = PtrBase::bx;
         emit_expr(ptr_expr);
         if (ptr_expr && ptr_expr->type && ptr_expr->type->is_far) {
             emit_u8(0x8E); emit_u8(0xC2);  // mov es, dx
@@ -3553,7 +4015,8 @@ private:
         emit_u8(0x8B); emit_u8(0xD8);  // mov bx, ax
     }
 
-    void emit_lvalue_bx_disp(const ExprPtr& e, bool& out_far, int& out_disp) {
+    void emit_lvalue_idx_disp(const ExprPtr& e, PtrBase& out_base, bool& out_far, int& out_disp) {
+        out_base = PtrBase::bx;
         out_far = false;
         out_disp = 0;
         if (!e) throw FormatError(0, "expression is not assignable");
@@ -3567,22 +4030,22 @@ private:
             return;
         }
         if (e->kind == ExprKind::cast) {
-            emit_lvalue_bx_disp(e->lhs, out_far, out_disp);
+            emit_lvalue_idx_disp(e->lhs, out_base, out_far, out_disp);
             return;
         }
         if (e->kind == ExprKind::member) {
             TypePtr st = e->is_arrow && e->lhs->type ? e->lhs->type->base : e->lhs->type;
             const int foff = static_cast<int>(lookup_field_offset(st, e->name));
             if (e->is_arrow) {
-                emit_ptr_to_bx(e->lhs, out_far, out_disp);
+                emit_ptr_to_idx(e->lhs, out_base, out_far, out_disp);
             } else {
-                emit_lvalue_bx_disp(e->lhs, out_far, out_disp);
+                emit_lvalue_idx_disp(e->lhs, out_base, out_far, out_disp);
             }
             out_disp += foff;
             return;
         }
         if (e->kind == ExprKind::unary && e->op == Tok::star) {
-            emit_ptr_to_bx(e->lhs, out_far, out_disp);
+            emit_ptr_to_idx(e->lhs, out_base, out_far, out_disp);
             return;
         }
         throw FormatError(0, "expression is not assignable");
@@ -3590,38 +4053,48 @@ private:
 
     // Loads address of an lvalue into BX (or ES:BX if far)
     void emit_lvalue_addr(const ExprPtr& e, bool& out_far) {
+        PtrBase base = PtrBase::bx;
         int disp = 0;
-        emit_lvalue_bx_disp(e, out_far, disp);
-        if (disp != 0) {
-            emit_u8(0x8D); emit_bx_rm(3, disp);  // lea bx, [bx + disp]
+        emit_lvalue_idx_disp(e, base, out_far, disp);
+        if (base == PtrBase::bx) {
+            if (disp != 0) {
+                emit_u8(0x8D); emit_idx_rm(PtrBase::bx, 3, disp);  // lea bx, [bx + disp]
+            }
+        } else {
+            if (disp == 0) {
+                emit_u8(0x8B);
+                emit_u8(base == PtrBase::si ? 0xDE : 0xDF);  // mov bx, si/di
+            } else {
+                emit_u8(0x8D); emit_idx_rm(base, 3, disp);   // lea bx, [si/di + disp]
+            }
         }
     }
 
-    void load_from_bx(const TypePtr& t, bool is_far, int disp = 0) {
+    void load_from_bx(const TypePtr& t, bool is_far, int disp = 0, PtrBase base = PtrBase::bx) {
         if (is_far) emit_u8(0x26);  // es:
         if (is_byte_scalar(t)) {
-            emit_u8(0x8A); emit_bx_rm(0, disp);  // mov al, [bx+disp]
+            emit_u8(0x8A); emit_idx_rm(base, 0, disp);  // mov al, [base+disp]
             if (is_signed_type(t)) emit_u8(0x98);  // cbw
             else { emit_u8(0x32); emit_u8(0xE4); }  // xor ah, ah
         } else if (is_32bit_scalar(t)) {
-            emit_u8(0x8B); emit_bx_rm(0, disp);      // mov ax, [bx+disp]
+            emit_u8(0x8B); emit_idx_rm(base, 0, disp);      // mov ax, [base+disp]
             if (is_far) emit_u8(0x26);
-            emit_u8(0x8B); emit_bx_rm(2, disp + 2);  // mov dx, [bx+disp+2]
+            emit_u8(0x8B); emit_idx_rm(base, 2, disp + 2);  // mov dx, [base+disp+2]
         } else {
-            emit_u8(0x8B); emit_bx_rm(0, disp);  // mov ax, [bx+disp]
+            emit_u8(0x8B); emit_idx_rm(base, 0, disp);  // mov ax, [base+disp]
         }
     }
 
-    void store_to_bx(const TypePtr& t, bool is_far, int disp = 0) {
+    void store_to_bx(const TypePtr& t, bool is_far, int disp = 0, PtrBase base = PtrBase::bx) {
         if (is_far) emit_u8(0x26);  // es:
         if (is_byte_scalar(t)) {
-            emit_u8(0x88); emit_bx_rm(0, disp);  // mov [bx+disp], al
+            emit_u8(0x88); emit_idx_rm(base, 0, disp);  // mov [base+disp], al
         } else if (is_32bit_scalar(t)) {
-            emit_u8(0x89); emit_bx_rm(0, disp);      // mov [bx+disp], ax
+            emit_u8(0x89); emit_idx_rm(base, 0, disp);      // mov [base+disp], ax
             if (is_far) emit_u8(0x26);
-            emit_u8(0x89); emit_bx_rm(2, disp + 2);  // mov [bx+disp+2], dx
+            emit_u8(0x89); emit_idx_rm(base, 2, disp + 2);  // mov [base+disp+2], dx
         } else {
-            emit_u8(0x89); emit_bx_rm(0, disp);  // mov [bx+disp], ax
+            emit_u8(0x89); emit_idx_rm(base, 0, disp);  // mov [base+disp], ax
         }
     }
 
@@ -3694,6 +4167,10 @@ private:
                     }
                     break;
                 }
+                if (const RegVar rv = find_reg_var(e->name); rv != RegVar::none) {
+                    emit_mov_ax_regvar(rv);
+                    break;
+                }
                 if (!(e->type && e->type->kind == TypeKind::t_struct)) {
                     DirectMem dm;
                     if (try_resolve_direct_mem(e, dm)) {
@@ -3701,10 +4178,11 @@ private:
                         break;
                     }
                 }
+                PtrBase base = PtrBase::bx;
                 bool is_far = false;
                 int disp = 0;
-                emit_lvalue_bx_disp(e, is_far, disp);
-                load_from_bx(e->type, is_far, disp);
+                emit_lvalue_idx_disp(e, base, is_far, disp);
+                load_from_bx(e->type, is_far, disp, base);
                 break;
             }
 
@@ -3722,10 +4200,11 @@ private:
                     emit_u8(0x8B); emit_u8(0xC3);  // mov ax, bx
                     if (is_far) { emit_u8(0x8C); emit_u8(0xC2); }  // mov dx, es
                 } else {
+                    PtrBase base = PtrBase::bx;
                     bool is_far = false;
                     int disp = 0;
-                    emit_lvalue_bx_disp(e, is_far, disp);
-                    load_from_bx(e->type, is_far, disp);
+                    emit_lvalue_idx_disp(e, base, is_far, disp);
+                    load_from_bx(e->type, is_far, disp, base);
                 }
                 break;
             }
@@ -3776,6 +4255,15 @@ private:
             }
 
             case ExprKind::assign: {
+                if (const RegVar rv = find_expr_reg_var(e->lhs); rv != RegVar::none) {
+                    if (!need_value && e->rhs->kind == ExprKind::int_lit) {
+                        emit_mov_regvar_imm(rv, static_cast<std::uint16_t>(e->rhs->int_val));
+                    } else {
+                        emit_expr(e->rhs);
+                        emit_mov_regvar_ax(rv);
+                    }
+                    break;
+                }
                 emit_expr(e->rhs);
                 if (is_32bit_scalar(e->type)) emit_widen_dxax(e->rhs->type);
                 if (!(e->type && e->type->kind == TypeKind::t_struct)) {
@@ -3785,21 +4273,23 @@ private:
                         break;
                     }
                     if (can_emit_lvalue_bx_preserving_ax_dx(e->lhs)) {
+                        PtrBase base = PtrBase::bx;
                         bool is_far = false;
                         int disp = 0;
-                        emit_lvalue_bx_disp(e->lhs, is_far, disp);
-                        store_to_bx(e->type, is_far, disp);
+                        emit_lvalue_idx_disp(e->lhs, base, is_far, disp);
+                        store_to_bx(e->type, is_far, disp, base);
                         break;
                     }
                 }
                 emit_u8(0x50);  // push ax
                 if (is_32bit_scalar(e->type)) emit_u8(0x52);  // push dx
+                PtrBase base = PtrBase::bx;
                 bool is_far = false;
                 int disp = 0;
-                emit_lvalue_bx_disp(e->lhs, is_far, disp);
+                emit_lvalue_idx_disp(e->lhs, base, is_far, disp);
                 if (is_32bit_scalar(e->type)) emit_u8(0x5A);  // pop dx
                 emit_u8(0x58);  // pop ax
-                store_to_bx(e->type, is_far, disp);
+                store_to_bx(e->type, is_far, disp, base);
                 break;
             }
 
@@ -3820,6 +4310,56 @@ private:
                     (lhs_is_ptr && (bin_op == Tok::plus || bin_op == Tok::minus) && e->type->base)
                         ? static_cast<std::uint16_t>(std::max<std::size_t>(1, type_size(e->type->base)))
                         : 1U;
+
+                // Fast compound assignment on register variable SI / DI
+                if (const RegVar rv = find_expr_reg_var(e->lhs); rv != RegVar::none) {
+                    const std::uint8_t rn = reg_num(rv);
+                    const bool is_grp1 = (bin_op == Tok::plus || bin_op == Tok::minus ||
+                                          bin_op == Tok::amp || bin_op == Tok::pipe ||
+                                          bin_op == Tok::caret);
+                    const std::uint8_t grp1_sub = bin_op == Tok::plus    ? 0
+                                                  : bin_op == Tok::pipe  ? 1
+                                                  : bin_op == Tok::amp   ? 4
+                                                  : bin_op == Tok::minus ? 5
+                                                                         : 6;
+                    if (is_grp1 && e->rhs->kind == ExprKind::int_lit) {
+                        const std::uint16_t imm = static_cast<std::uint16_t>(
+                            static_cast<std::uint16_t>(e->rhs->int_val) * ptr_scale);
+                        if (imm == 1 && (bin_op == Tok::plus || bin_op == Tok::minus)) {
+                            emit_u8(static_cast<std::uint8_t>((bin_op == Tok::plus ? 0x40 : 0x48) + rn));
+                        } else if (imm == 2 && (bin_op == Tok::plus || bin_op == Tok::minus)) {
+                            const std::uint8_t op1 =
+                                static_cast<std::uint8_t>((bin_op == Tok::plus ? 0x40 : 0x48) + rn);
+                            emit_u8(op1);
+                            emit_u8(op1);
+                        } else if (imm != 0 || bin_op == Tok::amp) {
+                            emit_grp1_regvar_imm16(grp1_sub, rv, imm);
+                        }
+                        if (need_value) emit_mov_ax_regvar(rv);
+                        break;
+                    }
+                    if (!need_value && is_grp1) {
+                        emit_expr(e->rhs, true);
+                        if (ptr_scale > 1) emit_mul16_ax_const(ptr_scale, false);
+                        const std::uint8_t mr_opc = bin_op == Tok::plus    ? 0x01
+                                                    : bin_op == Tok::pipe  ? 0x09
+                                                    : bin_op == Tok::amp   ? 0x21
+                                                    : bin_op == Tok::minus ? 0x29
+                                                                           : 0x31;
+                        emit_u8(mr_opc);
+                        emit_u8(static_cast<std::uint8_t>(0xC0 | rn));  // op si/di, ax
+                        break;
+                    }
+                    emit_mov_ax_regvar(rv);
+                    emit_u8(0x50);  // push ax (lhs)
+                    emit_expr(e->rhs, true);
+                    emit_u8(0x8B); emit_u8(0xC8);  // mov cx, ax (rhs)
+                    if (ptr_scale > 1) emit_scale16_cx(ptr_scale);
+                    emit_u8(0x58);  // pop ax (lhs)
+                    emit_alu_ax_cx(bin_op, e->type);
+                    emit_mov_regvar_ax(rv);
+                    break;
+                }
 
                 // Fast in-place compound assignment on DirectMem ([bp+d] or [sym+d])
                 if (DirectMem dm; try_resolve_direct_mem(e->lhs, dm)) {
@@ -3947,11 +4487,10 @@ private:
                 }
 
                 bool is_far = false;
-                int bx_disp = 0;
-                emit_lvalue_bx_disp(e->lhs, is_far, bx_disp);
+                emit_lvalue_addr(e->lhs, is_far);
                 if (is_far) emit_u8(0x06);  // push es
                 emit_u8(0x53);              // push bx
-                load_from_bx(e->type, is_far, bx_disp);
+                load_from_bx(e->type, is_far, 0, PtrBase::bx);
                 if (is_32bit_scalar(e->type) && !lhs_is_ptr) {
                     emit_u8(0x52);  // push dx (lhs hi)
                     emit_u8(0x50);  // push ax (lhs lo)
@@ -3974,7 +4513,7 @@ private:
                 }
                 emit_u8(0x5B);  // pop bx
                 if (is_far) emit_u8(0x07);  // pop es
-                store_to_bx(e->type, is_far, bx_disp);
+                store_to_bx(e->type, is_far, 0, PtrBase::bx);
                 break;
             }
 
@@ -4004,10 +4543,11 @@ private:
                             break;
                         }
                     }
+                    PtrBase base = PtrBase::bx;
                     bool is_far = false;
                     int disp = 0;
-                    emit_ptr_to_bx(e->lhs, is_far, disp);
-                    load_from_bx(e->type, is_far, disp);
+                    emit_ptr_to_idx(e->lhs, base, is_far, disp);
+                    load_from_bx(e->type, is_far, disp, base);
                     break;
                 }
                 if (e->op == Tok::inc || e->op == Tok::dec) {
@@ -4019,6 +4559,33 @@ private:
                     const bool is32 = is_32bit_scalar(e->type);
                     const bool is32_int = e->type && (e->type->kind == TypeKind::t_long ||
                                                       e->type->kind == TypeKind::t_ulong);
+
+                    // Fast in-place ++ / -- on register variable SI / DI
+                    if (const RegVar rv = find_expr_reg_var(e->lhs); rv != RegVar::none) {
+                        const std::uint8_t rn = reg_num(rv);
+                        auto emit_rmod = [&]() {
+                            if (step == 1) {
+                                emit_u8(static_cast<std::uint8_t>((is_inc ? 0x40 : 0x48) + rn));
+                            } else if (step == 2) {
+                                const std::uint8_t op1 =
+                                    static_cast<std::uint8_t>((is_inc ? 0x40 : 0x48) + rn);
+                                emit_u8(op1);
+                                emit_u8(op1);
+                            } else {
+                                emit_grp1_regvar_imm16(is_inc ? 0 : 5, rv, step);
+                            }
+                        };
+                        if (!need_value) {
+                            emit_rmod();
+                        } else if (e->is_postfix) {
+                            emit_mov_ax_regvar(rv);
+                            emit_rmod();
+                        } else {
+                            emit_rmod();
+                            emit_mov_ax_regvar(rv);
+                        }
+                        break;
+                    }
 
                     // Fast in-place ++ / -- on DirectMem ([bp+d] or [sym+d])
                     if (DirectMem dm; !is32 && try_resolve_direct_mem(e->lhs, dm)) {
@@ -4096,38 +4663,39 @@ private:
                         break;
                     }
 
-                    // General lvalue via [es:][bx+disp] — avoid push/pop when 8/16-bit
+                    // General lvalue via [es:][base+disp] — avoid push/pop when 8/16-bit
+                    PtrBase base = PtrBase::bx;
                     bool is_far = false;
                     int bx_disp = 0;
-                    emit_lvalue_bx_disp(e->lhs, is_far, bx_disp);
+                    emit_lvalue_idx_disp(e->lhs, base, is_far, bx_disp);
                     if (!is32) {
                         auto emit_bx_mod = [&]() {
                             if (is_far) emit_u8(0x26);
                             if (is_byte_scalar(e->type)) {
-                                emit_u8(0xFE); emit_bx_rm(is_inc ? 0 : 1, bx_disp);
+                                emit_u8(0xFE); emit_idx_rm(base, is_inc ? 0 : 1, bx_disp);
                             } else if (step == 1) {
-                                emit_u8(0xFF); emit_bx_rm(is_inc ? 0 : 1, bx_disp);
+                                emit_u8(0xFF); emit_idx_rm(base, is_inc ? 0 : 1, bx_disp);
                             } else if (step <= 127) {
-                                emit_u8(0x83); emit_bx_rm(is_inc ? 0 : 5, bx_disp);
+                                emit_u8(0x83); emit_idx_rm(base, is_inc ? 0 : 5, bx_disp);
                                 emit_u8(static_cast<std::uint8_t>(step));
                             } else {
-                                emit_u8(0x81); emit_bx_rm(is_inc ? 0 : 5, bx_disp);
+                                emit_u8(0x81); emit_idx_rm(base, is_inc ? 0 : 5, bx_disp);
                                 emit_u16(step);
                             }
                         };
                         if (!need_value) {
                             emit_bx_mod();
                         } else if (e->is_postfix) {
-                            load_from_bx(e->type, is_far, bx_disp);
+                            load_from_bx(e->type, is_far, bx_disp, base);
                             emit_bx_mod();
                         } else {
                             emit_bx_mod();
-                            load_from_bx(e->type, is_far, bx_disp);
+                            load_from_bx(e->type, is_far, bx_disp, base);
                         }
                         break;
                     }
 
-                    load_from_bx(e->type, is_far, bx_disp);
+                    load_from_bx(e->type, is_far, bx_disp, base);
                     if (need_value && e->is_postfix) {
                         if (is32) emit_u8(0x52);  // push dx
                         emit_u8(0x50);            // push ax
@@ -4139,7 +4707,7 @@ private:
                         emit_u8(0x2D); emit_u16(step);  // sub ax, step
                         if (is32_int) { emit_u8(0x83); emit_u8(0xDA); emit_u8(0x00); }  // sbb dx, 0
                     }
-                    store_to_bx(e->type, is_far, bx_disp);
+                    store_to_bx(e->type, is_far, bx_disp, base);
                     if (need_value && e->is_postfix) {
                         emit_u8(0x58);            // pop ax
                         if (is32) emit_u8(0x5A);  // pop dx
@@ -4326,14 +4894,38 @@ private:
                     }
                 }
 
-                // Direct 16-bit memory RHS fast path ([bp+d] or [sym+d])
+                // Direct 16-bit register or memory RHS fast path (SI/DI, [bp+d], or [sym+d])
                 if (!is_32bit_scalar(e->type) && !is_32bit_scalar(e->lhs->type) &&
                     !is_32bit_scalar(e->rhs->type)) {
+                    const bool byte_ptr_add =
+                        (e->op == Tok::plus || e->op == Tok::minus) && lhs_ptr && !rhs_ptr &&
+                        std::max<std::size_t>(1, type_size(e->lhs->type->base)) == 1;
+                    if (const RegVar rhs_rv = find_expr_reg_var(e->rhs); rhs_rv != RegVar::none) {
+                        if (((!lhs_ptr && !rhs_ptr) || byte_ptr_add) &&
+                            (e->op == Tok::plus || e->op == Tok::minus || e->op == Tok::amp ||
+                             e->op == Tok::pipe || e->op == Tok::caret)) {
+                            emit_expr(e->lhs);
+                            const std::uint8_t opc = e->op == Tok::plus    ? 0x03
+                                                     : e->op == Tok::minus ? 0x2B
+                                                     : e->op == Tok::amp   ? 0x23
+                                                     : e->op == Tok::pipe  ? 0x0B
+                                                                           : 0x33;
+                            emit_u8(opc);
+                            emit_u8(static_cast<std::uint8_t>(0xC0 | reg_num(rhs_rv)));  // op ax, si/di
+                            break;
+                        }
+                        if (e->op == Tok::eq || e->op == Tok::ne || e->op == Tok::lt ||
+                            e->op == Tok::le || e->op == Tok::gt || e->op == Tok::ge) {
+                            emit_expr(e->lhs);
+                            emit_u8(0x3B);
+                            emit_u8(static_cast<std::uint8_t>(0xC0 | reg_num(rhs_rv)));  // cmp ax, si/di
+                            emit_cmp_setcc(e->op, is_signed_type(e->lhs->type) &&
+                                                      is_signed_type(e->rhs->type));
+                            break;
+                        }
+                    }
                     DirectMem dm;
                     if (try_resolve_word_mem(e->rhs, dm)) {
-                        const bool byte_ptr_add =
-                            (e->op == Tok::plus || e->op == Tok::minus) && lhs_ptr && !rhs_ptr &&
-                            std::max<std::size_t>(1, type_size(e->lhs->type->base)) == 1;
                         if (((!lhs_ptr && !rhs_ptr) || byte_ptr_add) &&
                             (e->op == Tok::plus || e->op == Tok::minus || e->op == Tok::amp ||
                              e->op == Tok::pipe || e->op == Tok::caret)) {
