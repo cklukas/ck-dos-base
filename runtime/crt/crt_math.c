@@ -7,6 +7,11 @@
 typedef unsigned short math_u16;
 typedef unsigned long  math_u32;
 extern int errno;
+extern int __ck_has_x87;
+extern void __x87_sqrt(double *out, const double *x);
+extern void __x87_sin(double *out, const double *x);
+extern void __x87_cos(double *out, const double *x);
+extern void __x87_atan(double *out, const double *x);
 #else
 #include <stdint.h>
 #include <errno.h>
@@ -308,6 +313,12 @@ double sqrt(double x)
         return m_qnan();
     }
     if (m_isinf_bits(b)) return x;
+#ifdef __CKCL__
+    if (__ck_has_x87) {
+        __x87_sqrt(&y, &x);
+        return y;
+    }
+#endif
 
     m = frexp(x, &e);
     if (e & 1) {
@@ -586,6 +597,12 @@ double sin(double x)
         if (m_isinf_bits(b)) errno = EDOM;
         return m_qnan();
     }
+#ifdef __CKCL__
+    if (__ck_has_x87 && (b.hi & (math_u32)0x7FFFFFFFUL) < (math_u32)0x43E00000UL) {
+        __x87_sin(&r, &x);
+        return r;
+    }
+#endif
     if (fabs(x) < 0.78539816339744830962) {
         if (m_iszero_bits(b)) return x;
         return kernel_sin(x);
@@ -609,6 +626,12 @@ double cos(double x)
         if (m_isinf_bits(b)) errno = EDOM;
         return m_qnan();
     }
+#ifdef __CKCL__
+    if (__ck_has_x87 && (b.hi & (math_u32)0x7FFFFFFFUL) < (math_u32)0x43E00000UL) {
+        __x87_cos(&r, &x);
+        return r;
+    }
+#endif
     if (fabs(x) < 0.78539816339744830962) {
         return kernel_cos(x);
     }
@@ -632,6 +655,13 @@ double tan(double x)
         return m_qnan();
     }
     if (m_iszero_bits(b)) return x;
+#ifdef __CKCL__
+    if (__ck_has_x87 && (b.hi & (math_u32)0x7FFFFFFFUL) < (math_u32)0x43E00000UL) {
+        __x87_sin(&s, &x);
+        __x87_cos(&c, &x);
+        return s / c;
+    }
+#endif
 
     q = rem_pio2(x, &r);
     s = kernel_sin(r);
@@ -657,6 +687,12 @@ double atan(double x)
         res = pi_o_2_hi + pi_o_2_lo;
         return sign ? -res : res;
     }
+#ifdef __CKCL__
+    if (__ck_has_x87) {
+        __x87_atan(&res, &x);
+        return res;
+    }
+#endif
 
     ax = fabs(x);
     if (ax > 1.0) {

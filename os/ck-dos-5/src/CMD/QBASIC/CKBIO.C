@@ -113,7 +113,7 @@ static void print_using(Parser *p, int run, FormatOutput *output)
     expect(p, ';', "Expected: ;");
     ckb_format_init(&state, ckb_string_bytes(&format), format.length);
     if (run && !error_message && end_statement(p)) {
-        memset(&item, 0, sizeof(item));
+        INIT_VALUE(&item);
         item.string = 1;
         format_item(&state, &item, output);
     }
@@ -690,7 +690,7 @@ void shell_statement(Parser *p, int run)
 {
     Value command;
     const char *text;
-    memset(&command, 0, sizeof(command));
+    INIT_VALUE(&command);
     command.string = 1;
     if (!end_statement(p)) expression(p, &command, 1, 0, run);
     if (!command.string) fail(p, "Type mismatch");
@@ -752,7 +752,7 @@ void line_input_statement(Parser *p, int run)
         fail(p, "Input past end of file");
         return;
     }
-    memset(&v, 0, sizeof(v));
+    INIT_VALUE(&v);
     v.string = 1;
     while ((c = fgetc(file->stream)) != EOF && c != 26 && c != '\n' && c != '\r') {
         if (n == TEXT_INPUT_MAX) {
@@ -785,7 +785,7 @@ static void input_file_field(Parser *p, FILE *stream, Reference ref)
     Value value;
     int c, quoted;
     unsigned length = 0;
-    memset(&value, 0, sizeof(value));
+    INIT_VALUE(&value);
     value.string = ref.kind == '$';
     do {
         c = sequential_char(stream);
@@ -946,7 +946,7 @@ void environment_function(Parser *p, Value *value, unsigned depth, int run)
     char *bytes;
     long index = 0;
     int length;
-    memset(&arg, 0, sizeof(arg));
+    INIT_VALUE(&arg);
     expect(p, '(', "Expected: (");
     expression(p, &arg, 1, depth + 1, run);
     expect(p, ')', "Expected: )");
@@ -978,22 +978,34 @@ void environment_function(Parser *p, Value *value, unsigned depth, int run)
     else ckenv_at(index, bytes, (unsigned)length + 1);
 }
 
+#define BUILTIN_POOL_MAX 12U
+static Value builtin_arg_pool[BUILTIN_POOL_MAX];
+static unsigned builtin_pool_top;
+
 int builtin(Parser *p, Value *v, unsigned depth, int run, int id, int length)
 {
     Value *args;
     unsigned n = 0, i;
+    int pooled = 0;
     const char *err;
-    args = malloc(3 * sizeof(*args));
-    if (!args) {
-        fail(p, "Out of memory");
-        return 1;
+    if (builtin_pool_top + 3U <= BUILTIN_POOL_MAX) {
+        args = &builtin_arg_pool[builtin_pool_top];
+        builtin_pool_top += 3U;
+        pooled = 1;
+    } else {
+        args = malloc(3 * sizeof(*args));
+        if (!args) {
+            fail(p, "Out of memory");
+            return 1;
+        }
     }
     scan(p);
     expect(p, '(', "Expected: (");
     if (p->token != ')') do {
         if (n == 3) {
             fail(p, "Too many arguments");
-            free(args);
+            if (pooled) builtin_pool_top -= 3U;
+            else free(args);
             return 1;
         }
         expression(p, &args[n++], 1, depth + 1, run);
@@ -1009,7 +1021,7 @@ int builtin(Parser *p, Value *v, unsigned depth, int run, int id, int length)
             else if (args[0].string || record_size(args[0].kind)) fail(p, "Type mismatch");
             else if (id <= CF_ABS) math_builtin(p, v, &args[0], id, run);
             else {
-                *v = args[0];
+                COPY_VALUE(v, &args[0]);
                 convert_number(p, v, id == CF_CINT ? '%' : id == CF_CLNG ? '&' :
                                id == CF_CSNG ? '!' : '#', run);
             }
@@ -1023,7 +1035,8 @@ int builtin(Parser *p, Value *v, unsigned depth, int run, int id, int length)
             }
         }
     }
-    free(args);
+    if (pooled) builtin_pool_top -= 3U;
+    else free(args);
     return 1;
 }
 
@@ -1356,4 +1369,634 @@ int close_channels(void)
         if (release_channel(&channels[i])) failed = 1;
     memset(channels, 0, sizeof(channels));
     return !failed;
+}
+
+void array_bound(Parser *p, Value *value, int run)
+{
+    int id, upper = take_word(p, "UBOUND");
+    long dimension = 1;
+    char name[BASIC_NAME_MAX + 1], kind;
+    int unsuffixed;
+    if (!upper) scan(p);
+    expect(p, '(', "Expected: (");
+    unsuffixed = unsuffixed_name(p);
+    if (!identifier(p, name, &kind)) return;
+    id = named_variable(p, name, kind, 1, 0, unsuffixed, 0);
+    if (take(p, ',')) dimension = integer_operand(p, numeric(p, run), run);
+    expect(p, ')', "Expected: )");
+    value->kind = '&';
+    if (run && id >= 0 && !error_message) {
+        Variable *v = array_storage(id);
+        if (!v->elements && v->dynamic != ARRAY_DYNAMIC) implicit_array(p, v, 1);
+        if (!v->elements || dimension < 1 || dimension > v->dimensions)
+            fail(p, "Subscript out of range");
+        else
+            value->number = upper ? v->bounds[dimension - 1].upper :
+                                    v->bounds[dimension - 1].lower;
+    }
+}
+
+void clear_array(Variable *v)
+{
+    unsigned i;
+    if (v->kind == '$') {
+        char **items = v->elements;
+        for (i = 0; i < v->cells; ++i) {
+            free(items[i]);
+            items[i] = NULL;
+        }
+    } else if (v->elements) {
+        memset(v->elements, 0, v->cells * array_element_size(v));
+    }
+}
+
+void release_array(Variable *v)
+{
+    if (v->kind == '$') clear_array(v);
+    free(v->elements);
+    free(v->bounds);
+    v->elements = NULL;
+    v->bounds = NULL;
+    v->cells = v->dimensions = 0;
+}
+
+void dimension_array(Parser *p, Variable *v, const Bounds *bounds, unsigned dimensions,
+                     unsigned cells)
+{
+    Bounds *shape;
+    void *elements;
+    unsigned size = array_element_size(v);
+    if (record_size(v->kind) && cells > 32767U / size) {
+        fail(p, "Out of memory");
+        return;
+    }
+    shape = malloc(dimensions * sizeof(*shape));
+    elements = calloc(cells, size);
+    if (!shape || !elements) {
+        free(shape);
+        free(elements);
+        fail(p, "Out of memory");
+        return;
+    }
+    memcpy(shape, bounds, dimensions * sizeof(*shape));
+    release_array(v);
+    v->bounds = shape;
+    v->dimensions = dimensions;
+    v->elements = elements;
+    v->cells = cells;
+}
+
+void erase_statement(Parser *p, int run)
+{
+    do {
+        char name[BASIC_NAME_MAX + 1], kind;
+        int id, unsuffixed = unsuffixed_name(p);
+        if (!identifier(p, name, &kind)) return;
+        id = named_variable(p, name, kind, 1, 0, unsuffixed, 0);
+        if (run && id >= 0 && !error_message) {
+            Variable *v = array_storage(id);
+            if (v->dynamic == ARRAY_DYNAMIC) release_array(v);
+            else clear_array(v);
+        }
+    } while (!error_message && take(p, ','));
+}
+
+static void write_output(Parser *p, FILE *stream, unsigned *column, const char *s)
+{
+    write_bytes(p, stream, column, s, strlen(s));
+}
+
+#if defined(__WATCOMC__) || defined(_MSDOS)
+static void input_cursor(unsigned start)
+{
+    union REGS regs = {0};
+    regs.x.ax = 0x0100;
+    regs.x.cx = (start << 8) | 7;
+    int86(0x10, &regs, &regs);
+}
+
+static volatile unsigned char input_break_requested;
+typedef void (__interrupt __far *BiosInterrupt)(void);
+extern void __interrupt __far input_scan(void);
+extern void __far input_scan_init(BiosInterrupt);
+extern int __far input_scan_pending(void);
+#ifdef __WATCOMC__
+#pragma aux input_scan "CKB_INPUT_SCAN"
+#pragma aux input_scan_init "CKB_INPUT_SCAN_INIT" parm [dx ax] modify exact []
+#pragma aux input_scan_pending "CKB_INPUT_SCAN_PENDING" value [ax] modify exact [ax]
+#endif
+
+static void __interrupt __far input_break_interrupt(void)
+{
+    input_break_requested = 1;
+}
+
+#ifdef __WATCOMC__
+static unsigned input_key(void);
+#pragma aux input_key = \
+    "mov ah, 01h" "int 16h" "jz empty" \
+    "xor ah, ah" "int 16h" "jmp short done" \
+    "empty: mov ax, 0ffffh" \
+    "done:" value [ax] modify exact [ax]
+
+static void input_idle(void);
+#pragma aux input_idle = "sti" "hlt" modify exact []
+#else
+extern unsigned __far input_key(void);
+extern void __far input_idle(void);
+#endif
+
+static int editor_input_ex(Parser *p, char *input, int emit_newline)
+{
+    volatile unsigned char __far *break_flag = MK_FP(0x40, 0x71);
+    BiosInterrupt previous_break = _dos_getvect(0x1b);
+    BiosInterrupt previous_scan = _dos_getvect(0x15);
+    unsigned length = 0;
+    int interrupted = 0;
+    *break_flag &= 0x7f;
+    input_break_requested = 0;
+    input_scan_init(previous_scan);
+    _dos_setvect(0x15, input_scan);
+    _dos_setvect(0x1b, input_break_interrupt);
+    ckb_con_sync_cursor_hw();
+    input_cursor(7);
+    while (!error_message) {
+        unsigned key = input_key();
+        unsigned char ch;
+        if (input_break_requested || input_scan_pending() || (*break_flag & 0x80)) {
+            *break_flag &= 0x7f;
+            interrupted = 1;
+            break;
+        }
+        if (key == 0xffff) {
+            input_idle();
+            continue;
+        }
+        ch = (unsigned char)key;
+        if (ch == '\r') {
+            if (emit_newline) write_output(p, stdout, &screen_column, "\n");
+            break;
+        }
+        if (ch == '\b') {
+            if (length) {
+                write_output(p, stdout, &screen_column, "\b \b");
+                --length;
+            }
+        } else if (ch >= 32 && ch != 127 && length < TEXT_INPUT_MAX) {
+            input[length++] = ch;
+            write_bytes(p, stdout, &screen_column, (char *)&ch, 1);
+        }
+        if (fflush(stdout) == EOF) fail(p, "Write error");
+    }
+    input[length] = 0;
+    input_cursor(6);
+    ckb_con_restore_cursor();
+    _dos_setvect(0x1b, previous_break);
+    _dos_setvect(0x15, previous_scan);
+    return !interrupted;
+}
+
+static unsigned input_column(void)
+{
+    union REGS regs = {0};
+    regs.x.ax = 0x0300;
+    int86(0x10, &regs, &regs);
+    return regs.h.dl;
+}
+#endif
+
+static int console_read_line(Parser *p, Position at, const char *prompt,
+                             int question, int emit_newline, char *input,
+                             unsigned input_cap)
+{
+    for (;;) {
+        if (prompt && *prompt) write_output(p, stdout, &screen_column, prompt);
+        if (question) write_output(p, stdout, &screen_column, "? ");
+        if (fflush(stdout) == EOF) fail(p, "Write error");
+        if (error_message) return 0;
+#if defined(__WATCOMC__) || defined(_MSDOS)
+        if (isatty(0) && isatty(1)) {
+            if (editor_input_ex(p, input, emit_newline)) break;
+            if (!input_interrupted(p, at)) return 0;
+            if (input_column()) write_output(p, stdout, &screen_column, "\n");
+            continue;
+        }
+#else
+        (void)at;
+        (void)emit_newline;
+#endif
+        if (fgets(input, (int)input_cap, stdin)) break;
+        fail(p, "Input past end of file");
+        return 0;
+    }
+    if (emit_newline) screen_column = 0;
+    input[strcspn(input, "\r\n")] = 0;
+    return 1;
+}
+
+void console_line_input(Parser *p, int run, Position at)
+{
+    Value prompt, v;
+    int same_line = take(p, ';');
+    Reference ref;
+    char input[TEXT_INPUT_MAX + 3];
+    unsigned len;
+    prompt.length = 0;
+    prompt.string = 1;
+    prompt.text[0] = 0;
+    if (p->token == T_STRING) {
+        string_value(p, &prompt);
+        if (!take(p, ';')) expect(p, ',', "Expected: ; or ,");
+    }
+    ref = lvalue(p, run);
+    if (ref.target && ref.kind != '$') fail(p, "Type mismatch");
+    if (!run || error_message) return;
+    if (!console_read_line(p, at, ckb_string_bytes(&prompt), 0, !same_line,
+                           input, sizeof(input)))
+        return;
+    len = (unsigned)strlen(input);
+    if (len > TEXT_INPUT_MAX) {
+        fail(p, "Input too long");
+        return;
+    }
+    INIT_VALUE(&v);
+    v.string = 1;
+    v.length = len;
+    memcpy(v.text, input, len + 1U);
+    assign_reference(p, ref, &v, 1);
+}
+
+void input_statement(Parser *p, int run, Position at)
+{
+    Value prompt, v;
+    int question = 1;
+    Reference ref;
+    char input[TEXT_INPUT_MAX + 3], *end, *first;
+    prompt.length = 0;
+    prompt.string = 1;
+    prompt.text[0] = 0;
+    if (p->token == T_STRING) {
+        string_value(p, &prompt);
+        if (take(p, ',')) question = 0;
+        else expect(p, ';', "Expected: ; or ,");
+    }
+    ref = lvalue(p, run);
+    if (record_size(ref.kind)) fail(p, "Type mismatch");
+    if (!run || error_message) return;
+    if (!console_read_line(p, at, ckb_string_bytes(&prompt), question, 1,
+                           input, sizeof(input)))
+        return;
+    INIT_VALUE(&v);
+    v.string = ref.kind == '$';
+    if (v.string) {
+        first = input;
+        end = input + strlen(input);
+        if (end > first + 1 && *first == '"' && end[-1] == '"') {
+            *--end = 0;
+            ++first;
+        }
+        if (end - first > TEXT_INPUT_MAX) fail(p, "Input too long");
+        else {
+            v.length = (unsigned)(end - first);
+            memcpy(v.text, first, v.length + 1);
+        }
+    } else {
+        v.number = strtod(input, &end);
+        if (end == input) fail(p, "Expected: number");
+        while (*end == ' ' || *end == '\t') ++end;
+        if (*end) fail(p, "Expected: number");
+        if (!finite_number(v.number)) fail(p, "Overflow");
+    }
+    if (!error_message) assign_reference(p, ref, &v, 1);
+}
+
+void free_common(CommonValue *saved, unsigned count, CommonType *types)
+{
+    unsigned i;
+    for (i = 0; i < count; ++i) {
+        CommonValue *v = &saved[i];
+        if (v->array && v->kind == '$') {
+            unsigned cell;
+            for (cell = 0; cell < v->cells; ++cell) free(((char **)v->elements)[cell]);
+        }
+        free(v->elements);
+        free(v->bounds);
+        free(v->text);
+    }
+    free(saved);
+    for (i = 0; i < RECORD_MAX; ++i) {
+        RecordField *field = types[i].fields;
+        while (field) {
+            RecordField *next = field->next;
+            free(field);
+            field = next;
+        }
+        types[i].fields = NULL;
+    }
+}
+
+void save_common(CommonValue *saved, CommonType *types)
+{
+    unsigned i;
+    for (i = 0; i < common_count; ++i) {
+        Variable *v = &variables[common_ids[i]];
+        CommonValue *item = &saved[i];
+        item->kind = v->kind;
+        item->width = v->fixed_width;
+        item->array = v->array;
+        item->number = v->number;
+        item->text = v->text;
+        item->elements = v->elements;
+        item->bounds = v->bounds;
+        item->cells = v->cells;
+        item->dimensions = v->dimensions;
+        v->text = NULL;
+        v->elements = NULL;
+        v->bounds = NULL;
+        v->cells = v->dimensions = 0;
+    }
+    for (i = 0; i < record_count; ++i) {
+        types[i].fields = records[i].fields;
+        types[i].size = records[i].size;
+        records[i].fields = NULL;
+    }
+}
+
+static int common_kind_matches(char old_kind, char new_kind, const CommonType *types)
+{
+    const RecordType *new_type = record_type(new_kind);
+    unsigned old_id = (unsigned char)old_kind;
+    const RecordField *a, *b;
+    if (!old_id || old_id > RECORD_MAX) return old_kind == new_kind;
+    if (!new_type || types[old_id - 1].size != new_type->size) return 0;
+    a = types[old_id - 1].fields;
+    b = new_type->fields;
+    for (; a && b; a = a->next, b = b->next) {
+        if (a->offset != b->offset || a->width != b->width ||
+            !common_kind_matches(a->kind, b->kind, types)) return 0;
+    }
+    return !a && !b;
+}
+
+void restore_common(Parser *p, CommonValue *saved, const CommonType *types,
+                    Variable *v)
+{
+    if (v->array != saved->array || v->fixed_width != saved->width ||
+        !common_kind_matches(saved->kind, v->kind, types)) {
+        fail(p, "Type mismatch");
+        return;
+    }
+    v->number = saved->number;
+    v->text = saved->text;
+    v->bounds = saved->bounds;
+    v->elements = saved->elements;
+    v->cells = saved->cells;
+    v->dimensions = saved->dimensions;
+    saved->text = NULL;
+    saved->bounds = NULL;
+    saved->elements = NULL;
+    saved->cells = 0;
+}
+
+void carry_fields(int restore)
+{
+    unsigned i;
+    for (i = 0; i < FILE_MAX; ++i) {
+        FieldBinding **link = &channels[i].fields;
+        while (*link) {
+            FieldBinding *binding = *link;
+            if (!restore) {
+                binding->common = binding->variable->common;
+                binding->variable = NULL;
+            } else if (binding->common && binding->common <= common_count)
+                binding->variable = &variables[common_ids[binding->common - 1]];
+            if ((restore && !binding->variable) || (!restore && !binding->common)) {
+                *link = binding->next;
+                free(binding);
+            } else link = &binding->next;
+        }
+    }
+}
+
+void cls_statement(Parser *p, int run)
+{
+    int mode = -1;
+    if (!end_statement(p)) mode = (int)integer_operand(p, numeric(p, run), run);
+    if (run && !error_message) {
+        ckb_cls_mode(mode);
+        screen_column = 0;
+    }
+}
+
+void color_statement(Parser *p, int run)
+{
+    int fg = -1, bg = -1;
+    if (!end_statement(p) && p->token != ',') fg = (int)integer_operand(p, numeric(p, run), run);
+    if (take(p, ',')) {
+        if (p->token != ',' && !end_statement(p))
+            bg = (int)integer_operand(p, numeric(p, run), run);
+        if (take(p, ',') && !end_statement(p)) (void)numeric(p, run);
+    }
+    if (run && !error_message) ckb_color(fg, bg);
+}
+
+void screen_statement(Parser *p, int run)
+{
+    int mode = (int)integer_operand(p, numeric(p, run), run), extra;
+    for (extra = 0; extra < 3 && take(p, ','); ++extra)
+        if (p->token != ',' && !end_statement(p)) (void)numeric(p, run);
+    if (run && !error_message) {
+        const char *err = ckb_screen(mode);
+        if (err) fail(p, err);
+        else screen_column = 0;
+    }
+}
+
+void width_statement(Parser *p, int run)
+{
+    int cols = -1, rows = -1;
+    if (p->token != ',' && !end_statement(p))
+        cols = (int)integer_operand(p, numeric(p, run), run);
+    if (take(p, ',') && !end_statement(p))
+        rows = (int)integer_operand(p, numeric(p, run), run);
+    if (run && !error_message) {
+        const char *err = ckb_width_screen(cols, rows);
+        if (err) fail(p, err);
+        else screen_column = 0;
+    }
+}
+
+void palette_statement(Parser *p, int run)
+{
+    if (!end_statement(p)) {
+        int attr = (int)integer_operand(p, numeric(p, run), run);
+        long color;
+        expect(p, ',', "Expected: ,");
+        color = integer_operand(p, numeric(p, run), run);
+        if (run && !error_message) {
+            const char *err = ckb_palette(attr, color);
+            if (err) fail(p, err);
+        }
+    }
+}
+
+void locate_statement(Parser *p, int run)
+{
+    int row = -1, col = -1, cursor = -1, extra;
+    if (p->token != ',' && !end_statement(p))
+        row = (int)integer_operand(p, numeric(p, run), run);
+    if (take(p, ',')) {
+        if (p->token != ',' && !end_statement(p))
+            col = (int)integer_operand(p, numeric(p, run), run);
+        if (take(p, ',')) {
+            if (p->token != ',' && !end_statement(p))
+                cursor = (int)integer_operand(p, numeric(p, run), run);
+            for (extra = 0; extra < 2 && take(p, ','); ++extra)
+                if (p->token != ',' && !end_statement(p)) (void)numeric(p, run);
+        }
+    }
+    if (run && !error_message) {
+        const char *err = ckb_locate(row, col, cursor);
+        if (err) fail(p, err);
+        else screen_column = ckb_con_column();
+    }
+}
+
+void view_statement(Parser *p, int run)
+{
+    if (take_word(p, "PRINT")) {
+        int top = -1, bottom = -1;
+        if (!end_statement(p)) {
+            top = (int)integer_operand(p, numeric(p, run), run);
+            expect_word(p, "TO", "Expected: TO");
+            bottom = (int)integer_operand(p, numeric(p, run), run);
+        }
+        if (run && !error_message) {
+            const char *err = ckb_view_print(top, bottom);
+            if (err) fail(p, err);
+            else screen_column = 0;
+        }
+    } else {
+        while (!end_statement(p)) scan(p);
+    }
+}
+
+void poke_statement(Parser *p, int run, unsigned seg)
+{
+    long addr = integer_operand(p, numeric(p, run), run), val;
+    expect(p, ',', "Expected: ,");
+    val = integer_operand(p, numeric(p, run), run);
+    if (run && !error_message) {
+        if (addr < 0 || addr > 65535L || val < 0 || val > 255L)
+            fail(p, "Illegal function call");
+#if defined(__WATCOMC__) || defined(_MSDOS)
+        else *(unsigned char __far *)MK_FP(seg, (unsigned)addr) = (unsigned char)val;
+#else
+        else (void)seg;
+#endif
+    }
+}
+
+void sound_statement(Parser *p, int run)
+{
+    double freq = numeric(p, run), dur;
+    expect(p, ',', "Expected: ,");
+    dur = numeric(p, run);
+    if (run && !error_message) {
+        const char *err = ckb_sound(freq, dur, NULL);
+        if (err) fail(p, err);
+    }
+}
+
+void play_statement(Parser *p, int run)
+{
+    Value mml;
+    expression(p, &mml, 1, 0, run);
+    if (!mml.string) fail(p, "Type mismatch");
+    else if (run && !error_message) {
+        const char *err = ckb_play(ckb_string_bytes(&mml), NULL);
+        if (err) fail(p, err);
+    }
+}
+
+void sleep_statement(Parser *p, int run)
+{
+    long secs = 0;
+    if (!end_statement(p)) secs = integer_operand(p, numeric(p, run), run);
+    if (run && !error_message) ckb_sleep(secs, NULL);
+}
+
+void pset_statement(Parser *p, int run)
+{
+    int is_preset = p->token == T_NAME && word(p, "PRESET");
+    int x = 0, y = 0, color = -1;
+    if (is_preset) scan(p);
+    if (parse_gfx_coord(p, run, &x, &y)) {
+        if (take(p, ',') && !end_statement(p))
+            color = (int)integer_operand(p, numeric(p, run), run);
+        if (run && !error_message) {
+            const char *err = ckb_pset(x, y, color, is_preset);
+            if (err) fail(p, err);
+        }
+    }
+}
+
+void close_statement(Parser *p, int run)
+{
+    unsigned index;
+    if (end_statement(p)) {
+        if (run) for (index = 0; index < FILE_MAX; ++index) close_file(p, &channels[index]);
+    } else do {
+        Channel *file = file_number(p, run);
+        if (run && !error_message) close_file(p, file);
+    } while (!error_message && take(p, ','));
+}
+
+void seek_statement(Parser *p, int run)
+{
+    Channel *file = file_number(p, run);
+    long position;
+    expect(p, ',', "Expected: ,");
+    position = integer_operand(p, numeric(p, run), run);
+    if (run && !error_message) seek_file(p, file, position);
+}
+
+void peek_function(Parser *p, Value *v, int run, unsigned seg)
+{
+    long addr;
+    expect(p, '(', "Expected: (");
+    addr = integer_operand(p, numeric(p, run), run);
+    expect(p, ')', "Expected: )");
+    v->kind = '%';
+    if (run && !error_message) {
+        if (addr < 0 || addr > 65535L) fail(p, "Illegal function call");
+#if defined(__WATCOMC__) || defined(_MSDOS)
+        else v->number = *(const unsigned char __far *)MK_FP(seg, (unsigned)addr);
+#else
+        else { (void)seg; v->number = 0; }
+#endif
+    }
+}
+
+void point_function(Parser *p, Value *v, int run)
+{
+    long x, y;
+    expect(p, '(', "Expected: (");
+    x = integer_operand(p, numeric(p, run), run);
+    if (take(p, ',')) {
+        y = integer_operand(p, numeric(p, run), run);
+        expect(p, ')', "Expected: )");
+        v->kind = '%';
+        if (run && !error_message) v->number = ckb_point((int)x, (int)y);
+    } else {
+        int lx, ly;
+        expect(p, ')', "Expected: )");
+        v->kind = '%';
+        if (run && !error_message) {
+            ckb_gfx_last(&lx, &ly);
+            if (x == 0 || x == 2) v->number = lx;
+            else if (x == 1 || x == 3) v->number = ly;
+            else fail(p, "Illegal function call");
+        }
+    }
 }

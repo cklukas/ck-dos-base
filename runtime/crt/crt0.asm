@@ -58,6 +58,7 @@ DGROUP  GROUP   NULL, _DATA, CONST, _BSS, _STACK
 IFDEF FARCODE
         EXTRN   _main:FAR
         EXTRN   _exit:FAR
+        EXTRN   __x87_init:FAR
 CRT0_TEXT SEGMENT BYTE PUBLIC 'CODE'
         ASSUME  CS:CRT0_TEXT, DS:DGROUP, SS:DGROUP
 ELSE
@@ -250,6 +251,7 @@ args_done:
         push    ax
         push    dx
 IFDEF FARCODE
+        call    FAR PTR __x87_init
         call    FAR PTR _main
         add     sp, 6
         push    ax

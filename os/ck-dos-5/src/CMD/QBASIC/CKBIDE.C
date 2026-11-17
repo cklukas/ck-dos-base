@@ -121,6 +121,7 @@ struct workspace {
     unsigned breakpoints[BREAKPOINT_LIMIT], breakpoint_count;
     unsigned statement_depth, step_depth;
     enum run_mode run_mode;
+    int debug_hooks_active;
     unsigned error_at, error_width, error_scroll_line;
     int exit_requested, restart_requested;
     unsigned length, caret, top, line, anchor, clip_length;
@@ -2766,6 +2767,7 @@ static int pause_workspace(void *context, unsigned line, unsigned column,
         }
     }
     w->break_width = 0;
+    w->debug_hooks_active = (w->run_mode != RUN_NORMAL || w->breakpoint_count != 0);
     return !w->restart_requested && !w->exit_requested;
 }
 
@@ -2787,9 +2789,12 @@ static void run_workspace(struct workspace *w, enum run_mode mode)
         w->restart_requested = 0;
         w->run_mode = mode;
         w->step_depth = w->statement_depth = 0;
+        w->debug_hooks_active = (w->run_mode != RUN_NORMAL || w->breakpoint_count != 0);
+        ckb_set_debug_active(&w->debug_hooks_active);
         restore_output(w);
         ckb_run_source(w->path[0] ? w->path : "Untitled", w->text, w->length,
                        &result, pause_workspace, should_break, w);
+        ckb_set_debug_active(NULL);
         mode = RUN_NORMAL;
     } while (w->restart_requested);
     if (result.aborted) {

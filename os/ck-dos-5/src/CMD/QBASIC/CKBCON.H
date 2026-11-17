@@ -30,6 +30,8 @@ void ckb_con_newline(void);
 void ckb_con_reset_run(void);
 void ckb_con_reset_text(void);
 void ckb_con_acknowledge_graphics(void);
+void ckb_con_sync_cursor_hw(void);
+void ckb_con_restore_cursor(void);
 
 void ckb_gfx_last(int *x, int *y);
 int ckb_gfx_default_color(int is_preset);

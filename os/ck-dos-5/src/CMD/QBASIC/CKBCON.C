@@ -35,6 +35,8 @@ static unsigned char text_attr = 0x07;
 static int cur_row = 1;
 static int cur_col = 1;
 static int cursor_synced = 0;
+static int cursor_visible = 1;
+static int cached_tty = -1;
 static int pending_wrap = 0;
 static int view_top = 1;
 static int view_bottom = 25;
@@ -57,7 +59,8 @@ static unsigned long timer_prev_total = 0;
 
 static int tty_console(void)
 {
-    return isatty(1) != 0;
+    if (cached_tty < 0) cached_tty = isatty(1) != 0;
+    return cached_tty;
 }
 
 static void sync_bios_cursor_from_bda(void)
@@ -76,7 +79,7 @@ static void sync_bios_cursor_from_bda(void)
     pending_wrap = 0;
 }
 
-static void set_bios_cursor(int row, int col)
+static void set_bios_cursor_hw(int row, int col)
 {
     union REGS regs = {0};
     if (row < 1) row = 1;
@@ -90,6 +93,35 @@ static void set_bios_cursor(int row, int col)
     int86(0x10, &regs, &regs);
 }
 
+static void set_bios_cursor(int row, int col)
+{
+    if (row < 1) row = 1;
+    if (row > screen_rows) row = screen_rows;
+    if (col < 1) col = 1;
+    if (col > screen_cols) col = screen_cols;
+    if (screen_mode == 0 && !cursor_visible) {
+        *(volatile unsigned __far *)MK_FP(0x40, 0x50) =
+            (unsigned)(((unsigned)(row - 1) << 8) | (unsigned)(col - 1));
+        return;
+    }
+    set_bios_cursor_hw(row, col);
+}
+
+void ckb_con_sync_cursor_hw(void)
+{
+    if (tty_console() && cursor_synced) set_bios_cursor_hw(cur_row, cur_col);
+}
+
+void ckb_con_restore_cursor(void)
+{
+    if (tty_console() && screen_mode == 0) {
+        union REGS regs = {0};
+        regs.h.ah = 0x01;
+        regs.x.cx = cursor_visible ? 0x0607 : 0x2607;
+        int86(0x10, &regs, &regs);
+    }
+}
+
 static void reset_planar_gc(void)
 {
     outp(0x3ce, 0x05);
@@ -97,6 +129,8 @@ static void reset_planar_gc(void)
     outp(0x3ce, 0x08);
     outp(0x3cf, 0xff);
     outp(0x3ce, 0x03);
+    outp(0x3cf, 0x00);
+    outp(0x3ce, 0x04);
     outp(0x3cf, 0x00);
 }
 
@@ -121,6 +155,8 @@ void ckb_con_reset_run(void)
     cur_row = 1;
     cur_col = 1;
     cursor_synced = 0;
+    cursor_visible = 1;
+    cached_tty = -1;
     pending_wrap = 0;
     view_top = 1;
     view_bottom = 25;
@@ -141,6 +177,10 @@ void ckb_con_reset_text(void)
     ckb_speaker_off();
     if ((*(const unsigned char __far *)MK_FP(0x40, 0x49) & 0x7f) != 3) {
         regs.x.ax = 0x0003;
+        int86(0x10, &regs, &regs);
+    } else if (!cursor_visible && tty_console()) {
+        regs.h.ah = 0x01;
+        regs.x.cx = 0x0607;
         int86(0x10, &regs, &regs);
     }
     ckb_con_reset_run();
@@ -245,7 +285,7 @@ const char *ckb_screen(int mode)
     default:
         return "Illegal function call";
     }
-    fflush(stdout);
+    if (!direct_console) fflush(stdout);
     screen_mode = mode;
     text_attr = (unsigned char)(((bg_color & 7) << 4) | (fg_color & 15));
     view_top = 1;
@@ -253,6 +293,7 @@ const char *ckb_screen(int mode)
     cur_row = 1;
     cur_col = 1;
     cursor_synced = 1;
+    cursor_visible = 0;
     pending_wrap = 0;
     last_x = gfx_width / 2;
     last_y = gfx_height / 2;
@@ -260,6 +301,11 @@ const char *ckb_screen(int mode)
         direct_console = 1;
         regs.x.ax = (unsigned)bios_mode;
         int86(0x10, &regs, &regs);
+        if (mode == 0) {
+            regs.h.ah = 0x01;
+            regs.x.cx = 0x2607;
+            int86(0x10, &regs, &regs);
+        }
     }
     return NULL;
 }
@@ -276,6 +322,11 @@ const char *ckb_width_screen(int cols, int rows)
         direct_console = 1;
         regs.x.ax = screen_cols == 40 ? 0x0001 : 0x0003;
         int86(0x10, &regs, &regs);
+        if (!cursor_visible) {
+            regs.h.ah = 0x01;
+            regs.x.cx = 0x2607;
+            int86(0x10, &regs, &regs);
+        }
         cur_row = 1;
         cur_col = 1;
         cursor_synced = 1;
@@ -366,7 +417,7 @@ static void clear_text_rows(int top_row, int bottom_row)
 void ckb_cls_mode(int mode)
 {
     union REGS regs = {0};
-    fflush(stdout);
+    if (!direct_console) fflush(stdout);
     if (!tty_console()) return;
     direct_console = 1;
     if (screen_mode == 0) {
@@ -415,7 +466,7 @@ void ckb_cls(void)
 
 const char *ckb_locate(int row, int col, int cursor)
 {
-    fflush(stdout);
+    if (!direct_console) fflush(stdout);
     if (row != -1 && (row < 1 || row > screen_rows))
         return "Illegal function call";
     if (col != -1 && (col < 1 || col > screen_cols))
@@ -427,13 +478,15 @@ const char *ckb_locate(int row, int col, int cursor)
     if (tty_console()) {
         direct_console = 1;
         cursor_synced = 1;
-        set_bios_cursor(cur_row, cur_col);
         if (cursor != -1 && screen_mode == 0) {
             union REGS regs = {0};
+            cursor_visible = cursor != 0;
+            if (cursor_visible) set_bios_cursor_hw(cur_row, cur_col);
             regs.h.ah = 0x01;
-            regs.x.cx = cursor ? 0x0607 : 0x2607;
+            regs.x.cx = cursor_visible ? 0x0607 : 0x2607;
             int86(0x10, &regs, &regs);
         }
+        set_bios_cursor(cur_row, cur_col);
     }
     return NULL;
 }
@@ -1103,6 +1156,8 @@ const char *ckb_gfx_put(int x, int y, const unsigned char *buffer,
                                (((row_src[2U * pbytes + b_idx] >> b_shift) & 1U) << 2) |
                                (((row_src[3U * pbytes + b_idx] >> b_shift) & 1U) << 3);
                 volatile unsigned char latch;
+                if ((action == CKB_PUT_XOR || action == CKB_PUT_OR) && src == 0U)
+                    continue;
                 if (action == CKB_PUT_PRESET) src = (~src) & 15U;
                 outp(0x3cf, (int)(0x80U >> (dx & 7)));
                 latch = vram[row_off + (unsigned)(dx >> 3)];
@@ -1184,16 +1239,9 @@ double ckb_timer(void)
     unsigned long bda = 0;
     unsigned sub = 0;
     unsigned long total = read_pit_sample(&bda, &sub);
-    if (timer_has_prev) {
-        unsigned guard = 0;
-        while (pit_elapsed(timer_prev_total, total) < 1193UL && guard < 8000U) {
-            ++guard;
-            total = read_pit_sample(&bda, &sub);
-        }
-    }
     timer_has_prev = 1;
     timer_prev_total = total;
-    return ((double)bda * 65536.0 + (double)sub) / 1193181.818;
+    return ((double)bda * 65536.0 + (double)sub) * 8.380953445225638e-7;
 }
 
 int ckb_inkey(char *out_two_bytes)

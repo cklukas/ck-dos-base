@@ -36,29 +36,11 @@
 enum { B_FOR, B_NEXT, B_DO, B_LOOP, B_WHILE, B_WEND, B_IF, B_ELSEIF, B_ELSE, B_ENDIF, B_SELECT, B_CASE, B_ENDSELECT };
 enum { C_ALWAYS, C_WHILE, C_UNTIL };
 
-typedef struct RecordField RecordField;
-
-struct RecordField {
-    RecordField *next;
-    unsigned offset, width, start, length;
-    char kind;
-};
-
 typedef struct {
-    char name[BASIC_NAME_MAX + 1];
-    unsigned line, end, size;
-    RecordField *fields;
-} RecordType;
-
-typedef struct {
-    unsigned start, body, end;
+    unsigned start, body, end, first_block;
     const char __far *label;
     unsigned label_length;
 } Line;
-
-typedef struct {
-    unsigned line, offset;
-} Position;
 
 typedef struct {
     Position at, after;
@@ -77,8 +59,10 @@ static Line __far *lines;
 static char __far *var_names;
 static unsigned long __far *var_shared_scopes;
 Variable variables[VALUE_MAX];
-static RecordType records[RECORD_MAX];
-static unsigned record_count;
+RecordType records[RECORD_MAX];
+unsigned record_count;
+static unsigned max_record_end;
+static const int *debug_active_flag;
 static Block __far *blocks;
 static unsigned block_stack[STACK_MAX];
 static ForFrame for_stack[STACK_MAX];
@@ -99,8 +83,8 @@ static void *pause_context;
 static int aborted;
 static char restart_path[TEXT_INPUT_MAX + 1];
 static enum { RESTART_NONE, RESTART_RUN, RESTART_CHAIN } restart_kind;
-static unsigned __far *common_ids;
-static unsigned common_count;
+unsigned __far *common_ids;
+unsigned common_count;
 static char default_kind[26];
 static long option_base;
 static int dynamic_arrays;
@@ -133,7 +117,7 @@ typedef struct {
 typedef struct {
     char name[BASIC_NAME_MAX + 1];
     char result_kind;
-    unsigned line, end, count, locals;
+    unsigned line, end, count, locals, first_var, last_var;
     int function, params[PARAM_MAX], result, persistent;
     unsigned declared_count;
     ParameterType declared_params[PARAM_MAX];
@@ -303,55 +287,93 @@ static unsigned mantissa_digits(const char *number)
 
 void scan(Parser *p)
 {
-    unsigned end = lines[p->line].end;
-    int c;
-    const char __far *suffix;
+    const unsigned char __far *s = (const unsigned char __far *)source;
+    unsigned pos = p->pos;
+    unsigned end = p->line_end;
+    unsigned c;
     char *tail;
-    while (p->pos < end && (source[p->pos] == ' ' || source[p->pos] == '\t')) ++p->pos;
-    p->start = p->pos;
+    while (pos < end && (s[pos] == ' ' || s[pos] == '\t')) ++pos;
+    p->start = pos;
     p->length = 0;
     p->token = 0;
-    if (p->pos >= end || source[p->pos] == '\'') return;
-    c = (unsigned char)source[p->pos++];
-    p->token = c;
+    p->first_upper = 0;
+    if (pos >= end || s[pos] == '\'') {
+        p->pos = pos;
+        return;
+    }
+    c = s[pos++];
+    p->token = (int)c;
     if (c == '"') {
         p->token = T_STRING;
         ++p->start;
-        while (p->pos < end && source[p->pos] != '"') ++p->pos;
-        p->length = p->pos - p->start;
-        if (p->pos == end) fail(p, "Unterminated string");
-        else ++p->pos;
+        while (pos < end && s[pos] != '"') ++pos;
+        p->length = pos - p->start;
+        if (pos == end) fail(p, "Unterminated string");
+        else ++pos;
+        p->pos = pos;
         if (p->length > TEXT_INPUT_MAX) fail(p, "String too long");
         return;
     }
-    if (name_start(c)) {
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
         p->token = T_NAME;
-        while (p->pos < end && name_char(source[p->pos])) ++p->pos;
-        if (p->pos < end && strchr("$%&!#", source[p->pos])) ++p->pos;
-    } else if (c == '&') {
+        p->first_upper = (unsigned char)(c >= 'a' ? (c - 32U) : c);
+        while (pos < end) {
+            unsigned d = s[pos];
+            if ((d >= 'A' && d <= 'Z') || (d >= 'a' && d <= 'z') ||
+                (d >= '0' && d <= '9') || d == '.' || d == '_') {
+                ++pos;
+            } else break;
+        }
+        if (pos < end) {
+            unsigned suf = s[pos];
+            if (suf == '$' || suf == '%' || suf == '&' || suf == '!' || suf == '#')
+                ++pos;
+        }
+        p->pos = pos;
+        p->length = pos - p->start;
+        return;
+    }
+    p->pos = pos;
+    if (c == '&') {
         scan_radix(p, end);
-    } else if (isdigit(c) || (c == '.' && p->pos < end && isdigit((unsigned char)source[p->pos]))) {
-        /* strtod also accepts ISO C hexadecimal literals on host compilers.
-         * Find the BASIC decimal token ourselves before calling it. */
+    } else if ((c >= '0' && c <= '9') || (c == '.' && pos < end && s[pos] >= '0' && s[pos] <= '9')) {
         char number[50];
         unsigned fraction = c == '.';
         unsigned digits;
         int floating = fraction, double_literal = 0;
-        while (p->pos < end && isdigit((unsigned char)source[p->pos])) ++p->pos;
-        if (!fraction && p->pos < end && source[p->pos] == '.') {
-            floating = 1;
-            ++p->pos;
-            while (p->pos < end && isdigit((unsigned char)source[p->pos])) ++p->pos;
+        unsigned long int_acc = fraction ? 0UL : (unsigned long)(c - '0');
+        while (pos < end && s[pos] >= '0' && s[pos] <= '9') {
+            if (!fraction && pos - p->start < 9U)
+                int_acc = int_acc * 10UL + (unsigned long)(s[pos] - '0');
+            ++pos;
         }
-        if (p->pos < end && strchr("EeDd", source[p->pos])) {
+        if (!fraction && pos < end && s[pos] == '.') {
             floating = 1;
-            double_literal = source[p->pos] == 'D' || source[p->pos] == 'd';
-            ++p->pos;
-            if (p->pos < end && strchr("+-", source[p->pos])) ++p->pos;
-            while (p->pos < end && isdigit((unsigned char)source[p->pos])) ++p->pos;
+            ++pos;
+            while (pos < end && s[pos] >= '0' && s[pos] <= '9') ++pos;
         }
-        p->length = p->pos - p->start;
+        if (pos < end && (s[pos] == 'E' || s[pos] == 'e' || s[pos] == 'D' || s[pos] == 'd')) {
+            floating = 1;
+            double_literal = s[pos] == 'D' || s[pos] == 'd';
+            ++pos;
+            if (pos < end && (s[pos] == '+' || s[pos] == '-')) ++pos;
+            while (pos < end && s[pos] >= '0' && s[pos] <= '9') ++pos;
+        }
+        p->pos = pos;
+        p->length = pos - p->start;
         p->token = T_NUMBER;
+        /* Fast-path plain 1..9 digit integers without strtod or _fmemcpy. */
+        if (!floating && p->length >= 1U && p->length <= 9U) {
+            unsigned suf = pos < end ? s[pos] : 0;
+            p->number = (double)int_acc;
+            if (suf == '%' || suf == '&' || suf == '!' || suf == '#') {
+                p->number_kind = (char)suf;
+                ++p->pos;
+            } else {
+                p->number_kind = int_acc <= 32767UL ? '%' : '&';
+            }
+            return;
+        }
         p->number = 0;
         if (p->length >= sizeof(number)) {
             fail(p, "Invalid number");
@@ -365,27 +387,32 @@ void scan(Parser *p)
         if (tail) *tail = 'E';
         p->number = strtod(number, &tail);
         if (*tail) fail(p, "Invalid number");
-        suffix = source + p->pos;
-        if (p->pos < end && strchr("%&!#", *suffix)) {
-            p->number_kind = *suffix;
-            ++p->pos;
-        } else if (!floating && p->number <= 32767.0) p->number_kind = '%';
+        if (pos < end) {
+            unsigned suf = s[pos];
+            if (suf == '%' || suf == '&' || suf == '!' || suf == '#') {
+                p->number_kind = (char)suf;
+                ++p->pos;
+                return;
+            }
+        }
+        if (!floating && p->number <= 32767.0) p->number_kind = '%';
         else if (!floating && p->number <= 2147483647.0) p->number_kind = '&';
         else p->number_kind = double_literal || digits >= 8 ? '#' : '!';
         return;
-    } else if (p->pos < end) {
-        int d = source[p->pos];
+    } else if (pos < end) {
+        unsigned d = s[pos];
         if ((c == '<' && d == '=') || (c == '=' && d == '<')) p->token = T_LE;
         else if ((c == '>' && d == '=') || (c == '=' && d == '>')) p->token = T_GE;
         else if ((c == '<' && d == '>') || (c == '>' && d == '<')) p->token = T_NE;
-        if (p->token != c) ++p->pos;
+        if (p->token != (int)c) ++p->pos;
     }
     p->length = p->pos - p->start;
 }
 
 int word(const Parser *p, const char *text)
 {
-    return p->token == T_NAME && same(source + p->start, p->length, text);
+    return p->token == T_NAME && p->first_upper == (unsigned char)text[0] &&
+           same(source + p->start, p->length, text);
 }
 
 int take(Parser *p, int token)
@@ -436,28 +463,37 @@ static void initialize_parser(Parser *p, Position at)
 {
     p->line = at.line;
     p->pos = at.offset;
+    p->line_end = lines[at.line].end;
     scan(p);
+}
+
+static int is_type_suffix(int ch)
+{
+    return ch == '$' || ch == '%' || ch == '&' || ch == '!' || ch == '#';
 }
 
 unsigned identifier(Parser *p, char *name, char *kind)
 {
+    const unsigned char __far *s = (const unsigned char __far *)source + p->start;
     unsigned i, length;
     if (p->token != T_NAME || p->length > BASIC_NAME_MAX) {
         fail(p, "Expected: variable");
         return 0;
     }
     length = p->length;
-    *kind = source[p->start + length - 1];
-    if (strchr("$%&!#", *kind)) --length;
-    else *kind = default_kind[toupper((unsigned char)source[p->start]) - 'A'];
-    for (i = 0; i < length; ++i)
-        name[i] = (char)toupper((unsigned char)source[p->start + i]);
+    *kind = (char)s[length - 1];
+    if (is_type_suffix((unsigned char)*kind)) --length;
+    else *kind = default_kind[p->first_upper - 'A'];
+    for (i = 0; i < length; ++i) {
+        unsigned char c = s[i];
+        name[i] = (char)((c >= 'a' && c <= 'z') ? (c - 32U) : c);
+    }
     name[length] = 0;
     scan(p);
     return length;
 }
 
-static RecordType *record_type(char kind)
+RecordType *record_type(char kind)
 {
     unsigned id = (unsigned char)kind;
     return id && id <= record_count ? &records[id - 1] : NULL;
@@ -506,10 +542,49 @@ static void clear_far_bytes(void __far *dst, unsigned count)
     while (count--) *p++ = 0;
 }
 
+#define VAR_HASH_BUCKETS 64U
+
+static short var_hash_head[VAR_HASH_BUCKETS];
+static short var_hash_tail[VAR_HASH_BUCKETS];
+static short var_hash_next[VALUE_MAX];
+
+static unsigned var_bucket(const char *name)
+{
+    return (((unsigned)(unsigned char)name[0] * 33U) ^ (unsigned)(unsigned char)name[1]) &
+           (VAR_HASH_BUCKETS - 1U);
+}
+
+static void var_hash_reset(void)
+{
+    memset(var_hash_head, 0xFF, sizeof(var_hash_head));
+    memset(var_hash_tail, 0xFF, sizeof(var_hash_tail));
+}
+
+static void var_hash_link(unsigned slot, unsigned b)
+{
+    var_hash_next[slot] = -1;
+    if (var_hash_head[b] < 0) var_hash_head[b] = (short)slot;
+    else var_hash_next[(unsigned)var_hash_tail[b]] = (short)slot;
+    var_hash_tail[b] = (short)slot;
+}
+
+static void var_hash_rebuild(void)
+{
+    unsigned i;
+    var_hash_reset();
+    for (i = 0; i < variable_count; ++i) {
+        const char __far *p = var_names + i * (BASIC_NAME_MAX + 1U);
+        unsigned b = (((unsigned)(unsigned char)p[0] * 33U) ^ (unsigned)(unsigned char)p[1]) &
+                     (VAR_HASH_BUCKETS - 1U);
+        var_hash_link(i, b);
+    }
+}
+
 static void var_name_store(unsigned slot, const char *name)
 {
     variables[slot].first_upper = (unsigned char)name[0];
     _fmemcpy(var_names + slot * (BASIC_NAME_MAX + 1U), name, strlen(name) + 1U);
+    var_hash_link(slot, var_bucket(name));
 }
 
 static int var_name_equals(unsigned slot, const char *name)
@@ -577,9 +652,11 @@ int named_variable(Parser *p, const char *name, char kind, int array,
                           int defining, int unsuffixed, int typed)
 {
     unsigned i;
-    int local = -1, shared = -1;
-    for (i = 0; i < variable_count; ++i) {
-        Variable *v = &variables[i];
+    int idx, local = -1, shared = -1;
+    for (idx = var_hash_head[var_bucket(name)]; idx >= 0; idx = var_hash_next[(unsigned)idx]) {
+        Variable *v = &variables[idx];
+        i = (unsigned)idx;
+        if (v->scope != current_scope && v->scope >= 0) continue;
         if (variable_matches(v, name, kind, array, unsuffixed)) {
             if (v->scope == current_scope) {
                 if (typed) {
@@ -622,7 +699,8 @@ int named_variable(Parser *p, const char *name, char kind, int array,
 
 int unsuffixed_name(Parser *p)
 {
-    return p->token == T_NAME && !strchr("$%&!#", source[p->start + p->length - 1]);
+    return p->token == T_NAME &&
+           !is_type_suffix((unsigned char)source[p->start + p->length - 1]);
 }
 
 static int variable_mode(Parser *p, int defining)
@@ -643,14 +721,13 @@ static int known_constant(Parser *p)
 {
     Parser copy = *p;
     char name[BASIC_NAME_MAX + 1], kind;
-    int unsuffixed = unsuffixed_name(&copy), shared = -1;
-    unsigned i;
+    int idx, unsuffixed = unsuffixed_name(&copy), shared = -1;
     if (copy.token != T_NAME || !identifier(&copy, name, &kind)) return -1;
-    for (i = 0; i < variable_count; ++i) {
-        Variable *v = &variables[i];
+    for (idx = var_hash_head[var_bucket(name)]; idx >= 0; idx = var_hash_next[(unsigned)idx]) {
+        Variable *v = &variables[idx];
         if (!variable_matches(v, name, kind, 0, unsuffixed)) continue;
-        if (v->scope == current_scope) return v->indexed_constant ? (int)i : -1;
-        if (v->indexed_constant && visible_shared(v)) shared = (int)i;
+        if (v->scope == current_scope) return v->indexed_constant ? idx : -1;
+        if (v->indexed_constant && visible_shared(v)) shared = idx;
     }
     return shared;
 }
@@ -685,7 +762,7 @@ static double round_even(double n)
     return fraction > .5 || (fraction == .5 && fmod(low, 2) != 0) ? low + 1 : low;
 }
 
-static int finite_number(double n)
+int finite_number(double n)
 {
     return !ckb_num_is_special(n);
 }
@@ -695,7 +772,19 @@ void convert_number(Parser *p, Value *v, char kind, int run)
     double n = v->number;
     v->kind = kind;
     if (!run) return;
-    if (kind == '%' || kind == '&') n = round_even(n);
+    if (kind == '%') {
+        if (n >= -32768.0 && n <= 32767.0) {
+            int iv = (int)n;
+            if ((double)iv == n) return;
+        }
+        n = round_even(n);
+    } else if (kind == '&') {
+        if (n >= -2147483648.0 && n <= 2147483647.0) {
+            long lv = (long)n;
+            if ((double)lv == n) return;
+        }
+        n = round_even(n);
+    }
     if (!finite_number(n) ||
         (kind == '%' && (n < -32768.0 || n > 32767.0)) ||
         (kind == '&' && (n < -2147483648.0 || n > 2147483647.0)) ||
@@ -935,7 +1024,7 @@ void fetch_reference(Parser *p, Reference ref, int run, Value *value)
 {
     const Variable *v = ref.target;
     char *item;
-    memset(value, 0, sizeof(*value));
+    INIT_VALUE(value);
     if (!v) return;
     value->string = ref.kind == '$';
     value->kind = ref.kind;
@@ -993,6 +1082,10 @@ long integer_operand(Parser *p, double value, int run)
 {
     double n;
     if (!run) return 0;
+    if (value >= -2147483648.0 && value <= 2147483647.0) {
+        long lv = (long)value;
+        if ((double)lv == value) return lv;
+    }
     n = round_even(value);
     if (!(n >= -2147483648.0 && n <= 2147483647.0)) {
         fail(p, "Overflow");
@@ -1101,7 +1194,6 @@ static void operate(Parser *p, Value *a, const Value *b, int op, int rank, int r
     }
 }
 
-static void array_bound(Parser *p, Value *value, int run);
 static int expression_call(Parser *p, Value *v, unsigned depth, int run);
 
 
@@ -1159,7 +1251,7 @@ static void expression_reference(Parser *p, Value *v, int minimum, unsigned dept
 {
     int rank, op;
     if (reference) reference->target = NULL;
-    memset(v, 0, sizeof(*v));
+    INIT_VALUE(v);
     if (depth >= DEPTH_MAX) {
         fail(p, "Expression too complex");
         return;
@@ -1241,9 +1333,6 @@ double numeric(Parser *p, int run)
     if (v.string || record_size(v.kind)) fail(p, "Type mismatch");
     return v.number;
 }
-
-static void dimension_array(Parser *p, Variable *v, const Bounds *bounds, unsigned dimensions,
-                            unsigned cells);
 
 void implicit_array(Parser *p, Variable *v, unsigned dimensions)
 {
@@ -1355,31 +1444,6 @@ Reference lvalue(Parser *p, int run)
     return ref;
 }
 
-static void array_bound(Parser *p, Value *value, int run)
-{
-    int id, upper = take_word(p, "UBOUND");
-    long dimension = 1;
-    char name[BASIC_NAME_MAX + 1], kind;
-    int unsuffixed;
-    if (!upper) scan(p);
-    expect(p, '(', "Expected: (");
-    unsuffixed = unsuffixed_name(p);
-    if (!identifier(p, name, &kind)) return;
-    id = named_variable(p, name, kind, 1, 0, unsuffixed, 0);
-    if (take(p, ',')) dimension = integer_operand(p, numeric(p, run), run);
-    expect(p, ')', "Expected: )");
-    value->kind = '&';
-    if (run && id >= 0 && !error_message) {
-        Variable *v = array_storage(id);
-        if (!v->elements && v->dynamic != ARRAY_DYNAMIC) implicit_array(p, v, 1);
-        if (!v->elements || dimension < 1 || dimension > v->dimensions)
-            fail(p, "Subscript out of range");
-        else
-            value->number = upper ? v->bounds[dimension - 1].upper :
-                                    v->bounds[dimension - 1].lower;
-    }
-}
-
 /* A zero width denotes an ordinary, variable-length string. */
 static unsigned fixed_string_width(Parser *p)
 {
@@ -1469,6 +1533,7 @@ static unsigned index_record(Parser *p, unsigned line)
             if (p->token) fail(p, "Expected: end of statement");
             if (!type->size) fail(p, "Expected: element");
             type->end = line;
+            if (line > max_record_end) max_record_end = line;
             ++record_count;
             return line;
         }
@@ -1519,56 +1584,6 @@ static void release_records(void)
         }
     }
     record_count = 0;
-}
-
-static void clear_array(Variable *v)
-{
-    unsigned i;
-    if (v->kind == '$') {
-        char **items = v->elements;
-        for (i = 0; i < v->cells; ++i) {
-            free(items[i]);
-            items[i] = NULL;
-        }
-    } else if (v->elements) {
-        memset(v->elements, 0, v->cells * array_element_size(v));
-    }
-}
-
-static void release_array(Variable *v)
-{
-    if (v->kind == '$') clear_array(v);
-    free(v->elements);
-    free(v->bounds);
-    v->elements = NULL;
-    v->bounds = NULL;
-    v->cells = v->dimensions = 0;
-}
-
-static void dimension_array(Parser *p, Variable *v, const Bounds *bounds, unsigned dimensions,
-                            unsigned cells)
-{
-    Bounds *shape;
-    void *elements;
-    unsigned size = array_element_size(v);
-    if (record_size(v->kind) && cells > 32767U / size) {
-        fail(p, "Out of memory");
-        return;
-    }
-    shape = malloc(dimensions * sizeof(*shape));
-    elements = calloc(cells, size);
-    if (!shape || !elements) {
-        free(shape);
-        free(elements);
-        fail(p, "Out of memory");
-        return;
-    }
-    memcpy(shape, bounds, dimensions * sizeof(*shape));
-    release_array(v);
-    v->bounds = shape;
-    v->dimensions = dimensions;
-    v->elements = elements;
-    v->cells = cells;
 }
 
 static void dim_statement(Parser *p, int run, int resize, int persistent)
@@ -1704,21 +1719,6 @@ static void storage_statement(Parser *p, int common)
     } while (!error_message && take(p, ','));
 }
 
-static void erase_statement(Parser *p, int run)
-{
-    do {
-        char name[BASIC_NAME_MAX + 1], kind;
-        int id, unsuffixed = unsuffixed_name(p);
-        if (!identifier(p, name, &kind)) return;
-        id = named_variable(p, name, kind, 1, 0, unsuffixed, 0);
-        if (run && id >= 0 && !error_message) {
-            Variable *v = array_storage(id);
-            if (v->dynamic == ARRAY_DYNAMIC) release_array(v);
-            else clear_array(v);
-        }
-    } while (!error_message && take(p, ','));
-}
-
 static void array_directive(Parser *p)
 {
     unsigned at;
@@ -1809,6 +1809,15 @@ static int pause_at(Parser *p, Position at, const char *message)
     return 0;
 }
 
+int input_interrupted(Parser *p, Position at)
+{
+    if (!pause_execution) {
+        stopped = 1;
+        return 0;
+    }
+    return pause_at(p, at, NULL);
+}
+
 static int before_statement(Parser *p, Position at)
 {
     Parser end = *p;
@@ -1842,8 +1851,9 @@ static unsigned block(Parser *p, Position at, int kind, unsigned inline_depth)
         return 0;
     }
     if (!checking) {
-        for (i = 0; i < block_count; ++i) {
-            if (blocks[i].at.line == at.line && blocks[i].at.offset == at.offset) return i;
+        for (i = lines[at.line].first_block;
+             i < block_count && blocks[i].at.line == at.line; ++i) {
+            if (blocks[i].at.offset == at.offset) return i;
         }
         fail(p, "Invalid block");
         return 0;
@@ -1853,6 +1863,7 @@ static unsigned block(Parser *p, Position at, int kind, unsigned inline_depth)
         return 0;
     }
     i = block_count++;
+    if (lines[at.line].first_block == BLOCK_MAX) lines[at.line].first_block = i;
     blocks[i].kind = kind;
     blocks[i].at = at;
     blocks[i].after = after_statement(p);
@@ -1932,11 +1943,6 @@ void write_bytes(Parser *p, FILE *stream, unsigned *column, const char *s, size_
     else *column += n;
 }
 
-static void write_output(Parser *p, FILE *stream, unsigned *column, const char *s)
-{
-    write_bytes(p, stream, column, s, strlen(s));
-}
-
 /* DATA is literal, including unquoted text. Keep its source positions so
  * RESTORE does not depend on whether execution passed through a DATA line. */
 static int end_data(const Parser *p)
@@ -2002,7 +2008,7 @@ static void read_value(Parser *p, Reference ref)
 {
     Parser field;
     Value datum;
-    memset(&datum, 0, sizeof(datum));
+    INIT_VALUE(&datum);
     while (data_index < data_count) {
         initialize_parser(&field, position(data_statements[data_index].line,
                                             data_offset ? data_offset : data_statements[data_index].offset));
@@ -2019,214 +2025,6 @@ static void read_value(Parser *p, Reference ref)
         data_offset = 0;
     }
     fail(p, "Out of DATA");
-}
-
-#if defined(__WATCOMC__) || defined(_MSDOS)
-static void input_cursor(unsigned start)
-{
-    union REGS regs = {0};
-    regs.x.ax = 0x0100;
-    regs.x.cx = (start << 8) | 7;
-    int86(0x10, &regs, &regs);
-}
-
-static volatile unsigned char input_break_requested;
-typedef void (__interrupt __far *BiosInterrupt)(void);
-extern void __interrupt __far input_scan(void);
-extern void __far input_scan_init(BiosInterrupt);
-extern int __far input_scan_pending(void);
-#ifdef __WATCOMC__
-#pragma aux input_scan "CKB_INPUT_SCAN"
-#pragma aux input_scan_init "CKB_INPUT_SCAN_INIT" parm [dx ax] modify exact []
-#pragma aux input_scan_pending "CKB_INPUT_SCAN_PENDING" value [ax] modify exact [ax]
-#endif
-
-static void __interrupt __far input_break_interrupt(void)
-{
-    input_break_requested = 1;
-}
-
-/* INT 1Bh is the BIOS Break callback. Read keys without blocking so the
- * debugger can pause even on BIOSes that discard the dummy break key. */
-#ifdef __WATCOMC__
-static unsigned input_key(void);
-#pragma aux input_key = \
-    "mov ah, 01h" "int 16h" "jz empty" \
-    "xor ah, ah" "int 16h" "jmp short done" \
-    "empty: mov ax, 0ffffh" \
-    "done:" value [ax] modify exact [ax]
-
-static void input_idle(void);
-#pragma aux input_idle = "sti" "hlt" modify exact []
-#else
-extern unsigned __far input_key(void);
-extern void __far input_idle(void);
-#endif
-
-static int editor_input_ex(Parser *p, char *input, int emit_newline)
-{
-    volatile unsigned char __far *break_flag = MK_FP(0x40, 0x71);
-    BiosInterrupt previous_break = _dos_getvect(0x1b);
-    BiosInterrupt previous_scan = _dos_getvect(0x15);
-    unsigned length = 0;
-    int interrupted = 0;
-    *break_flag &= 0x7f;
-    input_break_requested = 0;
-    input_scan_init(previous_scan);
-    _dos_setvect(0x15, input_scan);
-    _dos_setvect(0x1b, input_break_interrupt);
-    input_cursor(7);
-    while (!error_message) {
-        unsigned key = input_key();
-        unsigned char ch;
-        if (input_break_requested || input_scan_pending() || (*break_flag & 0x80)) {
-            *break_flag &= 0x7f;
-            interrupted = 1;
-            break;
-        }
-        if (key == 0xffff) {
-            input_idle();
-            continue;
-        }
-        ch = (unsigned char)key;
-        if (ch == '\r') {
-            if (emit_newline) write_output(p, stdout, &screen_column, "\n");
-            break;
-        }
-        if (ch == '\b') {
-            if (length) {
-                write_output(p, stdout, &screen_column, "\b \b");
-                --length;
-            }
-        } else if (ch >= 32 && ch != 127 && length < TEXT_INPUT_MAX) {
-            input[length++] = ch;
-            write_bytes(p, stdout, &screen_column, (char *)&ch, 1);
-        }
-        if (fflush(stdout) == EOF) fail(p, "Write error");
-    }
-    input[length] = 0;
-    input_cursor(6);
-    _dos_setvect(0x1b, previous_break);
-    _dos_setvect(0x15, previous_scan);
-    return !interrupted;
-}
-
-static unsigned input_column(void)
-{
-    union REGS regs = {0};
-    regs.x.ax = 0x0300;
-    int86(0x10, &regs, &regs);
-    return regs.h.dl;
-}
-#endif
-
-static int console_read_line(Parser *p, Position at, const char *prompt,
-                             int question, int emit_newline, char *input,
-                             unsigned input_cap)
-{
-    for (;;) {
-        if (prompt && *prompt) write_output(p, stdout, &screen_column, prompt);
-        if (question) write_output(p, stdout, &screen_column, "? ");
-        if (fflush(stdout) == EOF) fail(p, "Write error");
-        if (error_message) return 0;
-#if defined(__WATCOMC__) || defined(_MSDOS)
-        if (isatty(0) && isatty(1)) {
-            if (editor_input_ex(p, input, emit_newline)) break;
-            if (!pause_execution) {
-                stopped = 1;
-                return 0;
-            }
-            if (!pause_at(p, at, NULL)) return 0;
-            if (input_column()) write_output(p, stdout, &screen_column, "\n");
-            continue;
-        }
-#else
-        (void)at;
-        (void)emit_newline;
-#endif
-        if (fgets(input, (int)input_cap, stdin)) break;
-        fail(p, "Input past end of file");
-        return 0;
-    }
-    if (emit_newline) screen_column = 0;
-    input[strcspn(input, "\r\n")] = 0;
-    return 1;
-}
-
-static void console_line_input(Parser *p, int run, Position at)
-{
-    Value prompt, v;
-    int same_line = take(p, ';');
-    Reference ref;
-    char input[TEXT_INPUT_MAX + 3];
-    unsigned len;
-    prompt.length = 0;
-    prompt.string = 1;
-    prompt.text[0] = 0;
-    if (p->token == T_STRING) {
-        string_value(p, &prompt);
-        if (!take(p, ';')) expect(p, ',', "Expected: ; or ,");
-    }
-    ref = lvalue(p, run);
-    if (ref.target && ref.kind != '$') fail(p, "Type mismatch");
-    if (!run || error_message) return;
-    if (!console_read_line(p, at, ckb_string_bytes(&prompt), 0, !same_line,
-                           input, sizeof(input)))
-        return;
-    len = (unsigned)strlen(input);
-    if (len > TEXT_INPUT_MAX) {
-        fail(p, "Input too long");
-        return;
-    }
-    memset(&v, 0, sizeof(v));
-    v.string = 1;
-    v.length = len;
-    memcpy(v.text, input, len + 1U);
-    assign_reference(p, ref, &v, 1);
-}
-
-static void input_statement(Parser *p, int run, Position at)
-{
-    Value prompt, v;
-    int question = 1;
-    Reference ref;
-    char input[TEXT_INPUT_MAX + 3], *end, *first;
-    prompt.length = 0;
-    prompt.string = 1;
-    prompt.text[0] = 0;
-    if (p->token == T_STRING) {
-        string_value(p, &prompt);
-        if (take(p, ',')) question = 0;
-        else expect(p, ';', "Expected: ; or ,");
-    }
-    ref = lvalue(p, run);
-    if (record_size(ref.kind)) fail(p, "Type mismatch");
-    if (!run || error_message) return;
-    if (!console_read_line(p, at, ckb_string_bytes(&prompt), question, 1,
-                           input, sizeof(input)))
-        return;
-    memset(&v, 0, sizeof(v));
-    v.string = ref.kind == '$';
-    if (v.string) {
-        first = input;
-        end = input + strlen(input);
-        if (end > first + 1 && *first == '"' && end[-1] == '"') {
-            *--end = 0;
-            ++first;
-        }
-        if (end - first > TEXT_INPUT_MAX) fail(p, "Input too long");
-        else {
-            v.length = (unsigned)(end - first);
-            memcpy(v.text, first, v.length + 1);
-        }
-    } else {
-        v.number = strtod(input, &end);
-        if (end == input) fail(p, "Expected: number");
-        while (*end == ' ' || *end == '\t') ++end;
-        if (*end) fail(p, "Expected: number");
-        if (!finite_number(v.number)) fail(p, "Overflow");
-    }
-    if (!error_message) assign_reference(p, ref, &v, 1);
 }
 
 static int loop_passes(Parser *p, int run, int *kind)
@@ -2266,11 +2064,20 @@ static int procedure_id(const char *name)
 
 static int lookup_procedure(const Parser *p)
 {
-    Parser name_parser = *p;
+    Parser name_parser;
     char name[BASIC_NAME_MAX + 1], kind;
-    if (p->token != T_NAME || p->length > BASIC_NAME_MAX) return -1;
+    unsigned i;
+    unsigned char ch0;
+    if (!procedure_count || p->token != T_NAME || p->length > BASIC_NAME_MAX) return -1;
+    ch0 = p->first_upper;
+    for (i = 0; i < procedure_count; ++i)
+        if (proc_first_upper[i] == ch0) break;
+    if (i == procedure_count) return -1;
+    name_parser = *p;
     identifier(&name_parser, name, &kind);
-    return procedure_id(name);
+    for (; i < procedure_count; ++i)
+        if (proc_first_upper[i] == ch0 && proc_name_equals(i, name)) return (int)i;
+    return -1;
 }
 
 static int whole_array_argument(Parser *p, int run)
@@ -2288,9 +2095,15 @@ static int whole_array_argument(Parser *p, int run)
     return id;
 }
 
+#define LOCAL_VAR_POOL_MAX 32U
+#define COPY_VAL_POOL_MAX 16U
+
+static Variable local_var_pool[LOCAL_VAR_POOL_MAX];
+static unsigned local_pool_top;
+
 static void procedure_arguments(Parser *p, const Procedure __far *proc, unsigned depth, int run,
                                 int parenthesized, int function, Reference *references,
-                                Value **copies)
+                                Value *copy_slots, unsigned char *has_copy)
 {
     Value arg;
     unsigned i = 0;
@@ -2320,9 +2133,8 @@ static void procedure_arguments(Parser *p, const Procedure __far *proc, unsigned
             if (run && !error_message &&
                 (!references[i].target ||
                  (arg.string && references[i].width && !param->fixed_width))) {
-                copies[i] = malloc(sizeof(arg));
-                if (!copies[i]) fail(p, "Out of memory");
-                else *copies[i] = arg;
+                COPY_VALUE(&copy_slots[i], &arg);
+                has_copy[i] = 1;
             }
         }
         ++i;
@@ -2331,18 +2143,23 @@ static void procedure_arguments(Parser *p, const Procedure __far *proc, unsigned
     if (i != proc->count) fail(p, "Wrong number of arguments");
 }
 
+static Value copy_val_pool[COPY_VAL_POOL_MAX];
+static unsigned copy_pool_top;
+
 static void call_procedure(Parser *p, int id, unsigned depth, int run, Value *result,
                            int parenthesized)
 {
     Procedure __far *proc = &procedures[id];
-    Value *copies[PARAM_MAX];
+    Value *copy_slots = NULL;
+    unsigned char has_copy[PARAM_MAX];
     Reference references[PARAM_MAX];
     Activation frame, *caller = activation;
-    unsigned i;
+    unsigned i, n_locals = proc->locals, n_params = proc->count;
+    int pooled_locals = 0, pooled_copies = 0;
     int old_scope = current_scope, old_jumped = jumped, old_returning = returning;
     Position old_next = next_position;
     if (result) {
-        memset(result, 0, sizeof(*result));
+        INIT_VALUE(result);
         result->string = proc->result_kind == '$';
         result->kind = proc->result_kind;
     }
@@ -2354,40 +2171,62 @@ static void call_procedure(Parser *p, int id, unsigned depth, int run, Value *re
         fail(p, "Out of stack space");
         return;
     }
-    if (!stack_room(p, 4096)) return;
-    memset(copies, 0, sizeof(copies));
-    procedure_arguments(p, proc, depth, run, parenthesized, result != NULL, references, copies);
-    if (!run) return;
+    if (!stack_room(p, 3584)) return;
+    memset(has_copy, 0, sizeof(has_copy));
+    if (n_params) {
+        if (copy_pool_top + n_params <= COPY_VAL_POOL_MAX) {
+            copy_slots = &copy_val_pool[copy_pool_top];
+            copy_pool_top += n_params;
+            pooled_copies = 1;
+        } else {
+            copy_slots = malloc(n_params * sizeof(*copy_slots));
+            if (!copy_slots) {
+                fail(p, "Out of memory");
+                return;
+            }
+        }
+    }
+    procedure_arguments(p, proc, depth, run, parenthesized, result != NULL, references,
+                        copy_slots, has_copy);
+    if (!run) {
+        if (pooled_copies) copy_pool_top -= n_params;
+        else free(copy_slots);
+        return;
+    }
     frame.locals = NULL;
     frame.for_base = for_depth;
     frame.call_base = call_depth;
-    if (!error_message && proc->locals) {
-        frame.locals = malloc(proc->locals * sizeof(*frame.locals));
-        if (!frame.locals) fail(p, "Out of memory");
+    if (!error_message && n_locals) {
+        if (local_pool_top + n_locals <= LOCAL_VAR_POOL_MAX) {
+            frame.locals = &local_var_pool[local_pool_top];
+            local_pool_top += n_locals;
+            pooled_locals = 1;
+        } else {
+            frame.locals = malloc(n_locals * sizeof(*frame.locals));
+            if (!frame.locals) fail(p, "Out of memory");
+        }
     }
     if (!error_message) {
-        for (i = 0; i < variable_count; ++i) {
+        unsigned fv = proc->first_var, lv = proc->last_var;
+        for (i = fv; i < lv; ++i) {
             const Variable *v = &variables[i];
             if (v->scope == id && v->frame_slot)
                 frame.locals[v->frame_slot - 1] = *v;
         }
         activation = &frame;
         current_scope = id;
-        for (i = 0; i < proc->count && !error_message; ++i) {
+        for (i = 0; i < n_params && !error_message; ++i) {
             int param = proc->params[i];
-            if (copies[i]) {
-                assign(p, param, copies[i], 1);
-                /* A by-value temporary is no longer needed once assigned.
-                 * Keep fixed-string actuals for copy-back on return. */
-                if (!references[i].target) {
-                    free(copies[i]);
-                    copies[i] = NULL;
-                }
+            if (has_copy[i]) {
+                assign(p, param, &copy_slots[i], 1);
+                if (!references[i].target) has_copy[i] = 0;
             } else variable_storage(param)->reference = references[i];
         }
     }
+    if (pooled_copies) copy_pool_top -= n_params;
+    else free(copy_slots);
     /* The next statement needs stack space before reaching expression checks. */
-    if (!error_message && stack_room(p, 4096)) {
+    if (!error_message && stack_room(p, 3584)) {
         ++procedure_depth;
         walk_at(next_line(proc->line), 1);
         --procedure_depth;
@@ -2396,22 +2235,23 @@ static void call_procedure(Parser *p, int id, unsigned depth, int run, Value *re
     /* Fixed actuals passed to variable-length formals use independent
      * descriptors; QBasic copies them back in reverse argument order. */
     if (frame.locals && !error_message) {
-        for (i = proc->count; i > 0; --i) {
+        for (i = n_params; i > 0; --i) {
             unsigned n = i - 1;
-            if (copies[n] && references[n].target && references[n].width) {
-                fetch(p, proc->params[n], 0, 1, copies[n]);
-                if (!error_message) assign_reference(p, references[n], copies[n], 1);
+            if (has_copy[n] && references[n].target && references[n].width) {
+                Value wb;
+                fetch(p, proc->params[n], 0, 1, &wb);
+                if (!error_message) assign_reference(p, references[n], &wb, 1);
             }
         }
     }
-    for (i = 0; i < proc->count; ++i) free(copies[i]);
     if (frame.locals) {
-        for (i = 0; i < proc->locals; ++i) {
+        for (i = 0; i < n_locals; ++i) {
             unbind_field(&frame.locals[i]);
             release_array(&frame.locals[i]);
             free(frame.locals[i].text);
         }
-        free(frame.locals);
+        if (pooled_locals) local_pool_top -= n_locals;
+        else free(frame.locals);
     }
     activation = caller;
     current_scope = old_scope;
@@ -2460,7 +2300,7 @@ static void call_def_fn(Parser *p, int fn_id, Value *v, unsigned depth, int run)
     } else if (take(p, '(')) {
         expect(p, ')', "Expected: )");
     }
-    memset(v, 0, sizeof(*v));
+    INIT_VALUE(v);
     v->kind = fn->result_kind;
     v->string = fn->result_kind == '$';
     if (error_message) return;
@@ -2560,66 +2400,50 @@ static int expression_call(Parser *p, Value *v, unsigned depth, int run)
         return 1;
     }
     if (take_word(p, "PEEK")) {
-        long addr;
-        expect(p, '(', "Expected: (");
-        addr = integer_operand(p, numeric(p, run), run);
-        expect(p, ')', "Expected: )");
-        v->kind = '%';
-        if (run && !error_message) {
-            if (addr < 0 || addr > 65535L) fail(p, "Illegal function call");
-#if defined(__WATCOMC__) || defined(_MSDOS)
-            else v->number = *(const unsigned char __far *)MK_FP(current_def_seg(), (unsigned)addr);
-#else
-            else v->number = 0;
-#endif
-        }
+        peek_function(p, v, run, current_def_seg());
         return 1;
     }
     if (take_word(p, "POINT")) {
-        long x, y;
-        expect(p, '(', "Expected: (");
-        x = integer_operand(p, numeric(p, run), run);
-        if (take(p, ',')) {
-            y = integer_operand(p, numeric(p, run), run);
-            expect(p, ')', "Expected: )");
-            v->kind = '%';
-            if (run && !error_message) v->number = ckb_point((int)x, (int)y);
-        } else {
-            int lx, ly;
-            expect(p, ')', "Expected: )");
-            v->kind = '%';
-            if (run && !error_message) {
-                ckb_gfx_last(&lx, &ly);
-                if (x == 0 || x == 2) v->number = lx;
-                else if (x == 1 || x == 3) v->number = ly;
-                else fail(p, "Illegal function call");
-            }
-        }
+        point_function(p, v, run);
         return 1;
     }
     if (word(p, "RND")) {
         random_value(p, v, depth, run);
         return 1;
     }
-    id = lookup_def_fn(p);
-    if (id >= 0) {
-        call_def_fn(p, id, v, depth, run);
-        return 1;
-    }
-    if (p->length <= BASIC_NAME_MAX) {
-        for (i = 0; i < p->length; ++i)
-            name[i] = (char)toupper((unsigned char)source[p->start + i]);
-        name[i] = 0;
-        id = ckb_string_function(name);
-        for (i = 0; !id && i < sizeof(numeric_functions) / sizeof(numeric_functions[0]); ++i)
-            if (strcmp(name, numeric_functions[i]) == 0) id = CF_CINT - (int)i;
-        if (id) {
-            int result = builtin(p, v, depth, run, id, !strcmp(name, "LEN"));
-            if (!strcmp(name, "ASC") || !strcmp(name, "INSTR") || !strcmp(name, "LEN"))
-                v->kind = '%';
-            return result;
+    if (def_fn_count) {
+        id = lookup_def_fn(p);
+        if (id >= 0) {
+            call_def_fn(p, id, v, depth, run);
+            return 1;
         }
     }
+    if (p->length <= BASIC_NAME_MAX) {
+        /* All 44 string and numeric intrinsics here require '(' after the name;
+         * peeking ahead avoids scanning 44 function names on every scalar variable! */
+        unsigned look = p->pos;
+        while (look < p->line_end && (source[look] == ' ' || source[look] == '\t')) ++look;
+        if (look < p->line_end && source[look] == '(') {
+            unsigned char ch0 = p->first_upper;
+            for (i = 0; i < p->length; ++i) {
+                unsigned char c = (unsigned char)source[p->start + i];
+                name[i] = (char)((c >= 'a' && c <= 'z') ? (c - 32U) : c);
+            }
+            name[i] = 0;
+            id = ckb_string_function(name);
+            for (i = 0; !id && i < sizeof(numeric_functions) / sizeof(numeric_functions[0]); ++i)
+                if ((unsigned char)numeric_functions[i][0] == ch0 &&
+                    strcmp(name, numeric_functions[i]) == 0)
+                    id = CF_CINT - (int)i;
+            if (id) {
+                int result = builtin(p, v, depth, run, id, !strcmp(name, "LEN"));
+                if (!strcmp(name, "ASC") || !strcmp(name, "INSTR") || !strcmp(name, "LEN"))
+                    v->kind = '%';
+                return result;
+            }
+        }
+    }
+    if (!procedure_count) return 0;
     id = lookup_procedure(p);
     if (id < 0 || !procedures[id].function) return 0;
     if (current_scope == id) {
@@ -2882,12 +2706,18 @@ static void index_procedures(void)
 static void assign_frame_slots(void)
 {
     unsigned i;
+    for (i = 0; i < procedure_count; ++i) {
+        procedures[i].first_var = variable_count;
+        procedures[i].last_var = 0;
+    }
     for (i = 0; i < variable_count; ++i) {
         Variable *v = &variables[i];
         Procedure __far *proc;
         unsigned param;
         if (v->scope < 0 || v->shared) continue;
         proc = &procedures[v->scope];
+        if (i < proc->first_var) proc->first_var = i;
+        if (i + 1U > proc->last_var) proc->last_var = i + 1U;
         for (param = 0; param < proc->count; ++param)
             if (proc->params[param] == (int)i) break;
         if (param < proc->count || (proc->function && proc->result == (int)i) ||
@@ -3018,7 +2848,7 @@ static void for_statement(Parser *p, Position at, int run, unsigned inline_depth
     if (error_message) return;
     index = block(p, at, B_FOR, inline_depth);
     if (run && !error_message) {
-        memset(&v, 0, sizeof(v));
+        INIT_VALUE(&v);
         v.number = begin;
         assign(p, id, &v, 1);
         while (for_depth > (activation ? activation->for_base : 0) &&
@@ -3077,8 +2907,16 @@ static void assignment_statement(Parser *p, int run)
 
 static int sub_call_statement(Parser *p, int run)
 {
-    int explicit_call = take_word(p, "CALL");
-    int id = lookup_procedure(p);
+    int explicit_call = (p->token == T_NAME && p->first_upper == 'C') ? take_word(p, "CALL") : 0;
+    int id;
+    if (!explicit_call) {
+        unsigned pos;
+        if (!procedure_count || p->token != T_NAME) return 0;
+        pos = p->pos;
+        while (pos < p->line_end && (source[pos] == ' ' || source[pos] == '\t')) ++pos;
+        if (pos < p->line_end && source[pos] == '=') return 0;
+    }
+    id = lookup_procedure(p);
     if (id < 0 || procedures[id].function) {
         if (explicit_call) fail(p, "Expected: SUB");
         return explicit_call;
@@ -3128,6 +2966,7 @@ void ckb_immediate_clear(void)
         variables[i].text = NULL;
     }
     variable_count = 0;
+    var_hash_reset();
     immediate_idle = 0;
 }
 
@@ -3160,6 +2999,7 @@ void ckb_immediate(const char *command, unsigned output_column, CkbImmediateResu
     if (!saved_pause && !immediate_idle) {
         immediate_idle = 1;
         variable_count = procedure_count = line_count = 0;
+        var_hash_reset();
         current_scope = -1;
         option_base = dynamic_arrays = mbf_mode = 0;
         random_state = 0x50000UL;
@@ -3170,6 +3010,7 @@ void ckb_immediate(const char *command, unsigned output_column, CkbImmediateResu
     _fmemcpy(source + IMMEDIATE_START, command, length + 1);
     lines[LINE_MAX].start = lines[LINE_MAX].body = IMMEDIATE_START;
     lines[LINE_MAX].end = IMMEDIATE_START + length;
+    lines[LINE_MAX].first_block = BLOCK_MAX;
     screen_column = output_column;
     immediate_output = 0;
     immediate_active = 1;
@@ -3186,7 +3027,10 @@ void ckb_immediate(const char *command, unsigned output_column, CkbImmediateResu
     if (!error_message) {
         immediate_line(1);
         result->runtime_error = error_message != NULL;
-    } else variable_count = variables_before;
+    } else {
+        variable_count = variables_before;
+        var_hash_rebuild();
+    }
     result->error = error_message;
     result->wrote_output = immediate_output;
     immediate_active = 0;
@@ -3213,450 +3057,491 @@ void ckb_immediate(const char *command, unsigned output_column, CkbImmediateResu
 }
 #endif
 
+static void run_or_chain_statement(Parser *p, int run, int chain)
+{
+    Value path;
+    scan(p);
+    expression(p, &path, 1, 0, run);
+    if (!path.string) fail(p, "Type mismatch");
+    else if (run && !error_message) {
+        const char *bytes = ckb_string_bytes(&path);
+        if (!path.length || path.length > TEXT_INPUT_MAX || memchr(bytes, 0, path.length))
+            fail(p, "Bad file name");
+        else {
+            memcpy(restart_path, bytes, path.length);
+            restart_path[path.length] = 0;
+            restart_kind = chain ? RESTART_CHAIN : RESTART_RUN;
+            stopped = 1;
+        }
+    }
+}
+
 static void statement(Parser *p, int run, unsigned inline_depth)
 {
     Position at = position(p->line, p->start);
     unsigned index, line, body;
-    int kind, condition;
-    array_directive(p);
+    int kind, condition, handled = 0;
+    if (checking) array_directive(p);
     if (!p->token) return;
-    if (word(p, "REM") || word(p, "DECLARE")) {
+    if (p->token == T_NAME && (p->first_upper == 'R' || p->first_upper == 'D') &&
+        (word(p, "REM") || word(p, "DECLARE"))) {
         p->token = 0;
         p->pos = lines[p->line].end;
         return;
     }
-    if (run && !error_message && break_execution) {
+    if (run && !error_message && break_execution &&
+        (!debug_active_flag || *debug_active_flag)) {
         body = lines[at.line].body;
         while (body < at.offset && isspace((unsigned char)source[body])) ++body;
         if (break_execution(pause_context, lines[at.line].start,
                             !inline_depth && body == at.offset, procedure_depth) &&
             !before_statement(p, at)) return;
     }
-    if (take_word(p, "PRINT") || take(p, '?')) {
+    switch (p->token == '?' ? '?' : (p->token == T_NAME ? (int)p->first_upper : 0)) {
+    case '?':
+        take(p, '?');
         print_statement(p, run, 0);
-    } else if (take_word(p, "LPRINT")) {
-        print_statement(p, run, 1);
-    } else if (take_word(p, "DEFINT")) {
-        default_type_statement(p, '%');
-    } else if (take_word(p, "DEFLNG")) {
-        default_type_statement(p, '&');
-    } else if (take_word(p, "DEFSNG")) {
-        default_type_statement(p, '!');
-    } else if (take_word(p, "DEFDBL")) {
-        default_type_statement(p, '#');
-    } else if (take_word(p, "DEFSTR")) {
-        default_type_statement(p, '$');
-    } else if (take_word(p, "CONST")) {
-        const_statement(p, run);
-    } else if (take_word(p, "RANDOMIZE")) {
-        double seed = numeric(p, run);
-        if (run && !error_message) seed_random(seed);
-    } else if (take_word(p, "DIM")) {
-        dim_statement(p, run, 0, 0);
-    } else if (take_word(p, "REDIM")) {
-        dim_statement(p, run, 1, 0);
-    } else if (word(p, "RUN") || word(p, "CHAIN")) {
-        int chain = word(p, "CHAIN");
-        Value path;
-        scan(p);
-        expression(p, &path, 1, 0, run);
-        if (!path.string) fail(p, "Type mismatch");
-        else if (run && !error_message) {
-            const char *bytes = ckb_string_bytes(&path);
-            if (!path.length || path.length > TEXT_INPUT_MAX || memchr(bytes, 0, path.length))
-                fail(p, "Bad file name");
-            else {
-                memcpy(restart_path, bytes, path.length);
-                restart_path[path.length] = 0;
-                restart_kind = chain ? RESTART_CHAIN : RESTART_RUN;
-                stopped = 1;
+        handled = 1;
+        break;
+    case 'B':
+        if (take_word(p, "BEEP")) {
+            if (run) ckb_beep();
+            handled = 1;
+        }
+        break;
+    case 'C':
+        if (take_word(p, "CASE")) {
+            case_statement(p, at, run, inline_depth);
+            handled = 1;
+        } else if (take_word(p, "CIRCLE")) {
+            gfx_circle_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "CLS")) {
+            cls_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "COLOR")) {
+            color_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "CONST")) {
+            const_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "COMMON")) {
+            storage_statement(p, 1);
+            handled = 1;
+        } else if (take_word(p, "CLOSE")) {
+            close_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "CHDIR")) {
+            path_statement(p, run, CHANGE_DIRECTORY);
+            handled = 1;
+        } else if (word(p, "CHAIN")) {
+            run_or_chain_statement(p, run, 1);
+            handled = 1;
+        }
+        break;
+    case 'D':
+        if (take_word(p, "DO")) {
+            condition = loop_passes(p, run, &kind);
+            index = block(p, at, B_DO, inline_depth);
+            if (run && !condition && !error_message) go(blocks[blocks[index].peer].after);
+            handled = 1;
+        } else if (take_word(p, "DIM")) {
+            dim_statement(p, run, 0, 0);
+            handled = 1;
+        } else if (take_word(p, "DATA")) {
+            data_statement(p);
+            handled = 1;
+        } else if (take_word(p, "DEFINT")) {
+            default_type_statement(p, '%');
+            handled = 1;
+        } else if (take_word(p, "DEFLNG")) {
+            default_type_statement(p, '&');
+            handled = 1;
+        } else if (take_word(p, "DEFSNG")) {
+            default_type_statement(p, '!');
+            handled = 1;
+        } else if (take_word(p, "DEFDBL")) {
+            default_type_statement(p, '#');
+            handled = 1;
+        } else if (take_word(p, "DEFSTR")) {
+            default_type_statement(p, '$');
+            handled = 1;
+        } else if (take_word(p, "DEF")) {
+            if (take_word(p, "SEG")) {
+                if (take(p, '=')) {
+                    long seg = integer_operand(p, numeric(p, run), run);
+                    if (run && !error_message) {
+                        def_seg_value = (unsigned)((unsigned long)seg & 0xffffUL);
+                        has_def_seg = 1;
+                    }
+                } else if (run) has_def_seg = 0;
+            } else {
+                p->token = 0;
+                p->pos = lines[p->line].end;
             }
+            handled = 1;
         }
-    } else if (take_word(p, "COMMON")) {
-        storage_statement(p, 1);
-    } else if (take_word(p, "SHARED")) {
-        storage_statement(p, 0);
-    } else if (take_word(p, "ERASE")) {
-        erase_statement(p, run);
-    } else if (take_word(p, "STATIC")) {
-        dim_statement(p, run, 0, 1);
-    } else if (take_word(p, "OPTION")) {
-        expect_word(p, "BASE", "Expected: BASE");
-        if (p->token != T_NUMBER || p->length != 1 ||
-            (p->number != 0 && p->number != 1))
-            fail(p, "Expected: 0 or 1");
-        else {
-            if (checking) option_base = (long)p->number;
-            scan(p);
-        }
-    } else if (take_word(p, "CLS")) {
-        int mode = -1;
-        if (!end_statement(p)) mode = (int)integer_operand(p, numeric(p, run), run);
-        if (run && !error_message) {
-            ckb_cls_mode(mode);
-            screen_column = 0;
-        }
-    } else if (take_word(p, "COLOR")) {
-        int fg = -1, bg = -1;
-        if (!end_statement(p) && p->token != ',') fg = (int)integer_operand(p, numeric(p, run), run);
-        if (take(p, ',')) {
-            if (p->token != ',' && !end_statement(p))
-                bg = (int)integer_operand(p, numeric(p, run), run);
-            if (take(p, ',') && !end_statement(p)) (void)numeric(p, run);
-        }
-        if (run && !error_message) ckb_color(fg, bg);
-    } else if (take_word(p, "SCREEN")) {
-        int mode = (int)integer_operand(p, numeric(p, run), run), extra;
-        for (extra = 0; extra < 3 && take(p, ','); ++extra)
-            if (p->token != ',' && !end_statement(p)) (void)numeric(p, run);
-        if (run && !error_message) {
-            const char *err = ckb_screen(mode);
-            if (err) fail(p, err);
-            else screen_column = 0;
-        }
-    } else if (take_word(p, "WIDTH")) {
-        int cols = -1, rows = -1;
-        if (p->token != ',' && !end_statement(p))
-            cols = (int)integer_operand(p, numeric(p, run), run);
-        if (take(p, ',') && !end_statement(p))
-            rows = (int)integer_operand(p, numeric(p, run), run);
-        if (run && !error_message) {
-            const char *err = ckb_width_screen(cols, rows);
-            if (err) fail(p, err);
-            else screen_column = 0;
-        }
-    } else if (take_word(p, "PALETTE")) {
-        if (!end_statement(p)) {
-            int attr = (int)integer_operand(p, numeric(p, run), run);
-            long color;
-            expect(p, ',', "Expected: ,");
-            color = integer_operand(p, numeric(p, run), run);
-            if (run && !error_message) {
-                const char *err = ckb_palette(attr, color);
-                if (err) fail(p, err);
-            }
-        }
-    } else if (take_word(p, "LOCATE")) {
-        int row = -1, col = -1, cursor = -1, extra;
-        if (p->token != ',' && !end_statement(p))
-            row = (int)integer_operand(p, numeric(p, run), run);
-        if (take(p, ',')) {
-            if (p->token != ',' && !end_statement(p))
-                col = (int)integer_operand(p, numeric(p, run), run);
-            if (take(p, ',')) {
-                if (p->token != ',' && !end_statement(p))
-                    cursor = (int)integer_operand(p, numeric(p, run), run);
-                for (extra = 0; extra < 2 && take(p, ','); ++extra)
-                    if (p->token != ',' && !end_statement(p)) (void)numeric(p, run);
-            }
-        }
-        if (run && !error_message) {
-            const char *err = ckb_locate(row, col, cursor);
-            if (err) fail(p, err);
-            else screen_column = ckb_con_column();
-        }
-    } else if (take_word(p, "VIEW")) {
-        if (take_word(p, "PRINT")) {
-            int top = -1, bottom = -1;
-            if (!end_statement(p)) {
-                top = (int)integer_operand(p, numeric(p, run), run);
-                expect_word(p, "TO", "Expected: TO");
-                bottom = (int)integer_operand(p, numeric(p, run), run);
-            }
-            if (run && !error_message) {
-                const char *err = ckb_view_print(top, bottom);
-                if (err) fail(p, err);
-                else screen_column = 0;
-            }
-        } else {
-            while (!end_statement(p)) scan(p);
-        }
-    } else if (take_word(p, "DEF")) {
-        if (take_word(p, "SEG")) {
-            if (take(p, '=')) {
-                long seg = integer_operand(p, numeric(p, run), run);
-                if (run && !error_message) {
-                    def_seg_value = (unsigned)((unsigned long)seg & 0xffffUL);
-                    has_def_seg = 1;
+        break;
+    case 'E':
+        if (take_word(p, "END")) {
+            if (take_word(p, "IF")) block(p, at, B_ENDIF, inline_depth);
+            else if (take_word(p, "SELECT")) block(p, at, B_ENDSELECT, inline_depth);
+            else if (take_word(p, "SUB") || take_word(p, "FUNCTION")) {
+                if (run) returning = 1;
+            } else if (run) stopped = 1;
+            handled = 1;
+        } else if (take_word(p, "ELSEIF")) {
+            if (!run) {
+                condition = numeric(p, 0) != 0;
+                if (expect_word(p, "THEN", "Expected: THEN") && !error_message)
+                    block(p, at, B_ELSEIF, inline_depth);
+            } else if (entering_elseif) {
+                entering_elseif = 0;
+                condition = numeric(p, 1) != 0;
+                if (expect_word(p, "THEN", "Expected: THEN") && !error_message) {
+                    index = block(p, at, B_ELSEIF, inline_depth);
+                    if (!condition && !error_message) {
+                        unsigned peer = blocks[index].peer;
+                        if (blocks[peer].kind == B_ELSEIF) {
+                            entering_elseif = 1;
+                            go(blocks[peer].at);
+                        } else {
+                            go(blocks[peer].after);
+                        }
+                    }
                 }
-            } else if (run) has_def_seg = 0;
-        } else {
-            p->token = 0;
-            p->pos = lines[p->line].end;
-        }
-    } else if (take_word(p, "POKE")) {
-        long addr = integer_operand(p, numeric(p, run), run), val;
-        expect(p, ',', "Expected: ,");
-        val = integer_operand(p, numeric(p, run), run);
-        if (run && !error_message) {
-            if (addr < 0 || addr > 65535L || val < 0 || val > 255L)
-                fail(p, "Illegal function call");
-#if defined(__WATCOMC__) || defined(_MSDOS)
-            else *(unsigned char __far *)MK_FP(current_def_seg(), (unsigned)addr) = (unsigned char)val;
-#endif
-        }
-    } else if (take_word(p, "BEEP")) {
-        if (run) ckb_beep();
-    } else if (take_word(p, "SOUND")) {
-        double freq = numeric(p, run), dur;
-        expect(p, ',', "Expected: ,");
-        dur = numeric(p, run);
-        if (run && !error_message) {
-            const char *err = ckb_sound(freq, dur, NULL);
-            if (err) fail(p, err);
-        }
-    } else if (take_word(p, "PLAY")) {
-        Value mml;
-        expression(p, &mml, 1, 0, run);
-        if (!mml.string) fail(p, "Type mismatch");
-        else if (run && !error_message) {
-            const char *err = ckb_play(ckb_string_bytes(&mml), NULL);
-            if (err) fail(p, err);
-        }
-    } else if (take_word(p, "SLEEP")) {
-        long secs = 0;
-        if (!end_statement(p)) secs = integer_operand(p, numeric(p, run), run);
-        if (run && !error_message) ckb_sleep(secs, NULL);
-    } else if (take_word(p, "PSET") || word(p, "PRESET")) {
-        int is_preset = p->token == T_NAME && word(p, "PRESET");
-        int x = 0, y = 0, color = -1;
-        if (is_preset) scan(p);
-        if (parse_gfx_coord(p, run, &x, &y)) {
-            if (take(p, ',') && !end_statement(p))
-                color = (int)integer_operand(p, numeric(p, run), run);
+            } else {
+                p->token = 0;
+                p->pos = lines[p->line].end;
+                index = block(p, at, B_ELSEIF, inline_depth);
+                if (!error_message) go(blocks[blocks[blocks[index].owner].finish].after);
+            }
+            handled = 1;
+        } else if (take_word(p, "ELSE")) {
+            index = block(p, at, B_ELSE, inline_depth);
+            if (run && !error_message) go(blocks[blocks[blocks[index].owner].finish].after);
+            handled = 1;
+        } else if (take_word(p, "EXIT")) {
+            if (!(take_word(p, "SUB") || take_word(p, "FUNCTION")) || current_scope < 0)
+                fail(p, "Expected: EXIT SUB or EXIT FUNCTION");
+            else if (run) returning = 1;
+            handled = 1;
+        } else if (take_word(p, "ERASE")) {
+            erase_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "ERROR")) {
+            long code = integer_operand(p, numeric(p, run), run);
             if (run && !error_message) {
-                const char *err = ckb_pset(x, y, color, is_preset);
-                if (err) fail(p, err);
+                if (code <= 0 || code > 255) fail(p, "Illegal function call");
+                else {
+                    first_error = at;
+                    error_message = runtime_error_text((unsigned)code);
+                }
             }
+            handled = 1;
+        } else if (take_word(p, "ENVIRON")) {
+            environment_statement(p, run);
+            handled = 1;
         }
-    } else if (take_word(p, "CIRCLE")) {
-        gfx_circle_statement(p, run);
-    } else if (take_word(p, "PAINT")) {
-        gfx_paint_statement(p, run);
-    } else if (take_word(p, "INPUT")) {
-        if (take(p, '#')) input_file_statement(p, run);
-        else input_statement(p, run, at);
-    } else if (take_word(p, "WRITE")) {
-        write_statement(p, run);
-    } else if (take_word(p, "OPEN")) {
-        open_statement(p, run);
-    } else if (take_word(p, "LOCK")) {
-        file_lock_statement(p, run, 0);
-    } else if (take_word(p, "UNLOCK")) {
-        file_lock_statement(p, run, 1);
-    } else if (take_word(p, "FIELD")) {
-        field_statement(p, run);
-    } else if (take_word(p, "GET")) {
-        if (p->token == '(' || word(p, "STEP")) gfx_get_statement(p, run);
-        else file_transfer(p, run, 0);
-    } else if (take_word(p, "PUT")) {
-        if (p->token == '(' || word(p, "STEP")) gfx_put_statement(p, run);
-        else file_transfer(p, run, 1);
-    } else if (take_word(p, "SEEK")) {
-        Channel *file = file_number(p, run);
-        long position;
-        expect(p, ',', "Expected: ,");
-        position = integer_operand(p, numeric(p, run), run);
-        if (run && !error_message) seek_file(p, file, position);
-    } else if (take_word(p, "LINE")) {
-        if (take_word(p, "INPUT")) {
-            if (take(p, '#')) line_input_statement(p, run);
-            else console_line_input(p, run, at);
-        } else {
-            gfx_line_statement(p, run);
+        break;
+    case 'F':
+        if (take_word(p, "FOR")) {
+            for_statement(p, at, run, inline_depth);
+            handled = 1;
+        } else if (take_word(p, "FIELD")) {
+            field_statement(p, run);
+            handled = 1;
         }
-    } else if (take_word(p, "NAME")) {
-        rename_statement(p, run);
-    } else if (take_word(p, "MKDIR")) {
-        path_statement(p, run, CREATE_DIRECTORY);
-    } else if (take_word(p, "CHDIR")) {
-        path_statement(p, run, CHANGE_DIRECTORY);
-    } else if (take_word(p, "RMDIR")) {
-        path_statement(p, run, REMOVE_DIRECTORY);
-    } else if (take_word(p, "KILL")) {
-        path_statement(p, run, DELETE_FILE);
-    } else if (take_word(p, "ENVIRON")) {
-        environment_statement(p, run);
-    } else if (take_word(p, "SHELL")) {
-        shell_statement(p, run);
-    } else if (take_word(p, "CLOSE")) {
-        if (end_statement(p)) {
-            if (run) for (index = 0; index < FILE_MAX; ++index) close_file(p, &channels[index]);
-        } else do {
-            Channel *file = file_number(p, run);
-            if (run && !error_message) close_file(p, file);
-        } while (!error_message && take(p, ','));
-    } else if (take_word(p, "SELECT")) {
-        select_statement(p, at, run, inline_depth);
-    } else if (take_word(p, "CASE")) {
-        case_statement(p, at, run, inline_depth);
-    } else if (take_word(p, "SWAP")) {
-        swap_statement(p, run);
-    } else if (take_word(p, "LSET")) {
-        justify_assign(p, run, 0);
-    } else if (take_word(p, "RSET")) {
-        justify_assign(p, run, 1);
-    } else if (take_word(p, "MID$")) {
-        mid_assign(p, run);
-    } else if (take_word(p, "ERROR")) {
-        long code = integer_operand(p, numeric(p, run), run);
-        if (run && !error_message) {
-            if (code <= 0 || code > 255) fail(p, "Illegal function call");
-            else {
-                first_error = at;
-                error_message = runtime_error_text((unsigned)code);
-            }
-        }
-    } else if (take_word(p, "ON")) {
-        expect_word(p, "ERROR", "Expected: ERROR");
-        expect_word(p, "GOTO", "Expected: GOTO");
-        if (p->token == T_NUMBER && p->number == 0) {
-            scan(p);
-            line = LINE_MAX;
-        } else line = target(p);
-        if (run && !error_message) error_handler[current_scope + 1] = line;
-    } else if (take_word(p, "RESUME")) {
-        int resume_next = take_word(p, "NEXT");
-        line = end_statement(p) ? LINE_MAX : target(p);
-        if (run && !error_message) {
-            if (!handling_error) fail(p, "RESUME without error");
-            else {
-                handling_error = 0;
-                trapped_error_code = trapped_error_line = 0;
-                current_scope = resume_scope;
-                if (line < LINE_MAX) go_line(line);
-                else go(resume_next ? error_resume_next : error_resume);
-            }
-        }
-    } else if (take_word(p, "DATA")) {
-        data_statement(p);
-    } else if (take_word(p, "READ")) {
-        do {
-            Reference ref = lvalue(p, run);
-            if (record_size(ref.kind)) fail(p, "Type mismatch");
-            if (run && !error_message) read_value(p, ref);
-        } while (!error_message && take(p, ','));
-    } else if (take_word(p, "RESTORE")) {
-        line = end_statement(p) ? 0 : target(p);
-        if (run && !error_message) {
-            data_index = data_offset = 0;
-            while (data_index < data_count && data_statements[data_index].line < line) ++data_index;
-        }
-    } else if (take_word(p, "GOTO")) {
-        line = target(p);
-        if (run && !error_message) go_line(line);
-    } else if (take_word(p, "GOSUB")) {
-        line = target(p);
-        if (run && !error_message) {
-            if (call_depth == STACK_MAX) fail(p, "Too many nested GOSUBs");
-            else {
-                calls[call_depth++] = after_statement(p);
-                go_line(line);
-            }
-        }
-    } else if (take_word(p, "RETURN")) {
-        line = end_statement(p) ? line_count : target(p);
-        if (run && !error_message) {
-            if (call_depth == (activation ? activation->call_base : 0))
-                fail(p, "RETURN without GOSUB");
-            else {
-                --call_depth;
-                if (line == line_count) go(calls[call_depth]);
-                else go_line(line);
-            }
-        }
-    } else if (take_word(p, "IF")) {
-        condition = numeric(p, run) != 0;
+        break;
+    case 'G':
         if (take_word(p, "GOTO")) {
             line = target(p);
-            if (run && condition && !error_message) go_line(line);
-        } else if (expect_word(p, "THEN", "Expected: THEN") && !error_message) {
-            if (!p->token) {
-                index = block(p, at, B_IF, inline_depth);
-                if (run && !condition && !error_message) {
-                    unsigned peer = blocks[index].peer;
-                    if (blocks[peer].kind == B_ELSEIF) {
-                        entering_elseif = 1;
-                        go(blocks[peer].at);
-                    } else {
-                        go(blocks[peer].after);
-                    }
+            if (run && !error_message) go_line(line);
+            handled = 1;
+        } else if (take_word(p, "GOSUB")) {
+            line = target(p);
+            if (run && !error_message) {
+                if (call_depth == STACK_MAX) fail(p, "Too many nested GOSUBs");
+                else {
+                    calls[call_depth++] = after_statement(p);
+                    go_line(line);
                 }
-            } else if (inline_depth == 3) fail(p, "IF nested too deeply");
+            }
+            handled = 1;
+        } else if (take_word(p, "GET")) {
+            if (p->token == '(' || word(p, "STEP")) gfx_get_statement(p, run);
+            else file_transfer(p, run, 0);
+            handled = 1;
+        }
+        break;
+    case 'I':
+        if (take_word(p, "IF")) {
+            condition = numeric(p, run) != 0;
+            if (take_word(p, "GOTO")) {
+                line = target(p);
+                if (run && condition && !error_message) go_line(line);
+            } else if (expect_word(p, "THEN", "Expected: THEN") && !error_message) {
+                if (!p->token) {
+                    index = block(p, at, B_IF, inline_depth);
+                    if (run && !condition && !error_message) {
+                        unsigned peer = blocks[index].peer;
+                        if (blocks[peer].kind == B_ELSEIF) {
+                            entering_elseif = 1;
+                            go(blocks[peer].at);
+                        } else {
+                            go(blocks[peer].after);
+                        }
+                    }
+                } else if (inline_depth == 3) fail(p, "IF nested too deeply");
+                else {
+                    inline_statement_list(p, run && condition, inline_depth + 1);
+                    if (take_word(p, "ELSE"))
+                        inline_statement_list(p, run && !condition, inline_depth + 1);
+                }
+            }
+            handled = 1;
+        } else if (take_word(p, "INPUT")) {
+            if (take(p, '#')) input_file_statement(p, run);
+            else input_statement(p, run, at);
+            handled = 1;
+        }
+        break;
+    case 'K':
+        if (take_word(p, "KILL")) {
+            path_statement(p, run, DELETE_FILE);
+            handled = 1;
+        }
+        break;
+    case 'L':
+        if (take_word(p, "LOOP")) {
+            condition = loop_passes(p, run, &kind);
+            index = block(p, at, B_LOOP, inline_depth);
+            if (run && condition && !error_message) go(blocks[blocks[index].peer].at);
+            handled = 1;
+        } else if (take_word(p, "LINE")) {
+            if (take_word(p, "INPUT")) {
+                if (take(p, '#')) line_input_statement(p, run);
+                else console_line_input(p, run, at);
+            } else {
+                gfx_line_statement(p, run);
+            }
+            handled = 1;
+        } else if (take_word(p, "LOCATE")) {
+            locate_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "LPRINT")) {
+            print_statement(p, run, 1);
+            handled = 1;
+        } else if (take_word(p, "LOCK")) {
+            file_lock_statement(p, run, 0);
+            handled = 1;
+        } else if (take_word(p, "LSET")) {
+            justify_assign(p, run, 0);
+            handled = 1;
+        }
+        break;
+    case 'M':
+        if (take_word(p, "MID$")) {
+            mid_assign(p, run);
+            handled = 1;
+        } else if (take_word(p, "MKDIR")) {
+            path_statement(p, run, CREATE_DIRECTORY);
+            handled = 1;
+        }
+        break;
+    case 'N':
+        if (take_word(p, "NEXT")) {
+            next_statement(p, at, run, inline_depth);
+            handled = 1;
+        } else if (take_word(p, "NAME")) {
+            rename_statement(p, run);
+            handled = 1;
+        }
+        break;
+    case 'O':
+        if (take_word(p, "ON")) {
+            expect_word(p, "ERROR", "Expected: ERROR");
+            expect_word(p, "GOTO", "Expected: GOTO");
+            if (p->token == T_NUMBER && p->number == 0) {
+                scan(p);
+                line = LINE_MAX;
+            } else line = target(p);
+            if (run && !error_message) error_handler[current_scope + 1] = line;
+            handled = 1;
+        } else if (take_word(p, "OPEN")) {
+            open_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "OPTION")) {
+            expect_word(p, "BASE", "Expected: BASE");
+            if (p->token != T_NUMBER || p->length != 1 ||
+                (p->number != 0 && p->number != 1))
+                fail(p, "Expected: 0 or 1");
             else {
-                inline_statement_list(p, run && condition, inline_depth + 1);
-                if (take_word(p, "ELSE"))
-                    inline_statement_list(p, run && !condition, inline_depth + 1);
+                if (checking) option_base = (long)p->number;
+                scan(p);
             }
+            handled = 1;
         }
-    } else if (take_word(p, "ELSEIF")) {
-        if (!run) {
-            condition = numeric(p, 0) != 0;
-            if (expect_word(p, "THEN", "Expected: THEN") && !error_message)
-                block(p, at, B_ELSEIF, inline_depth);
-        } else if (entering_elseif) {
-            entering_elseif = 0;
-            condition = numeric(p, 1) != 0;
-            if (expect_word(p, "THEN", "Expected: THEN") && !error_message) {
-                index = block(p, at, B_ELSEIF, inline_depth);
-                if (!condition && !error_message) {
-                    unsigned peer = blocks[index].peer;
-                    if (blocks[peer].kind == B_ELSEIF) {
-                        entering_elseif = 1;
-                        go(blocks[peer].at);
-                    } else {
-                        go(blocks[peer].after);
-                    }
+        break;
+    case 'P':
+        if (take_word(p, "PUT")) {
+            if (p->token == '(' || word(p, "STEP")) gfx_put_statement(p, run);
+            else file_transfer(p, run, 1);
+            handled = 1;
+        } else if (take_word(p, "PRINT")) {
+            print_statement(p, run, 0);
+            handled = 1;
+        } else if (take_word(p, "PSET") || word(p, "PRESET")) {
+            pset_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "PAINT")) {
+            gfx_paint_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "PALETTE")) {
+            palette_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "PLAY")) {
+            play_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "POKE")) {
+            poke_statement(p, run, current_def_seg());
+            handled = 1;
+        }
+        break;
+    case 'R':
+        if (take_word(p, "RETURN")) {
+            line = end_statement(p) ? line_count : target(p);
+            if (run && !error_message) {
+                if (call_depth == (activation ? activation->call_base : 0))
+                    fail(p, "RETURN without GOSUB");
+                else {
+                    --call_depth;
+                    if (line == line_count) go(calls[call_depth]);
+                    else go_line(line);
                 }
             }
-        } else {
-            p->token = 0;
-            p->pos = lines[p->line].end;
-            index = block(p, at, B_ELSEIF, inline_depth);
-            if (!error_message) go(blocks[blocks[blocks[index].owner].finish].after);
+            handled = 1;
+        } else if (take_word(p, "READ")) {
+            do {
+                Reference ref = lvalue(p, run);
+                if (record_size(ref.kind)) fail(p, "Type mismatch");
+                if (run && !error_message) read_value(p, ref);
+            } while (!error_message && take(p, ','));
+            handled = 1;
+        } else if (take_word(p, "RESTORE")) {
+            line = end_statement(p) ? 0 : target(p);
+            if (run && !error_message) {
+                data_index = data_offset = 0;
+                while (data_index < data_count && data_statements[data_index].line < line) ++data_index;
+            }
+            handled = 1;
+        } else if (take_word(p, "RANDOMIZE")) {
+            double seed = numeric(p, run);
+            if (run && !error_message) seed_random(seed);
+            handled = 1;
+        } else if (take_word(p, "REDIM")) {
+            dim_statement(p, run, 1, 0);
+            handled = 1;
+        } else if (take_word(p, "RESUME")) {
+            int resume_next = take_word(p, "NEXT");
+            line = end_statement(p) ? LINE_MAX : target(p);
+            if (run && !error_message) {
+                if (!handling_error) fail(p, "RESUME without error");
+                else {
+                    handling_error = 0;
+                    trapped_error_code = trapped_error_line = 0;
+                    current_scope = resume_scope;
+                    if (line < LINE_MAX) go_line(line);
+                    else go(resume_next ? error_resume_next : error_resume);
+                }
+            }
+            handled = 1;
+        } else if (word(p, "RUN")) {
+            run_or_chain_statement(p, run, 0);
+            handled = 1;
+        } else if (take_word(p, "RMDIR")) {
+            path_statement(p, run, REMOVE_DIRECTORY);
+            handled = 1;
+        } else if (take_word(p, "RSET")) {
+            justify_assign(p, run, 1);
+            handled = 1;
         }
-    } else if (take_word(p, "ELSE")) {
-        index = block(p, at, B_ELSE, inline_depth);
-        if (run && !error_message) go(blocks[blocks[blocks[index].owner].finish].after);
-    } else if (take_word(p, "END")) {
-        if (take_word(p, "IF")) block(p, at, B_ENDIF, inline_depth);
-        else if (take_word(p, "SELECT")) block(p, at, B_ENDSELECT, inline_depth);
-        else if (take_word(p, "SUB") || take_word(p, "FUNCTION")) {
-            if (run) returning = 1;
-        } else if (run) stopped = 1;
-    } else if (take_word(p, "EXIT")) {
-        if (!(take_word(p, "SUB") || take_word(p, "FUNCTION")) || current_scope < 0)
-            fail(p, "Expected: EXIT SUB or EXIT FUNCTION");
-        else if (run) returning = 1;
-    } else if (take_word(p, "SYSTEM")) {
-        if (run) stopped = 1;
-    } else if (take_word(p, "STOP")) {
-        if (run && pause_execution) pause_at(p, at, NULL);
-        else if (run) {
-            stopped = 1;
-            fail(p, "Program stopped");
+        break;
+    case 'S':
+        if (take_word(p, "SELECT")) {
+            select_statement(p, at, run, inline_depth);
+            handled = 1;
+        } else if (take_word(p, "SOUND")) {
+            sound_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "SCREEN")) {
+            screen_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "SHARED")) {
+            storage_statement(p, 0);
+            handled = 1;
+        } else if (take_word(p, "STATIC")) {
+            dim_statement(p, run, 0, 1);
+            handled = 1;
+        } else if (take_word(p, "SWAP")) {
+            swap_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "SLEEP")) {
+            sleep_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "SEEK")) {
+            seek_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "SHELL")) {
+            shell_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "SYSTEM")) {
+            if (run) stopped = 1;
+            handled = 1;
+        } else if (take_word(p, "STOP")) {
+            if (run && pause_execution) pause_at(p, at, NULL);
+            else if (run) {
+                stopped = 1;
+                fail(p, "Program stopped");
+            }
+            handled = 1;
         }
-    } else if (take_word(p, "FOR")) {
-        for_statement(p, at, run, inline_depth);
-    } else if (take_word(p, "NEXT")) {
-        next_statement(p, at, run, inline_depth);
-    } else if (take_word(p, "DO")) {
-        condition = loop_passes(p, run, &kind);
-        index = block(p, at, B_DO, inline_depth);
-        if (run && !condition && !error_message) go(blocks[blocks[index].peer].after);
-    } else if (take_word(p, "LOOP")) {
-        condition = loop_passes(p, run, &kind);
-        index = block(p, at, B_LOOP, inline_depth);
-        if (run && condition && !error_message) go(blocks[blocks[index].peer].at);
-    } else if (take_word(p, "WHILE")) {
-        condition = numeric(p, run) != 0;
-        index = block(p, at, B_WHILE, inline_depth);
-        if (run && !condition && !error_message) go(blocks[blocks[index].peer].after);
-    } else if (take_word(p, "WEND")) {
-        index = block(p, at, B_WEND, inline_depth);
-        if (run && !error_message) go(blocks[blocks[index].peer].at);
-    } else if (!sub_call_statement(p, run)) {
-        assignment_statement(p, run);
+        break;
+    case 'U':
+        if (take_word(p, "UNLOCK")) {
+            file_lock_statement(p, run, 1);
+            handled = 1;
+        }
+        break;
+    case 'V':
+        if (take_word(p, "VIEW")) {
+            view_statement(p, run);
+            handled = 1;
+        }
+        break;
+    case 'W':
+        if (take_word(p, "WHILE")) {
+            condition = numeric(p, run) != 0;
+            index = block(p, at, B_WHILE, inline_depth);
+            if (run && !condition && !error_message) go(blocks[blocks[index].peer].after);
+            handled = 1;
+        } else if (take_word(p, "WEND")) {
+            index = block(p, at, B_WEND, inline_depth);
+            if (run && !error_message) go(blocks[blocks[index].peer].at);
+            handled = 1;
+        } else if (take_word(p, "WIDTH")) {
+            width_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "WRITE")) {
+            write_statement(p, run);
+            handled = 1;
+        }
+        break;
+    default:
+        break;
+    }
+    if (!handled) {
+        if (!sub_call_statement(p, run)) assignment_statement(p, run);
     }
 }
 
@@ -3678,6 +3563,7 @@ static void read_lines(unsigned size)
         line->start = start;
         line->body = body;
         line->end = end;
+        line->first_block = BLOCK_MAX;
         line->label = NULL;
         label_end = body;
         if (body < end && isdigit((unsigned char)source[body])) {
@@ -3752,16 +3638,18 @@ static void walk_at(Position at, int run)
 {
     Parser p;
     while (at.line < line_count && !error_message && !stopped && !returning) {
-        unsigned type;
         int scope = line_scope[at.line];
         CkbStringTemp *mark;
-        for (type = 0; type < record_count; ++type) {
-            if (at.line >= records[type].line && at.line <= records[type].end) {
-                at = next_line(records[type].end);
-                break;
+        if (record_count && at.line <= max_record_end) {
+            unsigned type;
+            for (type = 0; type < record_count; ++type) {
+                if (at.line >= records[type].line && at.line <= records[type].end) {
+                    at = next_line(records[type].end);
+                    break;
+                }
             }
+            if (type < record_count) continue;
         }
-        if (type < record_count) continue;
         if (scope >= 0 && at.line == procedures[scope].line) {
             at = next_line(run && current_scope != scope ? procedures[scope].end : at.line);
             continue;
@@ -3773,7 +3661,7 @@ static void walk_at(Position at, int run)
         if (run && ckb_serial_open_count) ckb_serial_poll();
         if (p.token != ':') statement(&p, run, 0);
         ckb_string_release(mark);
-        if (!p.token) array_directive(&p);
+        if (checking && !p.token) array_directive(&p);
         if (run && error_message && !stopped && !handling_error && error_handler[current_scope + 1] < line_count) {
             unsigned handler = error_handler[current_scope + 1];
             Parser rest = p;
@@ -3804,134 +3692,6 @@ static void walk_at(Position at, int run)
         error_message = "Block without matching terminator";
     }
 }
-
-/* The next module owns its own declarations. Transfer storage by COMMON
- * position, with the old TYPE layouts kept separate from the new type IDs. */
-typedef struct {
-    double number;
-    char *text;
-    void *elements;
-    Bounds *bounds;
-    unsigned width, cells, dimensions;
-    int array;
-    char kind;
-} CommonValue;
-
-typedef struct {
-    RecordField *fields;
-    unsigned size;
-} CommonType;
-
-static void free_common(CommonValue *saved, unsigned count, CommonType *types)
-{
-    unsigned i;
-    for (i = 0; i < count; ++i) {
-        CommonValue *v = &saved[i];
-        if (v->array && v->kind == '$') {
-            unsigned cell;
-            for (cell = 0; cell < v->cells; ++cell) free(((char **)v->elements)[cell]);
-        }
-        free(v->elements);
-        free(v->bounds);
-        free(v->text);
-    }
-    free(saved);
-    for (i = 0; i < RECORD_MAX; ++i) {
-        RecordField *field = types[i].fields;
-        while (field) {
-            RecordField *next = field->next;
-            free(field);
-            field = next;
-        }
-        types[i].fields = NULL;
-    }
-}
-
-static void save_common(CommonValue *saved, CommonType *types)
-{
-    unsigned i;
-    for (i = 0; i < common_count; ++i) {
-        Variable *v = &variables[common_ids[i]];
-        CommonValue *item = &saved[i];
-        item->kind = v->kind;
-        item->width = v->fixed_width;
-        item->array = v->array;
-        item->number = v->number;
-        item->text = v->text;
-        item->elements = v->elements;
-        item->bounds = v->bounds;
-        item->cells = v->cells;
-        item->dimensions = v->dimensions;
-        v->text = NULL;
-        v->elements = NULL;
-        v->bounds = NULL;
-        v->cells = v->dimensions = 0;
-    }
-    for (i = 0; i < record_count; ++i) {
-        types[i].fields = records[i].fields;
-        types[i].size = records[i].size;
-        records[i].fields = NULL;
-    }
-}
-
-static int common_kind_matches(char old_kind, char new_kind, const CommonType *types)
-{
-    const RecordType *new_type = record_type(new_kind);
-    unsigned old_id = (unsigned char)old_kind;
-    const RecordField *a, *b;
-    if (!old_id || old_id > RECORD_MAX) return old_kind == new_kind;
-    if (!new_type || types[old_id - 1].size != new_type->size) return 0;
-    a = types[old_id - 1].fields;
-    b = new_type->fields;
-    for (; a && b; a = a->next, b = b->next) {
-        if (a->offset != b->offset || a->width != b->width ||
-            !common_kind_matches(a->kind, b->kind, types)) return 0;
-    }
-    return !a && !b;
-}
-
-static void restore_common(Parser *p, CommonValue *saved, const CommonType *types,
-                           Variable *v)
-{
-    if (v->array != saved->array || v->fixed_width != saved->width ||
-        !common_kind_matches(saved->kind, v->kind, types)) {
-        fail(p, "Type mismatch");
-        return;
-    }
-    v->number = saved->number;
-    v->text = saved->text;
-    v->bounds = saved->bounds;
-    v->elements = saved->elements;
-    v->cells = saved->cells;
-    v->dimensions = saved->dimensions;
-    saved->text = NULL;
-    saved->bounds = NULL;
-    saved->elements = NULL;
-    saved->cells = 0;
-}
-
-/* Keep the operating system handle, cursor, and RANDOM buffer on CHAIN.
- * Detach FIELD links before recycling the module's variable table. */
-static void carry_fields(int restore)
-{
-    unsigned i;
-    for (i = 0; i < FILE_MAX; ++i) {
-        FieldBinding **link = &channels[i].fields;
-        while (*link) {
-            FieldBinding *binding = *link;
-            if (!restore) {
-                binding->common = binding->variable->common;
-                binding->variable = NULL;
-            } else if (binding->common && binding->common <= common_count)
-                binding->variable = &variables[common_ids[binding->common - 1]];
-            if ((restore && !binding->variable) || (!restore && !binding->common)) {
-                *link = binding->next;
-                free(binding);
-            } else link = &binding->next;
-        }
-    }
-}
-
 
 static void report_run_error(CkbRunResult *report, const char *path,
                              const char *message, int in_editor,
@@ -3989,6 +3749,9 @@ static int execute_program(const char *path, int mbf, const char __far *text,
         random_state = 0x50000UL;
         returning = 0;
         line_count = variable_count = block_count = block_depth = for_depth = call_depth = 0;
+        var_hash_reset();
+        record_count = max_record_end = 0;
+        local_pool_top = copy_pool_top = 0;
         common_count = 0;
         screen_column = printer_column = data_count = data_index = data_offset = 0;
         stopped = 0;
@@ -4082,6 +3845,11 @@ int ckb_run(const char *path, int mbf)
 }
 
 #if defined(__WATCOMC__) || defined(_MSDOS)
+void ckb_set_debug_active(const int *flag)
+{
+    debug_active_flag = flag;
+}
+
 int ckb_run_source(const char *path, const char __far *text, unsigned length,
                    CkbRunResult *report, CkbRunPause pause, CkbRunBreak should_break,
                    void *context)

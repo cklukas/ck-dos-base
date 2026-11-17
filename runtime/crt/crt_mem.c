@@ -126,9 +126,26 @@ void free(void *ptr) {
 
 void *memset(void *dst, int val, unsigned int count) {
     unsigned char *p = (unsigned char *)dst;
-    unsigned int i;
-    for (i = 0; i < count; ++i) {
-        p[i] = (unsigned char)val;
+    unsigned char b = (unsigned char)val;
+    if (count >= 4u) {
+        unsigned int w = (unsigned int)b | ((unsigned int)b << 8);
+        unsigned int words;
+        if ((unsigned int)p & 1u) {
+            *p++ = b;
+            --count;
+        }
+        words = count >> 1;
+        while (words--) {
+            *(unsigned int *)p = w;
+            p += 2;
+        }
+        if (count & 1u) {
+            *p = b;
+        }
+        return dst;
+    }
+    while (count--) {
+        *p++ = b;
     }
     return dst;
 }
@@ -150,9 +167,14 @@ void *calloc(unsigned int count, unsigned int size) {
 void *memcpy(void *dst, const void *src, unsigned int count) {
     unsigned char *d = (unsigned char *)dst;
     const unsigned char *s = (const unsigned char *)src;
-    unsigned int i;
-    for (i = 0; i < count; ++i) {
-        d[i] = s[i];
+    unsigned int words = count >> 1;
+    while (words--) {
+        *(unsigned int *)d = *(const unsigned int *)s;
+        d += 2;
+        s += 2;
+    }
+    if (count & 1u) {
+        *d = *s;
     }
     return dst;
 }

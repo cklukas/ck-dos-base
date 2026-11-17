@@ -3,6 +3,17 @@
 _DATA   SEGMENT WORD PUBLIC 'DATA'
         EXTRN   __psp:WORD
         EXTRN   __stack_bottom:WORD
+        EXTRN   ___ck_has_x87:WORD
+        EXTRN   ___ck_x87_dadd:DWORD
+        EXTRN   ___ck_x87_dsub:DWORD
+        EXTRN   ___ck_x87_dmul:DWORD
+        EXTRN   ___ck_x87_ddiv:DWORD
+        EXTRN   ___ck_x87_dcmp:DWORD
+        EXTRN   ___ck_x87_ltod:DWORD
+        EXTRN   ___ck_x87_ultod:DWORD
+        EXTRN   ___ck_x87_dtol:DWORD
+        EXTRN   ___ck_x87_dtos:DWORD
+        EXTRN   ___ck_x87_stod:DWORD
 _DATA   ENDS
 
 DGROUP  GROUP   _DATA
@@ -41,6 +52,11 @@ CRT_FMEM_TEXT SEGMENT BYTE PUBLIC 'CODE'
         PUBLIC  _stackavail
         PUBLIC  __dos_raw_find
         PUBLIC  __dos_raw_exec
+        PUBLIC  __x87_init
+        PUBLIC  ___x87_sqrt
+        PUBLIC  ___x87_sin
+        PUBLIC  ___x87_cos
+        PUBLIC  ___x87_atan
 
 ; 256-entry 4-byte software interrupt dispatch table (genuine 0xCD <imm8>; RETF; NOP)
 INT_ROW MACRO   base
@@ -825,6 +841,307 @@ dre_done:
         pop     bp
         ret
 __dos_raw_exec ENDP
+
+; One-time x87 FPU probe and IEEE-754 53-bit double-precision setup (027Fh).
+; Safe across 8086, 186, 286, 386SX/DX, 486SX/DX, Pentium+, and QEMU.
+x87_ud_isr PROC FAR
+        push    bp
+        mov     bp, sp
+        mov     WORD PTR [bp+2], OFFSET x87_after_386
+        mov     bx, 1
+        pop     bp
+        iret
+x87_ud_isr ENDP
+
+__x87_init PROC FAR
+        push    bp
+        mov     bp, sp
+        sub     sp, 4
+        push    bx
+        push    cx
+        push    dx
+        push    es
+        ; 1. Reject 8086 without raising #UD: PUSH SP pushes decremented SP on 8086
+        mov     ax, sp
+        push    sp
+        pop     bx
+        cmp     ax, bx
+        je      x87_is_186
+        jmp     x87_absent
+x87_is_186:
+        ; 2. Guard 386 probe with temporary INT 06h (#UD) handler at 0000:0018h
+        xor     ax, ax
+        mov     es, ax
+        pushf
+        cli
+        mov     cx, es:[18h]
+        mov     dx, es:[1Ah]
+        mov     WORD PTR es:[18h], OFFSET x87_ud_isr
+        mov     es:[1Ah], cs
+        xor     bx, bx
+        DB      0Fh, 01h, 0E0h          ; smsw ax (#UD on 186 / i386-real)
+        DB      66h, 89h, 0C0h          ; mov eax, eax (#UD on 286 / 186 / i386-real)
+x87_after_386:
+        mov     es:[18h], cx
+        mov     es:[1Ah], dx
+        popf
+        test    bx, bx
+        jnz     x87_no_fpu_near
+        ; 3. Check CR0.EM (bit 2) and CR0.TS (bit 3)
+        test    ax, 000Ch
+        jnz     x87_no_fpu_near
+        ; 4. Probe physical x87 via FNINIT + FNSTSW AX + FNSTCW [bp-2]
+        DB      0DBh, 0E3h              ; fninit
+        mov     ax, 5A5Ah
+        DB      0DFh, 0E0h              ; fnstsw ax
+        cmp     al, 0
+        jne     x87_no_fpu_near
+        mov     WORD PTR [bp-2], 5A5Ah
+        DB      0D9h, 7Eh, 0FEh         ; fnstcw word ptr [bp-2]
+        mov     ax, [bp-2]
+        and     ax, 103Fh
+        cmp     ax, 003Fh
+        je      x87_present
+x87_no_fpu_near:
+        jmp     SHORT x87_absent
+x87_present:
+        ; 5. Set CW = 027Fh (53-bit IEEE-754 double, nearest-even, all masked)
+        mov     WORD PTR [bp-2], 027Fh
+        DB      0D9h, 6Eh, 0FEh         ; fldcw word ptr [bp-2]
+        mov     ax, cs
+        mov     WORD PTR [___ck_x87_dadd+0], OFFSET __x87_dadd
+        mov     WORD PTR [___ck_x87_dadd+2], ax
+        mov     WORD PTR [___ck_x87_dsub+0], OFFSET __x87_dsub
+        mov     WORD PTR [___ck_x87_dsub+2], ax
+        mov     WORD PTR [___ck_x87_dmul+0], OFFSET __x87_dmul
+        mov     WORD PTR [___ck_x87_dmul+2], ax
+        mov     WORD PTR [___ck_x87_ddiv+0], OFFSET __x87_ddiv
+        mov     WORD PTR [___ck_x87_ddiv+2], ax
+        mov     WORD PTR [___ck_x87_dcmp+0], OFFSET __x87_dcmp
+        mov     WORD PTR [___ck_x87_dcmp+2], ax
+        mov     WORD PTR [___ck_x87_ltod+0], OFFSET __x87_ltod
+        mov     WORD PTR [___ck_x87_ltod+2], ax
+        mov     WORD PTR [___ck_x87_ultod+0], OFFSET __x87_ultod
+        mov     WORD PTR [___ck_x87_ultod+2], ax
+        mov     WORD PTR [___ck_x87_dtol+0], OFFSET __x87_dtol
+        mov     WORD PTR [___ck_x87_dtol+2], ax
+        mov     WORD PTR [___ck_x87_dtos+0], OFFSET __x87_dtos
+        mov     WORD PTR [___ck_x87_dtos+2], ax
+        mov     WORD PTR [___ck_x87_stod+0], OFFSET __x87_stod
+        mov     WORD PTR [___ck_x87_stod+2], ax
+        mov     WORD PTR [___ck_has_x87], 1
+x87_absent:
+        pop     es
+        pop     dx
+        pop     cx
+        pop     bx
+        mov     sp, bp
+        pop     bp
+        ret
+__x87_init ENDP
+
+__x87_dadd PROC FAR
+        push    bp
+        mov     bp, sp
+        mov     bx, [bp+8]
+        DB      0DDh, 07h               ; fld qword ptr [bx]
+        mov     bx, [bp+10]
+        DB      0DCh, 07h               ; fadd qword ptr [bx]
+        mov     bx, [bp+6]
+        DB      0DDh, 1Fh               ; fstp qword ptr [bx]
+        pop     bp
+        ret
+__x87_dadd ENDP
+
+__x87_dsub PROC FAR
+        push    bp
+        mov     bp, sp
+        mov     bx, [bp+8]
+        DB      0DDh, 07h               ; fld qword ptr [bx]
+        mov     bx, [bp+10]
+        DB      0DCh, 27h               ; fsub qword ptr [bx]
+        mov     bx, [bp+6]
+        DB      0DDh, 1Fh               ; fstp qword ptr [bx]
+        pop     bp
+        ret
+__x87_dsub ENDP
+
+__x87_dmul PROC FAR
+        push    bp
+        mov     bp, sp
+        mov     bx, [bp+8]
+        DB      0DDh, 07h               ; fld qword ptr [bx]
+        mov     bx, [bp+10]
+        DB      0DCh, 0Fh               ; fmul qword ptr [bx]
+        mov     bx, [bp+6]
+        DB      0DDh, 1Fh               ; fstp qword ptr [bx]
+        pop     bp
+        ret
+__x87_dmul ENDP
+
+__x87_ddiv PROC FAR
+        push    bp
+        mov     bp, sp
+        mov     bx, [bp+8]
+        DB      0DDh, 07h               ; fld qword ptr [bx]
+        mov     bx, [bp+10]
+        DB      0DCh, 37h               ; fdiv qword ptr [bx]
+        mov     bx, [bp+6]
+        DB      0DDh, 1Fh               ; fstp qword ptr [bx]
+        pop     bp
+        ret
+__x87_ddiv ENDP
+
+__x87_dcmp PROC FAR
+        push    bp
+        mov     bp, sp
+        mov     bx, [bp+6]
+        DB      0DDh, 07h               ; fld qword ptr [bx]
+        mov     bx, [bp+8]
+        DB      0DCh, 1Fh               ; fcomp qword ptr [bx]
+        DB      0DFh, 0E0h              ; fnstsw ax
+        and     ah, 45h
+        jz      xdcmp_gt
+        cmp     ah, 01h
+        je      xdcmp_lt
+        cmp     ah, 40h
+        je      xdcmp_eq
+        mov     ax, 2
+        pop     bp
+        ret
+xdcmp_gt:
+        mov     ax, 1
+        pop     bp
+        ret
+xdcmp_lt:
+        mov     ax, -1
+        pop     bp
+        ret
+xdcmp_eq:
+        xor     ax, ax
+        pop     bp
+        ret
+__x87_dcmp ENDP
+
+__x87_ltod PROC FAR
+        push    bp
+        mov     bp, sp
+        DB      0DBh, 46h, 08h          ; fild dword ptr [bp+8]
+        mov     bx, [bp+6]
+        DB      0DDh, 1Fh               ; fstp qword ptr [bx]
+        pop     bp
+        ret
+__x87_ltod ENDP
+
+__x87_ultod PROC FAR
+        push    bp
+        mov     bp, sp
+        sub     sp, 8
+        mov     ax, [bp+8]
+        mov     [bp-8], ax
+        mov     ax, [bp+10]
+        mov     [bp-6], ax
+        xor     ax, ax
+        mov     [bp-4], ax
+        mov     [bp-2], ax
+        DB      0DFh, 6Eh, 0F8h         ; fild qword ptr [bp-8]
+        mov     bx, [bp+6]
+        DB      0DDh, 1Fh               ; fstp qword ptr [bx]
+        mov     sp, bp
+        pop     bp
+        ret
+__x87_ultod ENDP
+
+__x87_dtol PROC FAR
+        push    bp
+        mov     bp, sp
+        sub     sp, 8
+        mov     WORD PTR [bp-6], 0E7Fh
+        mov     WORD PTR [bp-8], 027Fh
+        DB      0D9h, 6Eh, 0FAh         ; fldcw word ptr [bp-6] (chop)
+        mov     bx, [bp+6]
+        DB      0DDh, 07h               ; fld qword ptr [bx]
+        DB      0DBh, 5Eh, 0FCh         ; fistp dword ptr [bp-4]
+        DB      0D9h, 6Eh, 0F8h         ; fldcw word ptr [bp-8] (nearest)
+        mov     ax, [bp-4]
+        mov     dx, [bp-2]
+        mov     sp, bp
+        pop     bp
+        ret
+__x87_dtol ENDP
+
+__x87_dtos PROC FAR
+        push    bp
+        mov     bp, sp
+        sub     sp, 4
+        mov     bx, [bp+6]
+        DB      0DDh, 07h               ; fld qword ptr [bx]
+        DB      0D9h, 5Eh, 0FCh         ; fstp dword ptr [bp-4]
+        mov     ax, [bp-4]
+        mov     dx, [bp-2]
+        mov     sp, bp
+        pop     bp
+        ret
+__x87_dtos ENDP
+
+__x87_stod PROC FAR
+        push    bp
+        mov     bp, sp
+        DB      0D9h, 46h, 08h          ; fld dword ptr [bp+8]
+        mov     bx, [bp+6]
+        DB      0DDh, 1Fh               ; fstp qword ptr [bx]
+        pop     bp
+        ret
+__x87_stod ENDP
+
+___x87_sqrt PROC FAR
+        push    bp
+        mov     bp, sp
+        mov     bx, [bp+8]
+        DB      0DDh, 07h               ; fld qword ptr [bx]
+        DB      0D9h, 0FAh              ; fsqrt
+        mov     bx, [bp+6]
+        DB      0DDh, 1Fh               ; fstp qword ptr [bx]
+        pop     bp
+        ret
+___x87_sqrt ENDP
+
+___x87_sin PROC FAR
+        push    bp
+        mov     bp, sp
+        mov     bx, [bp+8]
+        DB      0DDh, 07h               ; fld qword ptr [bx]
+        DB      0D9h, 0FEh              ; fsin
+        mov     bx, [bp+6]
+        DB      0DDh, 1Fh               ; fstp qword ptr [bx]
+        pop     bp
+        ret
+___x87_sin ENDP
+
+___x87_cos PROC FAR
+        push    bp
+        mov     bp, sp
+        mov     bx, [bp+8]
+        DB      0DDh, 07h               ; fld qword ptr [bx]
+        DB      0D9h, 0FFh              ; fcos
+        mov     bx, [bp+6]
+        DB      0DDh, 1Fh               ; fstp qword ptr [bx]
+        pop     bp
+        ret
+___x87_cos ENDP
+
+___x87_atan PROC FAR
+        push    bp
+        mov     bp, sp
+        mov     bx, [bp+8]
+        DB      0DDh, 07h               ; fld qword ptr [bx]
+        DB      0D9h, 0E8h              ; fld1
+        DB      0D9h, 0F3h              ; fpatan
+        mov     bx, [bp+6]
+        DB      0DDh, 1Fh               ; fstp qword ptr [bx]
+        pop     bp
+        ret
+___x87_atan ENDP
 
 CRT_FMEM_TEXT ENDS
         END

@@ -17,6 +17,18 @@ typedef uint32_t fp_u32;
 typedef int32_t  fp_i32;
 #endif
 
+int __ck_has_x87 = 0;
+void (*__ck_x87_dadd)(double *, const double *, const double *) = 0;
+void (*__ck_x87_dsub)(double *, const double *, const double *) = 0;
+void (*__ck_x87_dmul)(double *, const double *, const double *) = 0;
+void (*__ck_x87_ddiv)(double *, const double *, const double *) = 0;
+int  (*__ck_x87_dcmp)(const double *, const double *) = 0;
+void (*__ck_x87_ltod)(double *, fp_i32) = 0;
+void (*__ck_x87_ultod)(double *, fp_u32) = 0;
+fp_i32 (*__ck_x87_dtol)(const double *) = 0;
+fp_u32 (*__ck_x87_dtos)(const double *) = 0;
+void (*__ck_x87_stod)(double *, fp_u32) = 0;
+
 typedef struct {
     fp_u32 lo;
     fp_u32 hi;
@@ -333,31 +345,39 @@ static fp_u64 fp_add_core(fp_u64 ra, fp_u64 rb, int negate_b)
 
 void __dadd(double *out, const double *a, const double *b)
 {
+    if (__ck_has_x87) { __ck_x87_dadd(out, a, b); return; }
     fp_store(out, fp_add_core(fp_load(a), fp_load(b), 0));
 }
 
 void __dsub(double *out, const double *a, const double *b)
 {
+    if (__ck_has_x87) { __ck_x87_dsub(out, a, b); return; }
     fp_store(out, fp_add_core(fp_load(a), fp_load(b), 1));
 }
 
 void __dneg(double *out, const double *a)
 {
-    fp_u64 r = fp_load(a);
-    r.hi ^= (fp_u32)0x80000000UL;
-    fp_store(out, r);
+    const fp_u16 *src = (const fp_u16 *)a;
+    fp_u16 *dst = (fp_u16 *)out;
+    dst[0] = src[0];
+    dst[1] = src[1];
+    dst[2] = src[2];
+    dst[3] = src[3] ^ 0x8000U;
 }
 
 void __dmul(double *out, const double *a, const double *b)
 {
-    fp_u64 ra = fp_load(a);
-    fp_u64 rb = fp_load(b);
+    fp_u64 ra, rb;
     fp_unpacked ua, ub;
     int rsign;
     fp_u16 pa[4], pb[4], prod[8];
     int i, j;
     fp_u32 sticky;
     fp_u64 sig;
+
+    if (__ck_has_x87) { __ck_x87_dmul(out, a, b); return; }
+    ra = fp_load(a);
+    rb = fp_load(b);
 
     fp_unpack(ra, &ua);
     fp_unpack(rb, &ub);
@@ -415,11 +435,14 @@ void __dmul(double *out, const double *a, const double *b)
 
 void __ddiv(double *out, const double *a, const double *b)
 {
-    fp_u64 ra = fp_load(a);
-    fp_u64 rb = fp_load(b);
+    fp_u64 ra, rb;
     fp_unpacked ua, ub;
     int rsign, rexp, i;
     fp_u64 rem, den, q;
+
+    if (__ck_has_x87) { __ck_x87_ddiv(out, a, b); return; }
+    ra = fp_load(a);
+    rb = fp_load(b);
 
     fp_unpack(ra, &ua);
     fp_unpack(rb, &ub);
@@ -469,11 +492,15 @@ void __ddiv(double *out, const double *a, const double *b)
 
 int __dcmp(const double *a, const double *b)
 {
-    fp_u64 ra = fp_load(a);
-    fp_u64 rb = fp_load(b);
-    fp_u32 ma_hi = ra.hi & (fp_u32)0x7FFFFFFFUL;
-    fp_u32 mb_hi = rb.hi & (fp_u32)0x7FFFFFFFUL;
+    fp_u64 ra, rb;
+    fp_u32 ma_hi, mb_hi;
     int sa, sb, mag_cmp;
+
+    if (__ck_has_x87) return __ck_x87_dcmp(a, b);
+    ra = fp_load(a);
+    rb = fp_load(b);
+    ma_hi = ra.hi & (fp_u32)0x7FFFFFFFUL;
+    mb_hi = rb.hi & (fp_u32)0x7FFFFFFFUL;
 
     if ((ma_hi > (fp_u32)0x7FF00000UL) || (ma_hi == (fp_u32)0x7FF00000UL && ra.lo != 0)) return 2;
     if ((mb_hi > (fp_u32)0x7FF00000UL) || (mb_hi == (fp_u32)0x7FF00000UL && rb.lo != 0)) return 2;
@@ -493,22 +520,34 @@ int __dcmp(const double *a, const double *b)
 
 static void fp_from_u32(double *out, int sign, fp_u32 v)
 {
-    fp_u64 sig;
+    int exp = 31;
+    fp_u32 hi, lo;
     if (v == 0) {
-        fp_store(out, fp_make_zero(0));
+        fp_u16 *w = (fp_u16 *)out;
+        w[0] = 0; w[1] = 0; w[2] = 0; w[3] = 0;
         return;
     }
-    sig = u64_make(0, v);
-    fp_store(out, fp_pack_round(sign, 55, sig));
+    if ((v & (fp_u32)0xFFFF0000UL) == 0) { v <<= 16; exp -= 16; }
+    if ((v & (fp_u32)0xFF000000UL) == 0) { v <<= 8;  exp -= 8;  }
+    if ((v & (fp_u32)0xF0000000UL) == 0) { v <<= 4;  exp -= 4;  }
+    if ((v & (fp_u32)0xC0000000UL) == 0) { v <<= 2;  exp -= 2;  }
+    if ((v & (fp_u32)0x80000000UL) == 0) { v <<= 1;  exp -= 1;  }
+    hi = ((fp_u32)(sign ? 1 : 0) << 31) |
+         ((fp_u32)(exp + 1023) << 20) |
+         ((v >> 11) & (fp_u32)0x000FFFFFUL);
+    lo = v << 21;
+    fp_store(out, u64_make(hi, lo));
 }
 
 void __ultod(double *out, fp_u32 v)
 {
+    if (__ck_has_x87) { __ck_x87_ultod(out, v); return; }
     fp_from_u32(out, 0, v);
 }
 
 void __ltod(double *out, fp_i32 v)
 {
+    if (__ck_has_x87) { __ck_x87_ltod(out, v); return; }
     if (v < (fp_i32)0) {
         fp_from_u32(out, 1, (fp_u32)0 - (fp_u32)v);
     } else {
@@ -518,11 +557,13 @@ void __ltod(double *out, fp_i32 v)
 
 void __utod(double *out, unsigned int v)
 {
+    if (__ck_has_x87) { __ck_x87_ltod(out, (fp_i32)(fp_u32)v); return; }
     fp_from_u32(out, 0, (fp_u32)v);
 }
 
 void __itod(double *out, int v)
 {
+    if (__ck_has_x87) { __ck_x87_ltod(out, (fp_i32)v); return; }
     __ltod(out, (fp_i32)v);
 }
 
@@ -530,6 +571,12 @@ fp_u32 __dtoul(const double *a)
 {
     fp_unpacked u;
     fp_u64 shifted;
+    if (__ck_has_x87) {
+        const fp_u16 *w = (const fp_u16 *)a;
+        unsigned int w3 = w[3];
+        unsigned int bexp = (w3 >> 4) & 0x7FFU;
+        if ((w3 & 0x8000U) == 0 && bexp < 1054U) return (fp_u32)__ck_x87_dtol(a);
+    }
     fp_unpack(fp_load(a), &u);
     if (u.cls == FP_CLASS_ZERO || u.cls == FP_CLASS_NAN || u.exp < 0) return 0;
     if (u.cls == FP_CLASS_INF || u.exp >= 32) {
@@ -541,8 +588,18 @@ fp_u32 __dtoul(const double *a)
 
 fp_i32 __dtol(const double *a)
 {
+    const fp_u16 *w = (const fp_u16 *)a;
+    unsigned int w3 = w[3];
+    unsigned int bexp = (w3 >> 4) & 0x7FFU;
     fp_unpacked u;
     fp_u64 shifted;
+    if (__ck_has_x87 && bexp < 1054U) return __ck_x87_dtol(a);
+    if (bexp < 1023U) return 0;
+    if (bexp <= 1043U) {
+        fp_u32 hi_frac = (((fp_u32)(w3 & 0x000FU) << 16) | (fp_u32)w[2]) | (fp_u32)0x00100000UL;
+        fp_u32 mag = hi_frac >> (1043U - bexp);
+        return (w3 & 0x8000U) ? (fp_i32)((fp_u32)0 - mag) : (fp_i32)mag;
+    }
     fp_unpack(fp_load(a), &u);
     if (u.cls == FP_CLASS_ZERO || u.cls == FP_CLASS_NAN || u.exp < 0) return 0;
     if (u.sign) {
@@ -573,10 +630,14 @@ unsigned int __dtou(const double *a)
 
 fp_u32 __dtos(const double *a)
 {
-    fp_u64 raw = fp_load(a);
+    const fp_u16 *w = (const fp_u16 *)a;
+    fp_u64 raw;
     fp_unpacked u;
     fp_u32 sbit, fsig, r3;
     int exp, fbexp;
+
+    if (__ck_has_x87 && (w[3] & 0x7FF0U) != 0x7FF0U) return __ck_x87_dtos(a);
+    raw = fp_load(a);
 
     fp_unpack(raw, &u);
     sbit = u.sign ? (fp_u32)0x80000000UL : (fp_u32)0;
@@ -630,12 +691,19 @@ fp_u32 __dtos(const double *a)
 
 void __stod(double *out, fp_u32 fbits)
 {
-    int sign = (fbits >> 31) ? 1 : 0;
-    int fbexp = (int)((fbits >> 23) & (fp_u32)0xFFUL);
-    fp_u32 ffrac = fbits & (fp_u32)0x007FFFFFUL;
-    fp_u32 sbit = sign ? (fp_u32)0x80000000UL : (fp_u32)0;
+    int sign, fbexp;
+    fp_u32 ffrac, sbit;
     int exp, bexp;
     fp_u64 dfrac;
+
+    if (__ck_has_x87 && (fbits & (fp_u32)0x7F800000UL) != (fp_u32)0x7F800000UL) {
+        __ck_x87_stod(out, fbits);
+        return;
+    }
+    sign = (fbits >> 31) ? 1 : 0;
+    fbexp = (int)((fbits >> 23) & (fp_u32)0xFFUL);
+    ffrac = fbits & (fp_u32)0x007FFFFFUL;
+    sbit = sign ? (fp_u32)0x80000000UL : (fp_u32)0;
 
     if (fbexp == 0xFF) {
         if (ffrac == 0) {

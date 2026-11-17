@@ -114,7 +114,7 @@ int ckb_string_function(const char *name)
     };
     unsigned i;
     for (i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
-        if (strcmp(names[i], name) == 0) return (int)i + 1;
+        if (names[i][0] == name[0] && strcmp(names[i], name) == 0) return (int)i + 1;
     return 0;
 }
 

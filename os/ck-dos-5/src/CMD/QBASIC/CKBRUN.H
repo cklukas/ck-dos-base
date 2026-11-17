@@ -36,6 +36,7 @@ typedef struct {
 int ckb_run_source(const char *path, const char __far *text, unsigned length,
                    CkbRunResult *report, CkbRunPause pause, CkbRunBreak should_break,
                    void *context);
+void ckb_set_debug_active(const int *flag);
 void ckb_immediate(const char *command, unsigned output_column, CkbImmediateResult *result);
 void ckb_immediate_clear(void);
 #endif
