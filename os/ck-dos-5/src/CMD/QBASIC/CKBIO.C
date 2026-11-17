@@ -978,7 +978,7 @@ void environment_function(Parser *p, Value *value, unsigned depth, int run)
     else ckenv_at(index, bytes, (unsigned)length + 1);
 }
 
-#define BUILTIN_POOL_MAX 12U
+#define BUILTIN_POOL_MAX 3U
 static Value builtin_arg_pool[BUILTIN_POOL_MAX];
 static unsigned builtin_pool_top;
 

@@ -2095,8 +2095,8 @@ static int whole_array_argument(Parser *p, int run)
     return id;
 }
 
-#define LOCAL_VAR_POOL_MAX 32U
-#define COPY_VAL_POOL_MAX 16U
+#define LOCAL_VAR_POOL_MAX 12U
+#define COPY_VAL_POOL_MAX 4U
 
 static Variable local_var_pool[LOCAL_VAR_POOL_MAX];
 static unsigned local_pool_top;
