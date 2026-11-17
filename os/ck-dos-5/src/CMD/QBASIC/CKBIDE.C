@@ -28,6 +28,8 @@ extern void __far ui_write(unsigned, unsigned, const char *);
 extern void __far ui_menu(const unsigned char *);
 extern void __far ui_cursor(unsigned);
 extern unsigned long __far ui_event(void);
+extern void __far ui_begin_frame(void);
+extern void __far ui_end_frame(void);
 #ifdef __WATCOMC__
 #pragma aux ui_init "CKBIDE_INIT" parm [ax] modify exact []
 #pragma aux ui_done "CKBIDE_DONE" modify exact []
@@ -36,11 +38,13 @@ extern unsigned long __far ui_event(void);
 #pragma aux ui_menu "CKBIDE_MENU" parm [si] modify exact []
 #pragma aux ui_cursor "CKBIDE_CURSOR" parm [dx] modify exact []
 #pragma aux ui_event "CKBIDE_EVENT" value [dx ax] modify exact [dx ax]
+#pragma aux ui_begin_frame "CKBIDE_BEGIN_FRAME" modify exact []
+#pragma aux ui_end_frame "CKBIDE_END_FRAME" modify exact []
 #endif
 
 #define SOURCE_LIMIT 60000U
 #define PATH_SIZE 128
-#define SCREEN_SAVE_PARAGRAPHS 600 /* DOSUI_SAVE_PARAGRAPHS */
+#define SCREEN_SAVE_PARAGRAPHS 1100 /* DOSUI_SAVE_PARAGRAPHS */
 #define VIEW_HEIGHT 18
 #define SPLIT_HEIGHT 8
 #define VIEW_WIDTH 78
@@ -93,6 +97,9 @@ extern unsigned long __far ui_event(void);
 enum run_mode { RUN_NORMAL, RUN_STEP, RUN_PROCEDURE_STEP };
 enum debug_command { DEBUG_STEP, DEBUG_PROCEDURE_STEP, DEBUG_TRACE,
                      DEBUG_TOGGLE, DEBUG_CLEAR, DEBUG_NEXT, DEBUG_CANCEL };
+enum menu_id { MENU_NONE = -1, MENU_ID_FILE = 0, MENU_ID_EDIT, MENU_ID_VIEW,
+               MENU_ID_SEARCH, MENU_ID_RUN, MENU_ID_DEBUG, MENU_ID_OPTIONS,
+               MENU_ID_HELP, MENU_ID_COUNT };
 
 enum view_focus { TOP_VIEW, BOTTOM_VIEW, IMMEDIATE_VIEW };
 
@@ -126,9 +133,12 @@ struct workspace {
     int dirty, display_dirty, split;
     enum view_focus focus, source_focus;
     char path[PATH_SIZE];
+    char help_path[PATH_SIZE];
     char error[64];
     char find_pattern[FIND_LIMIT + 1], change_text[FIND_LIMIT + 1];
     unsigned find_flags;
+    unsigned text_gen, cached_last_gen, cached_last, drawn_thumb_row;
+    int cached_last_proc, syntax_checking, next_menu;
 };
 
 static void fill(unsigned row, unsigned col, unsigned ch, unsigned attr, unsigned count)
@@ -362,6 +372,7 @@ static void toggle_split(struct workspace *w)
 
 static void recenter(struct workspace *w)
 {
+    ++w->text_gen;
     w->breakpoint_count = 0;
     w->procedure_count = ckb_proc_index(w->text, w->length, w->procedures,
                                          PROCEDURE_LIMIT);
@@ -495,10 +506,35 @@ static void pane_gutter(unsigned row, unsigned attr)
     fill(row, 79, VERTICAL, attr, 1);
 }
 
-static void draw_source(const struct workspace *w, unsigned header,
+static unsigned view_last_line_index(struct workspace *w)
+{
+    unsigned i, last = 0;
+    if (w->cached_last_gen == w->text_gen && w->cached_last_proc == w->procedure)
+        return w->cached_last;
+    for (i = view_start(w); i != NO_MARK; i = view_next(w, i)) ++last;
+    if (w->procedure < 0 && last) --last;
+    w->cached_last_gen = w->text_gen;
+    w->cached_last_proc = w->procedure;
+    w->cached_last = last;
+    return last;
+}
+
+static unsigned compute_thumb_row(struct workspace *w, unsigned header, unsigned height)
+{
+    unsigned last = view_last_line_index(w);
+    unsigned row = header + 2;
+    if (last) {
+        unsigned cur = w->error_width ? w->error_scroll_line : w->line;
+        if (cur > last) cur = last;
+        row += (unsigned)((height - 3UL) * cur / last);
+    }
+    return row;
+}
+
+static void draw_source(struct workspace *w, unsigned header,
                         unsigned height, int active)
 {
-    unsigned row, i, bottom = header + height, last = 0, at = w->top;
+    unsigned row, bottom = header + height, at = w->top;
     unsigned attr = w->display.text_attribute;
     int bars = active && w->display.scroll_bars;
     char title[76], name[PROCEDURE_NAME_LIMIT + 1];
@@ -524,16 +560,14 @@ static void draw_source(const struct workspace *w, unsigned header,
         else fill(row, 79, VERTICAL, attr, 1);
     }
     if (bars) {
-        for (i = view_start(w); i != NO_MARK; i = view_next(w, i)) ++last;
-        if (w->procedure < 0 && last) --last;
-        row = header + 2;
-        if (last) row += (unsigned)((height - 3UL) *
-                                    (w->error_width ? w->error_scroll_line : w->line) / last);
+        unsigned hthumb = 2 + (w->left >= 178UL ? 75U : (unsigned)(w->left * 75UL / 178UL));
+        row = compute_thumb_row(w, header, height);
+        w->drawn_thumb_row = row;
         fill(row, 79, ' ', SELECTED, 1);
         pane_gutter(bottom + 1, attr);
         fill(bottom + 1, 1, 0x1b, GRAY, 1);
         fill(bottom + 1, 2, 0xb0, GRAY, 76);
-        fill(bottom + 1, 2, ' ', SELECTED, 1);
+        fill(bottom + 1, hthumb, ' ', SELECTED, 1);
         fill(bottom + 1, 78, 0x1a, GRAY, 1);
     } else {
         pane_gutter(bottom + 1, attr);
@@ -546,6 +580,7 @@ static void draw_workspace(struct workspace *w)
 {
     unsigned attr = w->display.text_attribute;
     unsigned i;
+    ui_begin_frame();
     fill(0, 0, ' ', GRAY, 80);
     put(0, 2, GRAY, "File  Edit  View  Search  Run  Debug  Options");
     put(0, 74, GRAY, "Help");
@@ -699,10 +734,143 @@ static int save_source(struct workspace *w, const char *path)
     return 1;
 }
 
-enum file_command { NEW, OPEN, SAVE, SAVE_AS, EXIT, NO_COMMAND };
-static const char *const commands[] = {"New", "Open...", "Save", "Save As...", "Exit"};
-static const unsigned command_rows[] = {2, 3, 4, 5, 9};
-static const unsigned accelerators[] = {0, 0, 0, 5, 1};
+static void search_separator(unsigned row, unsigned left, unsigned right);
+static void show_help(struct workspace *w, unsigned topic, int menu_pending);
+static void draw_dialog(const unsigned char *box, const char *title);
+static void display_frame(unsigned top, unsigned left, unsigned bottom, unsigned right);
+
+static int menu_bar_hit(unsigned col)
+{
+    if (col >= 1 && col <= 7) return MENU_ID_FILE;
+    if (col >= 8 && col <= 13) return MENU_ID_EDIT;
+    if (col >= 14 && col <= 19) return MENU_ID_VIEW;
+    if (col >= 20 && col <= 27) return MENU_ID_SEARCH;
+    if (col >= 28 && col <= 32) return MENU_ID_RUN;
+    if (col >= 33 && col <= 38) return MENU_ID_DEBUG;
+    if (col >= 39 && col <= 47) return MENU_ID_OPTIONS;
+    if (col >= 73 && col <= 78) return MENU_ID_HELP;
+    return MENU_NONE;
+}
+
+static int menu_switch_event(struct workspace *w, int current, unsigned long event)
+{
+    unsigned key = (unsigned)event;
+    if (event & MOUSE_EVENT) {
+        if ((key >> 8) == 0) {
+            int hit = menu_bar_hit(key & 255);
+            if (hit != MENU_NONE && hit != current) w->next_menu = hit;
+            return 1;
+        }
+        return 0;
+    }
+    if (key == KEY_LEFT) {
+        w->next_menu = (current + MENU_ID_COUNT - 1) % MENU_ID_COUNT;
+        return 1;
+    }
+    if (key == KEY_RIGHT || (unsigned char)key == '\t') {
+        w->next_menu = (current + 1) % MENU_ID_COUNT;
+        return 1;
+    }
+    return 0;
+}
+
+enum file_command { NEW, OPEN, SAVE, SAVE_AS, PRINT_FILE, EXIT, NO_COMMAND };
+static const char *const commands[] = {
+    "New", "Open...", "Save", "Save As...", "Print...", "Exit"
+};
+static const unsigned command_rows[] = {2, 3, 4, 5, 7, 9};
+static const unsigned accelerators[] = {0, 0, 0, 5, 0, 1};
+static const char *const file_status[] = {
+    "F1=Help \xb3 Removes currently loaded file from memory",
+    "F1=Help \xb3 Loads new file into memory",
+    "F1=Help \xb3 Saves current file",
+    "F1=Help \xb3 Saves current file with specified name",
+    "F1=Help \xb3 Prints specified BASIC text",
+    "F1=Help \xb3 Exits CK Basic and returns to DOS"
+};
+
+static void print_dialog(struct workspace *w)
+{
+    static const unsigned char box[] = {7, 20, 15, 58, GRAY, GRAY};
+    static const char *const choices[] = {
+        "Selected Text Only", "Current Window", "Entire Program"
+    };
+    static const char *const buttons[] = {"< OK >", "< Cancel >", "< Help >"};
+    static const unsigned bcols[] = {23, 33, 47};
+    unsigned first, sel_len = selection(w, &first);
+    unsigned choice = sel_len ? 0 : 2, focus = 0, i;
+    for (;;) {
+        unsigned long event;
+        unsigned key;
+        unsigned char ch;
+        draw_workspace(w);
+        put(0, 2, SELECTED, " File ");
+        fill(0, 3, 'F', 0x0f, 1);
+        draw_dialog(box, " Print ");
+        for (i = 0; i < 3; ++i) {
+            put(9 + i, 26, GRAY, choice == i ? "(\x07)" : "( )");
+            put(9 + i, 30, GRAY, choices[i]);
+        }
+        search_separator(13, 20, 58);
+        for (i = 0; i < 3; ++i) {
+            put(14, bcols[i], GRAY, buttons[i]);
+            if (focus == i + 1 || (!focus && !i)) {
+                fill(14, bcols[i], '<', 0x7f, 1);
+                fill(14, bcols[i] + strlen(buttons[i]) - 1, '>', 0x7f, 1);
+            }
+        }
+        fill(24, 0, ' ', STATUS, 80);
+        put(24, 1, STATUS, "F1=Help   Enter=Execute   Esc=Cancel   Tab=Next Field   Arrow=Next Item");
+        ui_cursor(!focus ? POS(9 + choice, 27) : 0xffff);
+        event = ui_event();
+        key = (unsigned)event;
+        ch = (unsigned char)key;
+        if (event & MOUSE_EVENT) {
+            unsigned row = key >> 8, col = key & 255;
+            if (row >= 9 && row <= 11 && col >= 26 && col <= 50) {
+                choice = row - 9;
+                focus = 0;
+                continue;
+            }
+            if (row == 14) {
+                if (col >= 23 && col <= 28) { focus = 1; ch = '\r'; }
+                else if (col >= 33 && col <= 42) return;
+                else if (col >= 47 && col <= 54) { show_help(w, CKB_HELP_USING, 0); continue; }
+            }
+            if (ch != '\r') continue;
+        }
+        if (ch == 27 || (ch == '\r' && focus == 2)) return;
+        if (key == 0x3b00 || (ch == '\r' && focus == 3)) {
+            show_help(w, CKB_HELP_USING, 0);
+            continue;
+        }
+        if (ch == '\r') {
+            FILE *prn = fopen("PRN", "wb");
+            if (prn) {
+                if (choice == 0 && sel_len) {
+                    write_source_range(w, prn, first, first + sel_len);
+                    fputs("\r\n", prn);
+                } else if (choice == 1) {
+                    unsigned start = view_start(w);
+                    unsigned end = w->procedure < 0 ? w->length : w->procedures[w->procedure].end;
+                    write_source_range(w, prn, start, end);
+                    fputs("\r\n", prn);
+                } else {
+                    write_program(w, prn);
+                }
+                fputc('\f', prn);
+                fclose(prn);
+            }
+            return;
+        }
+        if (ch == '\t' || key == 0x0f00) focus = (focus + (key == 0x0f00 ? 3 : 1)) % 4;
+        else if (!focus && (key == KEY_UP || key == KEY_LEFT)) choice = (choice + 2) % 3;
+        else if (!focus && (key == KEY_DOWN || key == KEY_RIGHT)) choice = (choice + 1) % 3;
+        else if (tolower(ch) == 's') choice = 0;
+        else if (tolower(ch) == 'c') choice = 1;
+        else if (tolower(ch) == 'e') choice = 2;
+    }
+}
 
 static enum file_command file_menu(struct workspace *w)
 {
@@ -714,6 +882,8 @@ static enum file_command file_menu(struct workspace *w)
         put(0, 2, SELECTED, " File ");
         fill(0, 3, 'F', 0x0f, 1);
         ui_menu(box);
+        search_separator(6, 1, 18);
+        search_separator(8, 1, 18);
         for (i = 0; i < NO_COMMAND; ++i) {
             attr = selected == i ? SELECTED : GRAY;
             fill(command_rows[i], 2, ' ', attr, 16);
@@ -721,17 +891,21 @@ static enum file_command file_menu(struct workspace *w)
             fill(command_rows[i], 3 + accelerators[i], commands[i][accelerators[i]],
                  selected == i ? 0x0f : 0x7f, 1);
         }
-        workspace_status(w, "F1=Help \xb3 Removes currently loaded file from memory");
+        workspace_status(w, file_status[selected]);
         ui_cursor(0xffff);
         event = ui_event();
+        if (menu_switch_event(w, MENU_ID_FILE, event)) return NO_COMMAND;
         if (event & MOUSE_EVENT) {
             unsigned col = event & 255, row = (event >> 8) & 255;
-            if (col > 1 && col < 18)
+            if (col > 1 && col < 18) {
+                if (row == 6 || row == 8) continue;
                 for (i = 0; i < NO_COMMAND; ++i)
                     if (row == command_rows[i]) return (enum file_command)i;
+            }
             return NO_COMMAND;
         }
         switch ((unsigned)event) {
+        case 0x3b00: show_help(w, CKB_HELP_USING, 0); break;
         case KEY_UP: selected = (selected + NO_COMMAND - 1) % NO_COMMAND; break;
         case KEY_DOWN: selected = (selected + 1) % NO_COMMAND; break;
         case KEY_END: selected = EXIT; break;
@@ -744,6 +918,7 @@ static enum file_command file_menu(struct workspace *w)
             case 'o': return OPEN;
             case 's': return SAVE;
             case 'a': return SAVE_AS;
+            case 'p': return PRINT_FILE;
             case 'x': return EXIT;
             case 27: return NO_COMMAND;
             }
@@ -973,42 +1148,148 @@ static void options_display(struct workspace *w)
     }
 }
 
+static void help_path_dialog(struct workspace *w)
+{
+    static const unsigned char box[] = {7, 13, 15, 66, GRAY, GRAY};
+    static const char *const buttons[] = {"< OK >", "< Cancel >", "< Help >"};
+    static const unsigned cols[] = {20, 34, 50};
+    char path[PATH_SIZE];
+    unsigned caret, focus = 0, i;
+    int marked = 1;
+    strcpy(path, w->help_path);
+    caret = strlen(path);
+    for (;;) {
+        unsigned long event;
+        unsigned key, first, len;
+        unsigned char ch;
+        char clipped[47];
+        draw_workspace(w);
+        put(0, 39, SELECTED, " Options ");
+        fill(0, 40, 'O', 0x0f, 1);
+        draw_dialog(box, " Help Path ");
+        put(9, 16, GRAY, "Location (path) of QBASIC.HLP file:");
+        display_frame(10, 16, 12, 63);
+        first = caret >= 45 ? caret - 44 : 0;
+        len = strlen(path + first);
+        if (len > 45) len = 45;
+        memcpy(clipped, path + first, len);
+        clipped[len] = '\0';
+        put(11, 17, marked && !focus ? SELECTED : GRAY, clipped);
+        search_separator(13, 13, 66);
+        for (i = 0; i < 3; ++i) {
+            put(14, cols[i], GRAY, buttons[i]);
+            if (focus == i + 1 || (!focus && !i)) {
+                fill(14, cols[i], '<', 0x7f, 1);
+                fill(14, cols[i] + strlen(buttons[i]) - 1, '>', 0x7f, 1);
+            }
+        }
+        fill(24, 0, ' ', STATUS, 80);
+        put(24, 1, STATUS, "F1=Help   Enter=Execute   Esc=Cancel   Tab=Next Field   Arrow=Next Item");
+        ui_cursor(!focus ? POS(11, 17 + caret - first) : 0xffff);
+        event = ui_event();
+        key = (unsigned)event;
+        ch = (unsigned char)key;
+        if (event & MOUSE_EVENT) {
+            unsigned row = key >> 8, col = key & 255;
+            if (row == 11 && col >= 17 && col <= 62) {
+                unsigned lim = strlen(path);
+                focus = 0;
+                marked = 0;
+                caret = first + col - 17;
+                if (caret > lim) caret = lim;
+                continue;
+            }
+            if (row == 14) {
+                if (col >= 20 && col <= 25) { focus = 1; ch = '\r'; }
+                else if (col >= 34 && col <= 43) return;
+                else if (col >= 50 && col <= 57) { show_help(w, CKB_HELP_USING, 0); continue; }
+            }
+            if (ch != '\r') continue;
+        }
+        if (ch == 27 || (ch == '\r' && focus == 2)) return;
+        if (key == 0x3b00 || (ch == '\r' && focus == 3)) {
+            show_help(w, CKB_HELP_USING, 0);
+            continue;
+        }
+        if (ch == '\r') {
+            strcpy(w->help_path, path);
+            return;
+        }
+        if (ch == '\t' || key == 0x0f00) {
+            focus = (focus + (key == 0x0f00 ? 3 : 1)) % 4;
+        } else if (!focus) {
+            unsigned length = strlen(path);
+            if (key == KEY_LEFT) { if (caret) --caret; marked = 0; }
+            else if (key == KEY_RIGHT) { if (caret < length) ++caret; marked = 0; }
+            else if (key == KEY_HOME) { caret = 0; marked = 0; }
+            else if (key == KEY_END) { caret = length; marked = 0; }
+            else if (ch == '\b' || key == KEY_DELETE || (ch >= 32 && ch != 127)) {
+                if (marked) path[caret = length = 0] = '\0';
+                if (ch == '\b' && caret) {
+                    --caret;
+                    memmove(path + caret, path + caret + 1, length - caret);
+                } else if (key == KEY_DELETE && caret < length) {
+                    memmove(path + caret, path + caret + 1, length - caret);
+                } else if (ch >= 32 && ch != 127 && length + 1 < PATH_SIZE) {
+                    memmove(path + caret + 1, path + caret, length - caret + 1);
+                    path[caret++] = ch;
+                }
+                marked = 0;
+            }
+        }
+    }
+}
+
 static void options_menu(struct workspace *w)
 {
     static const unsigned char box[] = {1, 39, 5, 57, GRAY, GRAY};
     unsigned long event;
     unsigned key, i, selected = 0;
-    static const char *const items[] = {"Display...", "Help Path...", "\x07Syntax Checking"};
+    static const char *const items[] = {"Display...", "Help Path...", "Syntax Checking"};
     static const char *const status[] = {
         "F1=Help \xb3 Changes display attributes",
-        "F1=Help \xb3 Changes the help path",
-        "F1=Help \xb3 Checks BASIC syntax during editing"
+        "F1=Help \xb3 Changes search path for Help files",
+        "F1=Help \xb3 Turns editor's syntax checking on or off"
     };
-    static const unsigned accelerator[] = {0, 5, 2};
+    static const unsigned accelerator[] = {0, 5, 0};
     for (;;) {
         draw_workspace(w);
         put(0, 39, SELECTED, " Options ");
+        fill(0, 40, 'O', 0x0f, 1);
         ui_menu(box);
         for (i = 0; i < 3; ++i) {
             unsigned attr = selected == i ? SELECTED : GRAY;
             fill(2 + i, 40, ' ', attr, 17);
-            put(2 + i, i == 2 ? 40 : 41, attr, items[i]);
-            fill(2 + i, (i == 2 ? 40 : 41) + accelerator[i],
+            if (i == 2 && w->syntax_checking) fill(2 + i, 40, 0x07, attr, 1);
+            put(2 + i, 41, attr, items[i]);
+            fill(2 + i, 41 + accelerator[i],
                  items[i][accelerator[i]], selected == i ? 0x0f : 0x7f, 1);
         }
         workspace_status(w, status[selected]);
         ui_cursor(0xffff);
         event = ui_event();
+        if (menu_switch_event(w, MENU_ID_OPTIONS, event)) return;
         key = (unsigned)event;
         if (event & MOUSE_EVENT) {
-            if ((key >> 8) == 2 && (key & 255) > 39 && (key & 255) < 57)
-                options_display(w);
-            return;
+            unsigned row = key >> 8, col = key & 255;
+            if (row >= 2 && row <= 4 && col > 39 && col < 57) {
+                selected = row - 2;
+                key = '\r';
+            } else return;
         }
-        if (key == KEY_UP) selected = (selected + 2) % 3;
+        if (key == 0x3b00) show_help(w, CKB_HELP_USING, 0);
+        else if (key == KEY_UP) selected = (selected + 2) % 3;
         else if (key == KEY_DOWN) selected = (selected + 1) % 3;
-        else if ((unsigned char)key == 'd' || (unsigned char)key == 'D' || ((unsigned char)key == '\r' && !selected)) {
+        else if (key == KEY_HOME) selected = 0;
+        else if (key == KEY_END) selected = 2;
+        else if (tolower((unsigned char)key) == 'd' || ((unsigned char)key == '\r' && selected == 0)) {
             options_display(w);
+            return;
+        } else if (tolower((unsigned char)key) == 'p' || ((unsigned char)key == '\r' && selected == 1)) {
+            help_path_dialog(w);
+            return;
+        } else if (tolower((unsigned char)key) == 's' || ((unsigned char)key == '\r' && selected == 2)) {
+            w->syntax_checking = !w->syntax_checking;
             return;
         } else if ((unsigned char)key == 27 || key == KEY_ALT || key == KEY_ALT_O) return;
     }
@@ -1026,6 +1307,7 @@ struct find_dialog {
 static void search_header(void)
 {
     put(0, 20, SELECTED, " Search ");
+    fill(0, 21, 'S', 0x0f, 1);
 }
 
 static void search_message(struct workspace *w, int changed, unsigned scroll_row)
@@ -1256,6 +1538,7 @@ static void search_menu(struct workspace *w)
         workspace_status(w, status[selected]);
         ui_cursor(0xffff);
         event = ui_event();
+        if (menu_switch_event(w, MENU_ID_SEARCH, event)) return;
         key = (unsigned)event;
         ch = tolower((unsigned char)key);
         if (event & MOUSE_EVENT) {
@@ -1264,8 +1547,11 @@ static void search_menu(struct workspace *w)
             selected = row - 2;
             ch = '\r';
         }
-        if (key == KEY_UP) selected = (selected + 2) % 3;
+        if (key == 0x3b00) show_help(w, CKB_HELP_USING, 0);
+        else if (key == KEY_UP) selected = (selected + 2) % 3;
         else if (key == KEY_DOWN) selected = (selected + 1) % 3;
+        else if (key == KEY_HOME) selected = 0;
+        else if (key == KEY_END) selected = 2;
         else if (ch == 'f' || (ch == '\r' && !selected)) { find_dialog(w); return; }
         else if (ch == 'r' || key == KEY_F3 || (ch == '\r' && selected == 1)) { find_next(w); return; }
         else if (ch == 'c' || (ch == '\r' && selected == 2)) { change_dialog(w); return; }
@@ -1489,6 +1775,7 @@ static int replace(struct workspace *w, unsigned first, unsigned removed,
     }
     if (removed || length) {
         unsigned i, kept = 0;
+        ++w->text_gen;
         w->module_resume = edited_offset(w->module_resume, first, removed, length);
         for (i = 0; i < w->resume_count; ++i)
             w->resume[i] = edited_offset(w->resume[i], first, removed, length);
@@ -1696,6 +1983,7 @@ static void subs_dialog(struct workspace *w)
 static void restore_output(const struct workspace *w)
 {
     unsigned row;
+    ui_end_frame();
     if (w->output)
         _fmemcpy(MK_FP(0xb800, 0), w->output, 4000);
     else for (row = 0; row < 25; ++row) fill(row, 0, ' ', SELECTED, 80);
@@ -1881,6 +2169,7 @@ static enum debug_command debug_menu(struct workspace *w)
         unsigned key;
         draw_workspace(w);
         put(0, 33, SELECTED, " Debug ");
+        fill(0, 34, 'D', 0x0f, 1);
         ui_menu(box);
         search_separator(4, 32, 62);
         search_separator(6, 32, 62);
@@ -1896,15 +2185,19 @@ static enum debug_command debug_menu(struct workspace *w)
         workspace_status(w, status[selected]);
         ui_cursor(0xffff);
         event = ui_event();
+        if (!w->break_width && menu_switch_event(w, MENU_ID_DEBUG, event)) return DEBUG_CANCEL;
         key = (unsigned)event;
         if (event & MOUSE_EVENT) {
             unsigned row = key >> 8, col = key & 255;
-            if (col > 32 && col < 62)
+            if (col > 32 && col < 62) {
+                if (row == 4 || row == 6) continue;
                 for (i = 0; i < DEBUG_NEXT; ++i)
                     if (row == rows[i]) return (enum debug_command)i;
+            }
             return DEBUG_CANCEL;
         }
-        if (key == KEY_UP) selected = (selected + DEBUG_NEXT - 1) % DEBUG_NEXT;
+        if (key == 0x3b00 && !w->break_width) show_help(w, CKB_HELP_USING, 0);
+        else if (key == KEY_UP) selected = (selected + DEBUG_NEXT - 1) % DEBUG_NEXT;
         else if (key == KEY_DOWN) selected = (selected + 1) % DEBUG_NEXT;
         else if (key == KEY_HOME) selected = DEBUG_STEP;
         else if (key == KEY_END) selected = DEBUG_CLEAR;
@@ -2058,6 +2351,7 @@ static void run_menu(struct workspace *w)
         unsigned key;
         draw_workspace(w);
         put(0, 28, SELECTED, " Run ");
+        fill(0, 29, 'R', 0x0f, 1);
         ui_menu(box);
         for (i = 0; i < 3; ++i) {
             unsigned attr = i == selected ? SELECTED : GRAY;
@@ -2068,13 +2362,16 @@ static void run_menu(struct workspace *w)
         workspace_status(w, status[selected]);
         ui_cursor(0xffff);
         event = ui_event();
+        if (menu_switch_event(w, MENU_ID_RUN, event)) return;
         key = (unsigned)event;
         if (event & MOUSE_EVENT) {
             unsigned row = key >> 8, col = key & 255;
             if (row < 2 || row > 4 || col < 28 || col > 48) return;
+            selected = row - 2;
             key = '\r';
         }
-        if (key == KEY_UP) selected = (selected + 2) % 3;
+        if (key == 0x3b00) show_help(w, CKB_HELP_USING, 0);
+        else if (key == KEY_UP) selected = (selected + 2) % 3;
         else if (key == KEY_DOWN) selected = (selected + 1) % 3;
         else if (key == KEY_HOME) selected = 0;
         else if (key == KEY_END) selected = 2;
@@ -2082,6 +2379,12 @@ static void run_menu(struct workspace *w)
         else if (key == KEY_F5 || key == KEY_SHIFT_F5 || (unsigned char)key == '\r' ||
                  tolower((unsigned char)key) == 's' ||
                  tolower((unsigned char)key) == 'r' || tolower((unsigned char)key) == 'c') {
+            if (tolower((unsigned char)key) == 'r' ||
+                ((unsigned char)key == '\r' && selected == 1)) {
+                w->caret = view_start(w);
+                locate(w);
+                return;
+            }
             run_workspace(w, RUN_NORMAL);
             return;
         }
@@ -2107,6 +2410,7 @@ static void view_menu(struct workspace *w)
         unsigned key;
         draw_workspace(w);
         put(0, 14, SELECTED, " View ");
+        fill(0, 15, 'V', 0x0f, 1);
         ui_menu(box);
         for (i = 0; i < 3; ++i) {
             unsigned attr = i == selected ? SELECTED : GRAY;
@@ -2117,6 +2421,7 @@ static void view_menu(struct workspace *w)
         workspace_status(w, status[selected]);
         ui_cursor(0xffff);
         event = ui_event();
+        if (menu_switch_event(w, MENU_ID_VIEW, event)) return;
         key = (unsigned)event;
         if (event & MOUSE_EVENT) {
             unsigned row = key >> 8, col = key & 255;
@@ -2124,7 +2429,8 @@ static void view_menu(struct workspace *w)
             selected = row - 2;
             key = '\r';
         }
-        if (key == KEY_UP) selected = (selected + 2) % 3;
+        if (key == 0x3b00) show_help(w, CKB_HELP_USING, 0);
+        else if (key == KEY_UP) selected = (selected + 2) % 3;
         else if (key == KEY_DOWN) selected = (selected + 1) % 3;
         else if (key == KEY_HOME) selected = 0;
         else if (key == KEY_END) selected = 2;
@@ -2345,18 +2651,123 @@ static void change_dialog(struct workspace *w)
     }
 }
 
-enum edit_command { CUT, COPY_TEXT, PASTE, CLEAR };
+enum edit_command { CUT, COPY_TEXT, PASTE, CLEAR, NEW_SUB, NEW_FUNCTION, EDIT_COUNT };
 
 static int edit_enabled(const struct workspace *w, enum edit_command command)
 {
     unsigned first;
+    if (command >= NEW_SUB) return 1;
     return command == PASTE ? w->clip_length != 0 : selection(w, &first) != 0;
+}
+
+static void new_procedure_dialog(struct workspace *w, int is_function)
+{
+    static const unsigned char box[] = {7, 17, 15, 62, GRAY, GRAY};
+    static const char *const buttons[] = {"< OK >", "< Cancel >", "< Help >"};
+    static const unsigned cols[] = {21, 34, 49};
+    char name[PROCEDURE_NAME_LIMIT + 1];
+    unsigned caret = 0, focus = 0, i;
+    name[0] = '\0';
+    for (;;) {
+        unsigned long event;
+        unsigned key;
+        unsigned char ch;
+        draw_workspace(w);
+        put(0, 8, SELECTED, " Edit ");
+        fill(0, 9, 'E', 0x0f, 1);
+        draw_dialog(box, is_function ? " New FUNCTION " : " New SUB ");
+        put(10, 20, GRAY, "Name:");
+        display_frame(9, 26, 11, 59);
+        put(10, 27, GRAY, name);
+        search_separator(13, 17, 62);
+        for (i = 0; i < 3; ++i) {
+            put(14, cols[i], GRAY, buttons[i]);
+            if (focus == i + 1 || (!focus && !i)) {
+                fill(14, cols[i], '<', 0x7f, 1);
+                fill(14, cols[i] + strlen(buttons[i]) - 1, '>', 0x7f, 1);
+            }
+        }
+        fill(24, 0, ' ', STATUS, 80);
+        put(24, 1, STATUS, "F1=Help   Enter=Execute   Esc=Cancel   Tab=Next Field   Arrow=Next Item");
+        ui_cursor(!focus ? POS(10, 27 + caret) : 0xffff);
+        event = ui_event();
+        key = (unsigned)event;
+        ch = (unsigned char)key;
+        if (event & MOUSE_EVENT) {
+            unsigned row = key >> 8, col = key & 255;
+            if (row == 10 && col >= 27 && col <= 58) {
+                unsigned lim = strlen(name);
+                focus = 0;
+                caret = col - 27 < lim ? col - 27 : lim;
+                continue;
+            }
+            if (row == 14) {
+                if (col >= 21 && col <= 26) { focus = 1; ch = '\r'; }
+                else if (col >= 34 && col <= 43) return;
+                else if (col >= 49 && col <= 56) { show_help(w, CKB_HELP_USING, 0); continue; }
+            }
+            if (ch != '\r') continue;
+        }
+        if (ch == 27 || (ch == '\r' && focus == 2)) return;
+        if (key == 0x3b00 || (ch == '\r' && focus == 3)) {
+            show_help(w, CKB_HELP_USING, 0);
+            continue;
+        }
+        if (ch == '\r') {
+            char stub[128];
+            unsigned at = w->length, stub_len;
+            if (!isalpha((unsigned char)name[0])) {
+                run_error_dialog(w, "Must start with a letter");
+                continue;
+            }
+            sprintf(stub, "%s%s %s\n\nEND %s\n",
+                    (at && w->text[at - 1] != '\n') ? "\n\n" : (at ? "\n" : ""),
+                    is_function ? "FUNCTION" : "SUB", name,
+                    is_function ? "FUNCTION" : "SUB");
+            stub_len = strlen(stub);
+            if (replace(w, at, 0, stub, stub_len) && w->procedure_count) {
+                w->focus = w->source_focus;
+                open_source_view(w, (int)w->procedure_count - 1);
+                if (w->procedure >= 0) {
+                    unsigned body = view_next(w, w->procedures[w->procedure].start);
+                    if (body != NO_MARK) {
+                        w->caret = body;
+                        locate(w);
+                    }
+                }
+            }
+            return;
+        }
+        if (ch == '\t' || key == 0x0f00) {
+            focus = (focus + (key == 0x0f00 ? 3 : 1)) % 4;
+        } else if (!focus) {
+            unsigned length = strlen(name);
+            if (key == KEY_LEFT) { if (caret) --caret; }
+            else if (key == KEY_RIGHT) { if (caret < length) ++caret; }
+            else if (key == KEY_HOME) caret = 0;
+            else if (key == KEY_END) caret = length;
+            else if (ch == '\b' && caret) {
+                --caret;
+                memmove(name + caret, name + caret + 1, length - caret);
+            } else if (key == KEY_DELETE && caret < length) {
+                memmove(name + caret, name + caret + 1, length - caret);
+            } else if ((isalnum(ch) || ch == '.' || ch == '%' || ch == '&' ||
+                        ch == '!' || ch == '#' || ch == '$') && length < 31) {
+                memmove(name + caret + 1, name + caret, length - caret + 1);
+                name[caret++] = ch;
+            }
+        }
+    }
 }
 
 static void clipboard_command(struct workspace *w, enum edit_command command)
 {
     unsigned first, length;
     char __far *clipboard;
+    if (command == NEW_SUB || command == NEW_FUNCTION) {
+        new_procedure_dialog(w, command == NEW_FUNCTION);
+        return;
+    }
     if (!edit_enabled(w, command)) return;
     length = selection(w, &first);
     if (command == COPY_TEXT || command == CUT) {
@@ -2384,58 +2795,66 @@ static void edit_menu(struct workspace *w)
     static const unsigned char box[] = {1, 7, 9, 30, GRAY, GRAY};
     static const char *const items[] = {
         "Cut        Shift+Del", "Copy        Ctrl+Ins",
-        "Paste      Shift+Ins", "Clear            Del"
+        "Paste      Shift+Ins", "Clear            Del",
+        "New SUB...", "New FUNCTION..."
     };
     static const char *const status[] = {
         "F1=Help \xb3 Deletes selected text and copies it to buffer",
         "F1=Help \xb3 Copies selected text to buffer",
         "F1=Help \xb3 Inserts text from buffer",
-        "F1=Help \xb3 Deletes selected text"
+        "F1=Help \xb3 Deletes selected text",
+        "F1=Help \xb3 Opens a window for a new SUB program",
+        "F1=Help \xb3 Opens a window for a new FUNCTION procedure"
     };
-    static const unsigned accelerator[] = {2, 0, 0, 2};
+    static const unsigned rows[] = {2, 3, 4, 5, 7, 8};
+    static const unsigned accelerator[] = {2, 0, 0, 2, 4, 4};
     unsigned selected = 0, i, attr, key;
     unsigned long event;
     for (;;) {
         draw_workspace(w);
         put(0, 8, SELECTED, " Edit ");
+        fill(0, 9, 'E', 0x0f, 1);
         ui_menu(box);
-        for (i = 0; i <= CLEAR; ++i) {
+        search_separator(6, 7, 30);
+        for (i = 0; i < EDIT_COUNT; ++i) {
             int enabled = edit_enabled(w, (enum edit_command)i);
+            unsigned row = rows[i];
             attr = selected == i ? SELECTED : GRAY;
-            fill(2 + i, 8, ' ', attr, 22);
-            put(2 + i, 9, attr, items[i]);
+            fill(row, 8, ' ', attr, 22);
+            put(row, 9, attr, items[i]);
             if (!enabled && selected != i) {
                 unsigned column;
                 for (column = 0; items[i][column]; ++column)
                     if (items[i][column] != ' ')
-                        fill(2 + i, 9 + column, items[i][column], 0x78, 1);
+                        fill(row, 9 + column, items[i][column], 0x78, 1);
             }
             if (enabled)
-                fill(2 + i, 9 + accelerator[i], items[i][accelerator[i]],
+                fill(row, 9 + accelerator[i], items[i][accelerator[i]],
                      selected == i ? 0x0f : 0x7f, 1);
         }
-        fill(6, 7, 0xc3, GRAY, 1);
-        fill(6, 8, HORIZONTAL, GRAY, 22);
-        fill(6, 30, 0xb4, GRAY, 1);
-        put(7, 9, GRAY, "New SUB...");
-        fill(7, 13, 'S', 0x7f, 1);
-        put(8, 9, GRAY, "New FUNCTION...");
-        fill(8, 13, 'F', 0x7f, 1);
         workspace_status(w, status[selected]);
         ui_cursor(0xffff);
         event = ui_event();
+        if (menu_switch_event(w, MENU_ID_EDIT, event)) return;
         key = (unsigned)event;
         if (event & MOUSE_EVENT) {
             unsigned row = key >> 8, col = key & 255;
-            if (row >= 2 && row <= 5 && col >= 8 && col < 30)
-                clipboard_command(w, (enum edit_command)(row - 2));
+            if (col >= 8 && col < 30) {
+                if (row == 6) continue;
+                for (i = 0; i < EDIT_COUNT; ++i)
+                    if (row == rows[i]) {
+                        clipboard_command(w, (enum edit_command)i);
+                        return;
+                    }
+            }
             return;
         }
         switch (key) {
-        case KEY_UP: selected = (selected + CLEAR) % (CLEAR + 1); break;
-        case KEY_DOWN: selected = (selected + 1) % (CLEAR + 1); break;
+        case 0x3b00: show_help(w, CKB_HELP_USING, 0); break;
+        case KEY_UP: selected = (selected + EDIT_COUNT - 1) % EDIT_COUNT; break;
+        case KEY_DOWN: selected = (selected + 1) % EDIT_COUNT; break;
         case KEY_HOME: selected = CUT; break;
-        case KEY_END: selected = CLEAR; break;
+        case KEY_END: selected = NEW_FUNCTION; break;
         case KEY_ALT: case KEY_ALT_E: return;
         default:
             switch (tolower((unsigned char)event)) {
@@ -2443,6 +2862,8 @@ static void edit_menu(struct workspace *w)
             case 'c': selected = COPY_TEXT; break;
             case 'p': selected = PASTE; break;
             case 'e': selected = CLEAR; break;
+            case 's': selected = NEW_SUB; break;
+            case 'f': selected = NEW_FUNCTION; break;
             case '\r': break;
             case 27: return;
             default: continue;
@@ -2570,6 +2991,9 @@ static int dispatch(struct workspace *w, enum file_command command)
     case SAVE_AS:
         choose_path(w, 1);
         break;
+    case PRINT_FILE:
+        print_dialog(w);
+        break;
     case EXIT:
         return confirm_discard(w);
     default:
@@ -2580,18 +3004,23 @@ static int dispatch(struct workspace *w, enum file_command command)
 
 /* Help uses the same event and drawing primitives as the source workspace.
  * Its topic data is independently authored in CKBHELP.C. */
-static unsigned help_word(const struct workspace *w)
+static unsigned help_word_name(const struct workspace *w, char *word, unsigned cap)
 {
-    char word[32];
     unsigned first = w->caret, end, n = 0;
     while (first && (isalnum((unsigned char)w->text[first - 1]) || w->text[first - 1] == '_')) --first;
     end = first;
     while (end < w->length && (isalnum((unsigned char)w->text[end]) || w->text[end] == '_')) {
-        if (n < sizeof(word) - 1) word[n++] = w->text[end];
+        if (n + 1 < cap) word[n++] = w->text[end];
         ++end;
     }
     word[n] = 0;
     return ckb_help_context(word);
+}
+
+static unsigned help_word(const struct workspace *w)
+{
+    char word[32];
+    return help_word_name(w, word, sizeof(word));
 }
 
 static void draw_help(struct workspace *w, const struct ckb_help *h)
@@ -2665,6 +3094,133 @@ static void show_about(struct workspace *w)
     }
 }
 
+static void help_menu(struct workspace *w)
+{
+    static const unsigned char box[] = {1, 52, 8, 78, GRAY, GRAY};
+    static const unsigned rows[] = {2, 3, 4, 5, 7};
+    static const unsigned accel[] = {0, 0, 0, 0, 0};
+    static const char *const status[] = {
+        "F1=Help \xb3 Displays help index",
+        "F1=Help \xb3 Displays help table of contents",
+        "F1=Help \xb3 Displays information about the keyword at cursor",
+        "F1=Help \xb3 Displays information about using Help",
+        "F1=Help \xb3 Displays product version and copyright information"
+    };
+    char word[16], topic_label[26];
+    unsigned topic_id = help_word_name(w, word, sizeof(word));
+    unsigned selected = 0, i;
+    if (word[0]) sprintf(topic_label, "Topic: %-13.13s F1", word);
+    else strcpy(topic_label, "Topic:               F1");
+    for (;;) {
+        const char *items[5];
+        unsigned long event;
+        unsigned key;
+        unsigned char ch;
+        items[0] = "Index";
+        items[1] = "Contents";
+        items[2] = topic_label;
+        items[3] = "Using Help     Shift+F1";
+        items[4] = "About...";
+        draw_workspace(w);
+        put(0, 73, SELECTED, " Help ");
+        fill(0, 74, 'H', 0x0f, 1);
+        ui_menu(box);
+        search_separator(6, 52, 78);
+        for (i = 0; i < 5; ++i) {
+            int enabled = (i != 2) || word[0] != '\0';
+            unsigned attr = selected == i ? SELECTED : GRAY;
+            fill(rows[i], 53, ' ', attr, 25);
+            put(rows[i], 54, attr, items[i]);
+            if (!enabled && selected != i) {
+                unsigned c;
+                for (c = 0; items[i][c]; ++c)
+                    if (items[i][c] != ' ')
+                        fill(rows[i], 54 + c, items[i][c], 0x78, 1);
+            } else {
+                fill(rows[i], 54 + accel[i], items[i][accel[i]],
+                     selected == i ? 0x0f : 0x7f, 1);
+            }
+        }
+        workspace_status(w, status[selected]);
+        ui_cursor(0xffff);
+        event = ui_event();
+        if (menu_switch_event(w, MENU_ID_HELP, event)) return;
+        key = (unsigned)event;
+        ch = tolower((unsigned char)key);
+        if (event & MOUSE_EVENT) {
+            unsigned row = key >> 8, col = key & 255;
+            if (col > 52 && col < 78) {
+                if (row == 6) continue;
+                for (i = 0; i < 5; ++i)
+                    if (row == rows[i]) {
+                        selected = i;
+                        ch = '\r';
+                        break;
+                    }
+                if (ch == '\r') goto dispatch_help_item;
+            }
+            return;
+        }
+        if (key == KEY_UP) selected = (selected + 4) % 5;
+        else if (key == KEY_DOWN) selected = (selected + 1) % 5;
+        else if (key == KEY_HOME) selected = 0;
+        else if (key == KEY_END) selected = 4;
+        else if (ch == 27 || key == KEY_ALT || key == 0x2300) return;
+        else if (key == 0x3b00) {
+            show_help(w, topic_id ? topic_id : CKB_HELP_USING, 0);
+            return;
+        } else if (key == 0x5400 || ch == 'u') {
+            show_help(w, CKB_HELP_USING, 0);
+            return;
+        } else if (ch == 'i') {
+            show_help(w, CKB_HELP_INDEX, 0);
+            return;
+        } else if (ch == 'c') {
+            show_help(w, CKB_HELP_CONTENTS, 0);
+            return;
+        } else if (ch == 't') {
+            if (word[0]) {
+                show_help(w, topic_id ? topic_id : CKB_HELP_USING, 0);
+                return;
+            }
+        } else if (ch == 'a') {
+            show_about(w);
+            return;
+        } else if (ch == '\r') {
+dispatch_help_item:
+            if (selected == 0) show_help(w, CKB_HELP_INDEX, 0);
+            else if (selected == 1) show_help(w, CKB_HELP_CONTENTS, 0);
+            else if (selected == 2) {
+                if (!word[0]) continue;
+                show_help(w, topic_id ? topic_id : CKB_HELP_USING, 0);
+            } else if (selected == 3) show_help(w, CKB_HELP_USING, 0);
+            else show_about(w);
+            return;
+        }
+    }
+}
+
+static int open_menus(struct workspace *w, int menu)
+{
+    int done = 0;
+    while (menu != MENU_NONE && !done && !w->exit_requested) {
+        w->next_menu = MENU_NONE;
+        switch (menu) {
+        case MENU_ID_FILE: done = dispatch(w, file_menu(w)); break;
+        case MENU_ID_EDIT: edit_menu(w); break;
+        case MENU_ID_VIEW: view_menu(w); break;
+        case MENU_ID_SEARCH: search_menu(w); break;
+        case MENU_ID_RUN: run_menu(w); break;
+        case MENU_ID_DEBUG: dispatch_debug(w); break;
+        case MENU_ID_OPTIONS: options_menu(w); break;
+        case MENU_ID_HELP: help_menu(w); break;
+        default: break;
+        }
+        menu = w->next_menu;
+    }
+    return done;
+}
+
 static void show_help(struct workspace *w, unsigned topic, int menu_pending)
 {
     struct ckb_help h;
@@ -2675,17 +3231,35 @@ static void show_help(struct workspace *w, unsigned topic, int menu_pending)
         draw_help(w, &h);
         if (menu_pending) { event = 0x2300; menu_pending = 0; }
         else event = ui_event();
-        if (event & MOUSE_EVENT) continue;
+        if (event & MOUSE_EVENT) {
+            unsigned row = ((unsigned)event >> 8) & 255;
+            unsigned col = (unsigned)event & 255;
+            if (row == 0 && col >= 73 && col <= 78) event = 0x2300;
+            else if (row == 2) {
+                if (col >= 3 && col <= 12) ckb_help_open(&h, CKB_HELP_CONTENTS);
+                else if (col >= 16 && col <= 22) ckb_help_open(&h, CKB_HELP_INDEX);
+                else if (col >= 26 && col <= 31) ckb_help_back(&h);
+                continue;
+            } else continue;
+        }
         key = (unsigned)event;
         if ((unsigned char)key == 27) return;
         if (key == 0x6800) ckb_help_back(&h); /* Alt+F1 */
         else if (key == 0x2300) { /* Alt+H */
-            static const unsigned char menu[] = {1, 50, 7, 78, GRAY, GRAY};
+            static const unsigned char menu[] = {1, 52, 7, 78, GRAY, GRAY};
+            put(0, 73, SELECTED, " Help ");
+            fill(0, 74, 'H', 0x0f, 1);
             ui_menu(menu);
-            put(2, 51, GRAY, "Index");
-            put(3, 51, GRAY, "Contents");
-            put(4, 51, GRAY, "Back");
-            put(5, 51, GRAY, "About...");
+            put(2, 54, GRAY, "Index");
+            fill(2, 54, 'I', 0x7f, 1);
+            put(3, 54, GRAY, "Contents");
+            fill(3, 54, 'C', 0x7f, 1);
+            put(4, 54, GRAY, "Back             Alt+F1");
+            fill(4, 54, 'B', 0x7f, 1);
+            search_separator(5, 52, 78);
+            put(6, 54, GRAY, "About...");
+            fill(6, 54, 'A', 0x7f, 1);
+            ui_cursor(0xffff);
             event = ui_event(); key = (unsigned)event;
             if ((unsigned char)key == 'i' || (unsigned char)key == 'I') ckb_help_open(&h, CKB_HELP_INDEX);
             else if ((unsigned char)key == 'c' || (unsigned char)key == 'C') ckb_help_open(&h, CKB_HELP_CONTENTS);
@@ -2704,16 +3278,25 @@ static void show_help(struct workspace *w, unsigned topic, int menu_pending)
     }
 }
 
+static int is_plain_cursor_key(unsigned key)
+{
+    return key == KEY_UP || key == KEY_DOWN || key == KEY_LEFT ||
+           key == KEY_RIGHT || key == KEY_HOME || key == KEY_END;
+}
+
 int ckb_ide(const char *path)
 {
     struct workspace w;
     unsigned segment, row, col;
     unsigned long event;
-    int done = 0;
+    int done = 0, workspace_clean = 0;
     memset(&w, 0, sizeof(w));
     ckb_ini_load_display(&w.display);
     w.anchor = NO_MARK;
     w.procedure = -1;
+    w.cached_last_proc = -2;
+    w.syntax_checking = 1;
+    w.next_menu = MENU_NONE;
     if (path && *path) {
         if (!load_source(&w, path)) {
             fprintf(stderr, "%s: %s\n", path, w.error);
@@ -2733,22 +3316,24 @@ int ckb_ide(const char *path)
     }
     ui_init(segment);
     while (!done && !w.exit_requested) {
-        draw_workspace(&w);
+        if (!workspace_clean) {
+            draw_workspace(&w);
+            workspace_clean = 1;
+        }
         position(&w);
         event = ui_event();
-        w.error[0] = '\0';
+        if (w.error[0]) {
+            w.error[0] = '\0';
+            workspace_clean = 0;
+        }
         if (event & MOUSE_EVENT) {
+            workspace_clean = 0;
             row = (event >> 8) & 255;
             col = event & 255;
-            if (!row && col < 8) done = dispatch(&w, file_menu(&w));
-            else if (!row && col < 14) edit_menu(&w);
-            else if (!row && col >= 14 && col <= 18) view_menu(&w);
-            else if (!row && col >= 19 && col <= 26) search_menu(&w);
-            else if (!row && col >= 28 && col <= 32) run_menu(&w);
-            else if (!row && col >= 33 && col <= 38) dispatch_debug(&w);
-            else if (!row && col >= 39 && col <= 47) options_menu(&w);
-            else if (!row && col >= 74 && col <= 78) show_help(&w, CKB_HELP_USING, 1);
-            else if (col > 0 && col < 79) {
+            if (!row) {
+                int hit = menu_bar_hit(col);
+                if (hit != MENU_NONE) done = open_menus(&w, hit);
+            } else if (col > 0 && col < 79) {
                 if (row == 22) focus_view(&w, IMMEDIATE_VIEW);
                 else if (row >= 2 && row <= 19 && (!w.split || row <= 9 || row >= 12)) {
                     focus_view(&w, w.split && row >= 12 ? BOTTOM_VIEW : TOP_VIEW);
@@ -2757,43 +3342,101 @@ int ckb_ide(const char *path)
             }
         } else if ((unsigned)event == 0x3b00) {
             unsigned topic = help_word(&w);
+            workspace_clean = 0;
             show_help(&w, topic ? topic : CKB_HELP_USING, 0);
         } else if ((unsigned)event == 0x5400) {
+            workspace_clean = 0;
             show_help(&w, CKB_HELP_USING, 0);
         } else if ((unsigned)event == 0x2300) {
-            show_help(&w, CKB_HELP_USING, 1);
+            workspace_clean = 0;
+            done = open_menus(&w, MENU_ID_HELP);
         } else if ((unsigned)event == KEY_ALT_F || (unsigned)event == KEY_ALT) {
-            done = dispatch(&w, file_menu(&w));
+            workspace_clean = 0;
+            done = open_menus(&w, MENU_ID_FILE);
         } else if ((unsigned)event == KEY_ALT_E) {
-            edit_menu(&w);
+            workspace_clean = 0;
+            done = open_menus(&w, MENU_ID_EDIT);
         } else if ((unsigned)event == KEY_ALT_O) {
-            options_menu(&w);
+            workspace_clean = 0;
+            done = open_menus(&w, MENU_ID_OPTIONS);
         } else if ((unsigned)event == KEY_ALT_S) {
-            search_menu(&w);
+            workspace_clean = 0;
+            done = open_menus(&w, MENU_ID_SEARCH);
         } else if ((unsigned)event == KEY_ALT_V) {
-            view_menu(&w);
+            workspace_clean = 0;
+            done = open_menus(&w, MENU_ID_VIEW);
         } else if ((unsigned)event == KEY_ALT_R) {
-            run_menu(&w);
+            workspace_clean = 0;
+            done = open_menus(&w, MENU_ID_RUN);
         } else if ((unsigned)event == KEY_ALT_D) {
-            dispatch_debug(&w);
+            workspace_clean = 0;
+            done = open_menus(&w, MENU_ID_DEBUG);
         } else if ((unsigned)event == KEY_F2) {
+            workspace_clean = 0;
             subs_dialog(&w);
         } else if ((unsigned)event == KEY_F4) {
+            workspace_clean = 0;
             output_screen(&w);
         } else if ((unsigned)event == KEY_F5 || (unsigned)event == KEY_SHIFT_F5) {
+            workspace_clean = 0;
             run_workspace(&w, RUN_NORMAL);
         } else if ((unsigned)event == KEY_F8 || (unsigned)event == KEY_F10) {
+            workspace_clean = 0;
             run_workspace(&w, (unsigned)event == KEY_F8 ? RUN_STEP : RUN_PROCEDURE_STEP);
         } else if ((unsigned)event == KEY_F9 && w.focus != IMMEDIATE_VIEW) {
+            workspace_clean = 0;
             toggle_breakpoint(&w);
         } else if ((unsigned)event == KEY_F6 || (unsigned)event == KEY_SHIFT_F6) {
+            workspace_clean = 0;
             cycle_view(&w, (unsigned)event == KEY_SHIFT_F6);
         } else if ((unsigned)event == KEY_F3) {
+            workspace_clean = 0;
             find_next(&w);
         } else if ((unsigned char)event == 19) { /* Ctrl+S */
+            workspace_clean = 0;
             done = dispatch(&w, SAVE);
-        } else if (w.focus == IMMEDIATE_VIEW) edit_immediate(&w, event);
-        else edit_key(&w, event);
+        } else if (w.focus == IMMEDIATE_VIEW) {
+            unsigned key = (unsigned)event;
+            if ((key == KEY_LEFT || key == KEY_RIGHT || key == KEY_HOME || key == KEY_END) &&
+                workspace_clean) {
+                unsigned old_page = w.immediate_col / VIEW_WIDTH;
+                edit_immediate(&w, key);
+                if (w.immediate_col / VIEW_WIDTH == old_page && !w.error[0])
+                    workspace_status(&w, NULL);
+                else workspace_clean = 0;
+            } else {
+                workspace_clean = 0;
+                edit_immediate(&w, key);
+            }
+        } else {
+            unsigned key = (unsigned)event;
+            if (workspace_clean && !(event & SHIFT_HELD) && w.anchor == NO_MARK &&
+                is_plain_cursor_key(key)) {
+                unsigned old_top = w.top;
+                unsigned long old_left = w.left;
+                int old_proc = w.procedure;
+                edit_key(&w, event);
+                if (w.top == old_top && w.left == old_left &&
+                    w.procedure == old_proc && !w.error[0]) {
+                    if (w.display.scroll_bars && w.focus == w.source_focus) {
+                        unsigned header = w.source_focus == BOTTOM_VIEW ? 11 : 1;
+                        unsigned height = w.split ? SPLIT_HEIGHT : VIEW_HEIGHT;
+                        unsigned thumb = compute_thumb_row(&w, header, height);
+                        if (thumb != w.drawn_thumb_row) {
+                            fill(w.drawn_thumb_row, 79, 0xb0, GRAY, 1);
+                            fill(thumb, 79, ' ', SELECTED, 1);
+                            w.drawn_thumb_row = thumb;
+                        }
+                    }
+                    workspace_status(&w, NULL);
+                } else {
+                    workspace_clean = 0;
+                }
+            } else {
+                workspace_clean = 0;
+                edit_key(&w, event);
+            }
+        }
     }
     ui_done();
     if (w.display_dirty && !ckb_ini_save_display(&w.display))

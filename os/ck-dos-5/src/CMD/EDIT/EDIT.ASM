@@ -139,10 +139,16 @@ START:
         MOV     BX,CS
         ADD     AX,BX
         MOV     HELP_SEGMENT,AX
-        MOV     BX,DOSUI_SAVE_PARAGRAPHS ; the screen EDIT started on, for exit
+        MOV     BX,DOSUI_SAVE_PARAGRAPHS ; caller screen + offscreen backbuffer
+        MOV     AH,48H
+        INT     21H
+        JNC     SHORT START_HAVE_SAVE_SEG
+        MOV     BYTE PTR DOSUI_HAS_BACKBUFFER,0
+        MOV     BX,DOSUI_TEXT_SAVE_PARAGRAPHS
         MOV     AH,48H
         INT     21H
         JC      SHORT START_ARENA
+START_HAVE_SAVE_SEG:
         MOV     DOSUI_SAVE_SEGMENT,AX
 START_ARENA:
         MOV     BX,0FFFFH               ; the largest block left: the text's
@@ -474,7 +480,7 @@ EDIT_LEFT:
         MOV     BYTE PTR VIRTUAL_COLUMN_VALID,0
 EDIT_LEFT_REDRAW:
         MOV     BYTE PTR PREFERRED_COLUMN_VALID,0
-        JMP     EDIT_REDRAW
+        JMP     EDIT_CURSOR_REDRAW
 EDIT_LEFT_PHYSICAL:
         CMP     WORD PTR CURSOR_OFFSET,0
         JNE     SHORT EDIT_LEFT_ADVANCE
@@ -482,7 +488,7 @@ EDIT_LEFT_PHYSICAL:
 EDIT_LEFT_ADVANCE:
         DEC     WORD PTR CURSOR_OFFSET
         MOV     BYTE PTR PREFERRED_COLUMN_VALID,0
-        JMP     EDIT_REDRAW
+        JMP     EDIT_CURSOR_REDRAW
 
 EDIT_RIGHT:
         CALL    PREPARE_SHIFT_SELECTION
@@ -506,28 +512,28 @@ EDIT_RIGHT_ROOM:
 EDIT_RIGHT_ADVANCE:
         INC     WORD PTR CURSOR_OFFSET
         MOV     BYTE PTR PREFERRED_COLUMN_VALID,0
-        JMP     EDIT_REDRAW
+        JMP     EDIT_CURSOR_REDRAW
 EDIT_RIGHT_START_VIRTUAL:
         MOV     AX,CURRENT_COLUMN
         INC     AX
         MOV     VIRTUAL_COLUMN,AX
         MOV     BYTE PTR VIRTUAL_COLUMN_VALID,1
         MOV     BYTE PTR PREFERRED_COLUMN_VALID,0
-        JMP     EDIT_REDRAW
+        JMP     EDIT_CURSOR_REDRAW
 EDIT_RIGHT_VIRTUAL_ADVANCE:
         INC     WORD PTR VIRTUAL_COLUMN
         MOV     BYTE PTR PREFERRED_COLUMN_VALID,0
-        JMP     EDIT_REDRAW
+        JMP     EDIT_CURSOR_REDRAW
 
 EDIT_UP:
         CALL    PREPARE_SHIFT_SELECTION
         CALL    MOVE_UP
-        JMP     EDIT_REDRAW
+        JMP     EDIT_CURSOR_REDRAW
 
 EDIT_DOWN:
         CALL    PREPARE_SHIFT_SELECTION
         CALL    MOVE_DOWN
-        JMP     EDIT_REDRAW
+        JMP     EDIT_CURSOR_REDRAW
 
 EDIT_PAGE_UP:
         CALL    PAGE_UP_VIEW
@@ -570,7 +576,7 @@ EDIT_HOME_BLANK:
         MOV     BX,DX
 EDIT_HOME_SET:
         MOV     CURSOR_OFFSET,BX
-        JMP     EDIT_REDRAW
+        JMP     EDIT_CURSOR_REDRAW
 
 EDIT_END:
         CALL    PREPARE_SHIFT_SELECTION
@@ -588,13 +594,13 @@ EDIT_END_NEXT:
         JMP     EDIT_END_NEXT
 EDIT_END_DONE:
         MOV     CURSOR_OFFSET,BX
-        JMP     EDIT_REDRAW
+        JMP     EDIT_CURSOR_REDRAW
 
 EDIT_WORD_LEFT:
         CALL    PREPARE_SHIFT_SELECTION
         CALL    RESET_NAVIGATION_COLUMNS
         CALL    MOVE_WORD_LEFT
-        JMP     EDIT_REDRAW
+        JMP     EDIT_CURSOR_REDRAW
 
 EDIT_WORD_RIGHT:
         CALL    PREPARE_SHIFT_SELECTION
@@ -602,7 +608,7 @@ EDIT_WORD_RIGHT:
         TEST    BYTE PTR MODIFIER_STATE,03H
         JNZ     SHORT EDIT_WORD_RIGHT_SELECT
         CALL    MOVE_WORD_RIGHT
-        JMP     EDIT_REDRAW
+        JMP     EDIT_CURSOR_REDRAW
 EDIT_WORD_RIGHT_SELECT:                 ; Shift+Ctrl+Right selects to a word end
         CALL    MOVE_WORD_END
         JMP     EDIT_REDRAW
@@ -1598,11 +1604,84 @@ EDIT_EXIT_SCREEN:
 
 EDIT_REDRAW:
         CMP     BYTE PTR MEMORY_FULL,0  ; a command ran out of memory
-        JE      EDIT_REDRAW_SCREEN
+        JE      SHORT EDIT_REDRAW_SCREEN
         MOV     BYTE PTR MEMORY_FULL,0
         JMP     EDIT_MEMORY_ERROR
 EDIT_REDRAW_SCREEN:
         CALL    DRAW_SCREEN
+        JMP     EDIT_LOOP
+
+; Fast path for pure cursor movement inside an unchanged viewport with no
+; active or previous selection/search highlight: updates only the status-bar
+; row:col field, the vertical scrollbar thumb cell (if moved), and the
+; hardware cursor, avoiding a 2,000-cell redraw on every arrow key.
+EDIT_CURSOR_REDRAW:
+        CMP     BYTE PTR MEMORY_FULL,0
+        JNE     SHORT EDIT_REDRAW
+        CMP     BYTE PTR DRAWN_VALID,0
+        JE      SHORT EDIT_REDRAW
+        CMP     BYTE PTR HELP_OPEN,0
+        JNE     SHORT EDIT_REDRAW
+        CMP     BYTE PTR STARTUP_ERROR,0
+        JNE     SHORT EDIT_REDRAW
+        CMP     BYTE PTR DRAWN_HAD_HIGHLIGHT,0
+        JNE     SHORT EDIT_REDRAW
+        CMP     WORD PTR BLOCK_MARK,0FFFFH
+        JNE     SHORT EDIT_REDRAW
+        CMP     WORD PTR SEARCH_HIGHLIGHT_START,0FFFFH
+        JNE     SHORT EDIT_REDRAW
+        CALL    CALCULATE_POSITION
+        CMP     BYTE PTR VIRTUAL_COLUMN_VALID,0
+        JE      SHORT EDIT_CURSOR_HAVE_COL
+        MOV     AX,VIRTUAL_COLUMN
+        MOV     CURRENT_COLUMN,AX
+EDIT_CURSOR_HAVE_COL:
+        CALL    UPDATE_LEFT_COLUMN
+        MOV     AX,LEFT_COLUMN
+        CMP     AX,DRAWN_LEFT_COLUMN
+        JNE     SHORT EDIT_REDRAW_SCREEN
+        MOV     AX,CURRENT_LINE
+        MOV     BX,DRAWN_TOP_LINE
+        CMP     AX,BX
+        JB      SHORT EDIT_REDRAW_SCREEN
+        ADD     BX,TEXT_ROW_COUNT
+        CMP     AX,BX
+        JAE     SHORT EDIT_REDRAW_SCREEN
+        XOR     AL,AL
+        CALL    SET_ROW_OFFSET
+        CALL    UPDATE_SCROLL_THUMB
+        CMP     BYTE PTR VBAR_SHOWN,0
+        JE      SHORT EDIT_CURSOR_STATUS
+        MOV     AL,SCROLL_THUMB_ROW
+        CMP     AL,DRAWN_THUMB_ROW
+        JE      SHORT EDIT_CURSOR_STATUS
+        MOV     DH,DRAWN_THUMB_ROW
+        MOV     DL,79
+        MOV     AL,0B0H
+        MOV     BL,70H
+        MOV     CX,1
+        CALL    DOSUI_FILL_ROW
+        MOV     DH,SCROLL_THUMB_ROW
+        MOV     DRAWN_THUMB_ROW,DH
+        MOV     AL,' '
+        MOV     BL,07H
+        CALL    DOSUI_FILL_ROW
+EDIT_CURSOR_STATUS:
+        CALL    FORMAT_STATUS_POSITION
+        MOV     SI,OFFSET STATUS_POSITION_TEXT
+        MOV     DH,STATUS_ROW
+        MOV     DL,70
+        MOV     BL,30H
+        CALL    DOSUI_WRITE_Z
+        MOV     AX,CURRENT_LINE
+        SUB     AX,TOP_LINE
+        ADD     AL,TEXT_FIRST_ROW
+        MOV     DH,AL
+        MOV     AX,CURRENT_COLUMN
+        SUB     AX,LEFT_COLUMN
+        INC     AX
+        MOV     DL,AL
+        CALL    DOSUI_SET_CURSOR
         JMP     EDIT_LOOP
 
 ; Route one main-loop click (DH = cell row, DL = cell column) to the same
@@ -1762,6 +1841,7 @@ EDIT_MOUSE_BORDER:
         MOV     BYTE PTR HELP_ACTIVE,0
 EDIT_BORDER_DRAW:
         CALL    DRAW_SCREEN
+        CALL    DOSUI_END_FRAME
         MOV     AX,0001H
         INT     33H
 EDIT_BORDER_POLL:
@@ -1842,6 +1922,7 @@ EDIT_DRAG_ANCHORED:
 EDIT_DRAG_DRAW:
         CALL    NORMALIZE_VIEW          ; a long drag scrolls the view on
         CALL    DRAW_SCREEN
+        CALL    DOSUI_END_FRAME
         MOV     AX,0001H
         INT     33H
 EDIT_DRAG_POLL:
@@ -2033,6 +2114,7 @@ MOUSE_REPEAT_ARM ENDP
 ; (screen rows). CF clear: the button came up or a key arrived. The pointer
 ; is shown while waiting; off the pressed cell nothing repeats.
 MOUSE_REPEAT_WAIT PROC NEAR
+        CALL    DOSUI_END_FRAME
         MOV     BYTE PTR MOUSE_REPEAT,0
         MOV     AX,0001H
         INT     33H
@@ -3404,27 +3486,47 @@ DELETE_BEFORE_DONE:
 DELETE_BEFORE_CURSOR ENDP
 
 CALCULATE_POSITION PROC NEAR
+        PUSH    BX
+        PUSH    CX
+        PUSH    DI
+        PUSH    ES
         XOR     AX,AX
         MOV     CURRENT_LINE,AX
         MOV     CURRENT_COLUMN,AX
-        XOR     SI,SI
-CALCULATE_NEXT:
-        CMP     SI,CURSOR_OFFSET
-        JAE     CALCULATE_DONE
-        MOV     AL,BUFFER[SI]
-        CMP     AL,10
-        JE      CALCULATE_NEWLINE
-        CMP     AL,13
-        JE      CALCULATE_ADVANCE
-        INC     WORD PTR CURRENT_COLUMN
-        JMP     CALCULATE_ADVANCE
-CALCULATE_NEWLINE:
+        MOV     CX,CURSOR_OFFSET
+        JCXZ    CALCULATE_DONE_FAST
+        PUSH    SS
+        POP     ES
+        MOV     DI,BUFFER_BASE
+        MOV     BX,DI
+        MOV     AL,10
+        CLD
+CALCULATE_SCAN_LF:
+        REPNE   SCASB
+        JNE     SHORT CALCULATE_COUNT_COL
         INC     WORD PTR CURRENT_LINE
-        MOV     WORD PTR CURRENT_COLUMN,0
-CALCULATE_ADVANCE:
+        MOV     BX,DI
+        JCXZ    CALCULATE_DONE_FAST
+        JMP     CALCULATE_SCAN_LF
+CALCULATE_COUNT_COL:
+        MOV     SI,BX
+        SUB     SI,BUFFER_BASE
+CALCULATE_COL_LOOP:
+        CMP     SI,CURSOR_OFFSET
+        JAE     SHORT CALCULATE_DONE_FAST
+        MOV     AL,BUFFER[SI]
+        CMP     AL,13
+        JE      SHORT CALCULATE_COL_SKIP
+        INC     WORD PTR CURRENT_COLUMN
+CALCULATE_COL_SKIP:
         INC     SI
-        JMP     CALCULATE_NEXT
-CALCULATE_DONE:
+        JMP     CALCULATE_COL_LOOP
+CALCULATE_DONE_FAST:
+        MOV     SI,CURSOR_OFFSET
+        POP     ES
+        POP     DI
+        POP     CX
+        POP     BX
         RET
 CALCULATE_POSITION ENDP
 
@@ -3433,17 +3535,38 @@ CALCULATE_POSITION ENDP
 MOVE_TO_LINE_COLUMN PROC NEAR
         XOR     SI,SI
         XOR     BX,BX
+        OR      AX,AX
+        JZ      SHORT MOVE_TO_COLUMN
+        PUSH    CX
+        PUSH    DI
+        PUSH    ES
+        PUSH    SS
+        POP     ES
+        MOV     DI,BUFFER_BASE
+        MOV     CX,BUFFER_LENGTH
+        CLD
 MOVE_TO_LINE_FIND:
-        CMP     BX,AX
-        JE      MOVE_TO_COLUMN
-        CMP     SI,BUFFER_LENGTH
-        JAE     MOVE_TO_LINE_FAIL
-        CMP     BYTE PTR BUFFER[SI],10
-        JNE     MOVE_TO_LINE_ADVANCE
+        JCXZ    MOVE_TO_LINE_SCAN_FAIL
+        PUSH    AX
+        MOV     AL,10
+        REPNE   SCASB
+        POP     AX
+        JNE     SHORT MOVE_TO_LINE_SCAN_FAIL
         INC     BX
-MOVE_TO_LINE_ADVANCE:
-        INC     SI
-        JMP     MOVE_TO_LINE_FIND
+        CMP     BX,AX
+        JB      MOVE_TO_LINE_FIND
+        MOV     SI,DI
+        SUB     SI,BUFFER_BASE
+        POP     ES
+        POP     DI
+        POP     CX
+        JMP     SHORT MOVE_TO_COLUMN
+MOVE_TO_LINE_SCAN_FAIL:
+        MOV     SI,BUFFER_LENGTH
+        POP     ES
+        POP     DI
+        POP     CX
+        JMP     SHORT MOVE_TO_LINE_FAIL
 MOVE_TO_COLUMN:
         MOV     CX,DX
 MOVE_TO_COLUMN_NEXT:
@@ -3468,18 +3591,30 @@ MOVE_TO_LINE_FAIL:
 MOVE_TO_LINE_COLUMN ENDP
 
 FIND_LAST_LINE PROC NEAR
+        PUSH    CX
+        PUSH    DI
+        PUSH    ES
         XOR     AX,AX
-        XOR     SI,SI
+        MOV     CX,BUFFER_LENGTH
+        JCXZ    FIND_LAST_LINE_DONE
+        PUSH    SS
+        POP     ES
+        MOV     DI,BUFFER_BASE
+        CLD
 FIND_LAST_LINE_NEXT:
-        CMP     SI,BUFFER_LENGTH
-        JAE     FIND_LAST_LINE_DONE
-        CMP     BYTE PTR BUFFER[SI],10
-        JNE     FIND_LAST_LINE_ADVANCE
+        PUSH    AX
+        MOV     AL,10
+        REPNE   SCASB
+        POP     AX
+        JNE     SHORT FIND_LAST_LINE_DONE
         INC     AX
-FIND_LAST_LINE_ADVANCE:
-        INC     SI
+        JCXZ    FIND_LAST_LINE_DONE
         JMP     FIND_LAST_LINE_NEXT
 FIND_LAST_LINE_DONE:
+        MOV     SI,BUFFER_LENGTH
+        POP     ES
+        POP     DI
+        POP     CX
         RET
 FIND_LAST_LINE ENDP
 
@@ -3703,6 +3838,7 @@ LIST_ON_SELECT  EQU 12                  ; word: proc after a selection
 LIST_ON_ENTER   EQU 14                  ; word: proc for Enter (CF: stay)
 
 RUN_DIALOG PROC NEAR
+        MOV     BYTE PTR DRAWN_VALID,0
         MOV     DLG_TABLE,SI
         MOV     DLG_COUNT,CL
         MOV     DLG_DEFAULT,CH
@@ -6280,6 +6416,7 @@ DRAW_FAR_JUMP:
 DRAW_SET_TOP:
         MOV     TOP_LINE,AX
 DRAW_VISIBLE:
+        CALL    DOSUI_BEGIN_FRAME
         MOV     AL,TEXT_ATTR
         MOV     BYTE PTR DOSUI_ATTR_RAW,1
         CALL    DOSUI_CLEAR
@@ -6301,36 +6438,88 @@ DRAW_VISIBLE:
 
         XOR     SI,SI
         MOV     BX,TOP_LINE
-DRAW_FIND_TOP:
         OR      BX,BX
-        JZ      DRAW_TEXT_START
-        CMP     SI,BUFFER_LENGTH
-        JAE     DRAW_TEXT_START
-        CMP     BYTE PTR BUFFER[SI],10
-        JNE     DRAW_FIND_ADVANCE
+        JZ      SHORT DRAW_TEXT_START
+        PUSH    CX
+        PUSH    DI
+        PUSH    ES
+        PUSH    SS
+        POP     ES
+        MOV     DI,BUFFER_BASE
+        MOV     CX,BUFFER_LENGTH
+        CLD
+DRAW_FIND_TOP:
+        JCXZ    DRAW_FIND_TOP_END
+        MOV     AL,10
+        REPNE   SCASB
+        JNE     SHORT DRAW_FIND_TOP_END
         DEC     BX
-DRAW_FIND_ADVANCE:
-        INC     SI
-        JMP     DRAW_FIND_TOP
+        JNZ     DRAW_FIND_TOP
+        MOV     SI,DI
+        SUB     SI,BUFFER_BASE
+        JMP     SHORT DRAW_FIND_TOP_POP
+DRAW_FIND_TOP_END:
+        MOV     SI,BUFFER_LENGTH
+DRAW_FIND_TOP_POP:
+        POP     ES
+        POP     DI
+        POP     CX
+
 DRAW_TEXT_START:
+        MOV     BYTE PTR DRAW_HAS_HIGHLIGHT,0
+        CMP     WORD PTR BLOCK_MARK,0FFFFH
+        JE      SHORT DRAW_PREP_SEARCH_HL
+        MOV     AX,BLOCK_MARK
+        MOV     BX,CURSOR_OFFSET
+        CMP     AX,BX
+        JE      SHORT DRAW_PREP_DONE
+        JBE     SHORT DRAW_PREP_STORE_HL
+        XCHG    AX,BX
+        JMP     SHORT DRAW_PREP_STORE_HL
+DRAW_PREP_SEARCH_HL:
+        MOV     AX,SEARCH_HIGHLIGHT_START
+        CMP     AX,0FFFFH
+        JE      SHORT DRAW_PREP_DONE
+        MOV     BX,SEARCH_HIGHLIGHT_END
+        CMP     AX,BX
+        JAE     SHORT DRAW_PREP_DONE
+DRAW_PREP_STORE_HL:
+        MOV     DRAW_SEL_START,AX
+        MOV     DRAW_SEL_END,BX
+        MOV     BYTE PTR DRAW_HAS_HIGHLIGHT,1
+DRAW_PREP_DONE:
+        PUSH    ES
+        MOV     ES,CS:DOSUI_DRAW_SEGMENT
         MOV     DH,TEXT_FIRST_ROW
+        XOR     AX,AX
+        MOV     AL,DH
+        ADD     AL,CS:DOSUI_ROW_OFFSET
+        CMP     AL,CS:DOSUI_ROWS
+        JB      SHORT DRAW_FIRST_ROW_OK
+        JMP     DRAW_TEXT_POP_ES
+DRAW_FIRST_ROW_OK:
+        MOV     BL,160
+        MUL     BL
+        ADD     AX,2
+        MOV     DRAW_ROW_DI,AX
+        MOV     DI,AX
         MOV     DL,1
         MOV     WORD PTR DRAW_COLUMN,0
 DRAW_TEXT_NEXT:
         CMP     DH,TEXT_BOTTOM_ROW
-        JBE     SHORT DRAW_TEXT_ROW_VISIBLE
-        JMP     DRAW_CURSOR
-DRAW_TEXT_ROW_VISIBLE:
+        JBE     SHORT DRAW_TEXT_ROW_OK
+        JMP     DRAW_TEXT_POP_ES
+DRAW_TEXT_ROW_OK:
         CMP     SI,BUFFER_LENGTH
         JB      SHORT DRAW_TEXT_HAVE_BYTE
-        JMP     DRAW_CURSOR
+        JMP     DRAW_TEXT_POP_ES
 DRAW_TEXT_HAVE_BYTE:
         MOV     AL,BUFFER[SI]
         INC     SI
         CMP     AL,13
         JE      DRAW_TEXT_NEXT
         CMP     AL,10
-        JE      DRAW_NEWLINE
+        JE      SHORT DRAW_NEWLINE
         OR      AL,AL
         JZ      SHORT DRAW_SKIP_NUL_TAIL ; DOS 5 blanks the malformed line tail.
         MOV     CX,DRAW_COLUMN          ; columns left of the view are skipped
@@ -6339,57 +6528,42 @@ DRAW_TEXT_HAVE_BYTE:
         JB      DRAW_TEXT_NEXT
         CMP     DL,79
         JAE     DRAW_TEXT_NEXT
-        MOV     BL,TEXT_ATTR
-        CMP     WORD PTR BLOCK_MARK,0FFFFH
-        JE      SHORT DRAW_TEXT_SEARCH_HIGHLIGHT
-        PUSH    AX
-        MOV     DI,BLOCK_MARK
-        MOV     CX,CURSOR_OFFSET
-        CMP     DI,CX
-        JBE     SHORT DRAW_TEXT_SELECTION_ORDERED
-        XCHG    DI,CX
-DRAW_TEXT_SELECTION_ORDERED:
-        MOV     AX,SI
-        DEC     AX
-        CMP     AX,DI
-        JB      SHORT DRAW_TEXT_NOT_SELECTED
-        CMP     AX,CX
-        JAE     SHORT DRAW_TEXT_NOT_SELECTED
-        MOV     BL,SELECT_ATTR
-DRAW_TEXT_NOT_SELECTED:
-        POP     AX
-        JMP     SHORT DRAW_TEXT_ATTRIBUTE_READY
-DRAW_TEXT_SEARCH_HIGHLIGHT:
-        CMP     WORD PTR SEARCH_HIGHLIGHT_START,0FFFFH
-        JE      SHORT DRAW_TEXT_ATTRIBUTE_READY
-        PUSH    AX
-        MOV     AX,SI
-        DEC     AX
-        CMP     AX,SEARCH_HIGHLIGHT_START
-        JB      SHORT DRAW_TEXT_NOT_SEARCH_MATCH
-        CMP     AX,SEARCH_HIGHLIGHT_END
-        JAE     SHORT DRAW_TEXT_NOT_SEARCH_MATCH
-        MOV     BL,SELECT_ATTR
-DRAW_TEXT_NOT_SEARCH_MATCH:
-        POP     AX
-DRAW_TEXT_ATTRIBUTE_READY:
-        MOV     CX,1
-        CALL    TEXT_FILL_ROW
+        MOV     AH,TEXT_ATTR
+        CMP     BYTE PTR DRAW_HAS_HIGHLIGHT,0
+        JE      SHORT DRAW_TEXT_STORE
+        MOV     BX,SI
+        DEC     BX
+        CMP     BX,DRAW_SEL_START
+        JB      SHORT DRAW_TEXT_STORE
+        CMP     BX,DRAW_SEL_END
+        JAE     SHORT DRAW_TEXT_STORE
+        MOV     AH,SELECT_ATTR
+DRAW_TEXT_STORE:
+        MOV     ES:[DI],AX
+        ADD     DI,2
         INC     DL
         JMP     DRAW_TEXT_NEXT
 DRAW_SKIP_NUL_TAIL:
         CMP     SI,BUFFER_LENGTH
-        JAE     DRAW_CURSOR
+        JAE     SHORT DRAW_TEXT_POP_ES
         MOV     AL,BUFFER[SI]
         INC     SI
         CMP     AL,10
-        JE      DRAW_NEWLINE
+        JE      SHORT DRAW_NEWLINE
         JMP     DRAW_SKIP_NUL_TAIL
 DRAW_NEWLINE:
         INC     DH
+        MOV     AL,DH
+        ADD     AL,CS:DOSUI_ROW_OFFSET
+        CMP     AL,CS:DOSUI_ROWS
+        JAE     SHORT DRAW_TEXT_POP_ES
+        ADD     WORD PTR DRAW_ROW_DI,160
+        MOV     DI,DRAW_ROW_DI
         MOV     DL,1
         MOV     WORD PTR DRAW_COLUMN,0
         JMP     DRAW_TEXT_NEXT
+DRAW_TEXT_POP_ES:
+        POP     ES
 DRAW_CURSOR:
         CMP     BYTE PTR HELP_OPEN,0    ; Help's window over the rows above
         JE      SHORT DRAW_EDITOR_CURSOR
@@ -6397,7 +6571,7 @@ DRAW_CURSOR:
         CMP     BYTE PTR HELP_ACTIVE,0
         JE      SHORT DRAW_EDITOR_CURSOR_SHIFTED
         CALL    HELP_PLACE_CURSOR
-        JMP     SHORT DRAW_DONE
+        JMP     SHORT DRAW_RECORD_STATE
 DRAW_EDITOR_CURSOR_SHIFTED:
         MOV     AL,EDITOR_ROW_SHIFT
         CALL    SET_ROW_OFFSET
@@ -6412,8 +6586,20 @@ DRAW_EDITOR_CURSOR:
         MOV     DL,AL
         CALL    DOSUI_SET_CURSOR
         CMP     BYTE PTR STARTUP_ERROR,0
-        JE      DRAW_DONE
+        JE      SHORT DRAW_RECORD_STATE
         CALL    SHOW_STARTUP_ERROR
+        MOV     BYTE PTR DRAWN_VALID,0
+        JMP     SHORT DRAW_DONE
+DRAW_RECORD_STATE:
+        MOV     AX,TOP_LINE
+        MOV     DRAWN_TOP_LINE,AX
+        MOV     AX,LEFT_COLUMN
+        MOV     DRAWN_LEFT_COLUMN,AX
+        MOV     AL,SCROLL_THUMB_ROW
+        MOV     DRAWN_THUMB_ROW,AL
+        MOV     AL,DRAW_HAS_HIGHLIGHT
+        MOV     DRAWN_HAD_HIGHLIGHT,AL
+        MOV     BYTE PTR DRAWN_VALID,1
 DRAW_DONE:
         RET
 DRAW_SCREEN ENDP
@@ -8266,6 +8452,7 @@ PASTE_BLOCK ENDP
 ; Menus are a modal keyboard focus scope.  AL selects the initial menu and the
 ; returned command is zero when Escape closes the scope without an action.
 SHOW_MENU_SYSTEM PROC NEAR
+        MOV     BYTE PTR DRAWN_VALID,0
         CALL    SET_ACTIVE_MENU
 SHOW_MENU_REDRAW:
         CALL    DRAW_SCREEN
@@ -12190,6 +12377,7 @@ NORMALIZE_VIEW_AFTER:
         CMP     AX,12288
         JAE     NORMALIZE_VIEW_DONE
 NORMALIZE_VIEW_REBUILD:
+        MOV     BYTE PTR DRAWN_VALID,0
         CALL    SAVE_POSITIONS
         CALL    REBUILD_VIEW
 NORMALIZE_VIEW_DONE:
@@ -14471,6 +14659,15 @@ ALT_LETTERS     DB 'QWERTYUIOP',0,0,0,0,'ASDFGHJKL',0,0,0,0,0,'ZXCVBNM'
 STEP_LEFT       DB 0
 WORD_MARKS      DB '.!#$%&'
 DRAW_COLUMN     DW 0
+DRAW_ROW_DI     DW 0
+DRAW_SEL_START  DW 0
+DRAW_SEL_END    DW 0
+DRAW_HAS_HIGHLIGHT DB 0
+DRAWN_VALID     DB 0
+DRAWN_HAD_HIGHLIGHT DB 0
+DRAWN_THUMB_ROW DB 0
+DRAWN_TOP_LINE  DW 0
+DRAWN_LEFT_COLUMN DW 0
 DRAG_LAST       DW 0FFFFH
 BOOKMARKS       DW 0,0FFFFH,0,0,0FFFFH,0,0,0FFFFH,0,0,0FFFFH,0
 ; Ctrl+@ .. Ctrl+_ in the DOS 5 EDIT (WordStar) meanings, as observed in

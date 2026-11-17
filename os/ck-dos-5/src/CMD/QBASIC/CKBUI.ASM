@@ -56,9 +56,11 @@ CKBASIC_DOSUI_SMOKE ENDP
 ; DOSUI positioning/text primitives preserve their arguments.
 PUBLIC CKBIDE_INIT, CKBIDE_DONE, CKBIDE_FILL, CKBIDE_WRITE
 PUBLIC CKBIDE_MENU, CKBIDE_CURSOR, CKBIDE_EVENT
+PUBLIC CKBIDE_BEGIN_FRAME, CKBIDE_END_FRAME
 
 CKBIDE_INIT PROC FAR
     MOV CS:DOSUI_SAVE_SEGMENT,AX
+    MOV BYTE PTR CS:DOSUI_HAS_BACKBUFFER,1
     CALL DOSUI_INIT
     PUSH CX
     MOV CX,0607h
@@ -68,6 +70,16 @@ CKBIDE_INIT PROC FAR
     CALL DOSUI_MOUSE_INIT
     RET
 CKBIDE_INIT ENDP
+
+CKBIDE_BEGIN_FRAME PROC FAR
+    CALL DOSUI_BEGIN_FRAME
+    RET
+CKBIDE_BEGIN_FRAME ENDP
+
+CKBIDE_END_FRAME PROC FAR
+    CALL DOSUI_END_FRAME
+    RET
+CKBIDE_END_FRAME ENDP
 
 CKBIDE_DONE PROC FAR
     CALL DOSUI_MOUSE_SHUTDOWN
@@ -186,6 +198,7 @@ CKB_INPUT_SCAN ENDP
 ; ---------------------------------------------------------------------------
 PUBLIC _dosui_smoke
 PUBLIC _ui_init, _ui_done, _ui_fill, _ui_write, _ui_menu, _ui_cursor, _ui_event
+PUBLIC _ui_begin_frame, _ui_end_frame
 PUBLIC _input_scan, _input_scan_init, _input_scan_pending, _input_key, _input_idle
 
 _dosui_smoke PROC FAR
@@ -287,6 +300,16 @@ _ui_event PROC FAR
     POP SI
     RET
 _ui_event ENDP
+
+_ui_begin_frame PROC FAR
+    CALL DOSUI_BEGIN_FRAME
+    RET
+_ui_begin_frame ENDP
+
+_ui_end_frame PROC FAR
+    CALL DOSUI_END_FRAME
+    RET
+_ui_end_frame ENDP
 
 _input_scan_init PROC FAR
     PUSH BP
