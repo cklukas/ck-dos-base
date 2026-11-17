@@ -17,6 +17,8 @@ struct CkbStringTemp {
 };
 
 static CkbStringTemp *temporaries;
+static char temp_arena[512];
+static unsigned temp_arena_used;
 
 CkbStringTemp *ckb_string_mark(void)
 {
@@ -27,15 +29,26 @@ void ckb_string_release(CkbStringTemp *mark)
 {
     while (temporaries != mark) {
         CkbStringTemp *item = temporaries;
+        char *raw = (char *)item;
         temporaries = item->previous;
-        free(item);
+        if (raw >= temp_arena && raw < temp_arena + sizeof(temp_arena))
+            temp_arena_used = (unsigned)(raw - temp_arena);
+        else
+            free(item);
     }
 }
 
 static char *string_temp(unsigned length)
 {
-    CkbStringTemp *item = malloc(sizeof(*item) + length + 1);
-    if (!item) return NULL;
+    CkbStringTemp *item;
+    unsigned need = (unsigned)((sizeof(*item) + length + 2U) & ~1U);
+    if (need <= sizeof(temp_arena) - temp_arena_used) {
+        item = (CkbStringTemp *)(temp_arena + temp_arena_used);
+        temp_arena_used += need;
+    } else {
+        item = malloc(sizeof(*item) + length + 1U);
+        if (!item) return NULL;
+    }
     item->previous = temporaries;
     temporaries = item;
     return (char *)(item + 1);
@@ -91,10 +104,27 @@ void ckb_number_text(char *text, const CkbValue *value)
 {
     double number = value->number;
     char kind = value->kind;
-    if (number == 0) number = 0;
-    if (kind == '%' || kind == '&') sprintf(text, "% ld", (long)number);
-    else {
+    if (kind == '%' || kind == '&') {
+        long lv = (long)number;
+        unsigned long uv;
+        char rev[16];
+        unsigned n = 0;
+        if (lv < 0) {
+            *text++ = '-';
+            uv = 0UL - (unsigned long)lv;
+        } else {
+            *text++ = ' ';
+            uv = (unsigned long)lv;
+        }
+        do {
+            rev[n++] = (char)('0' + (unsigned)(uv % 10UL));
+            uv /= 10UL;
+        } while (uv != 0UL);
+        while (n--) *text++ = rev[n];
+        *text = 0;
+    } else {
         char *exponent;
+        if (number == 0) number = 0;
         sprintf(text, kind == '#' ? "% .16G" : "% .7G", number);
         exponent = strchr(text, 'E');
         if (exponent) {
@@ -136,6 +166,33 @@ static unsigned argument_types(int id, unsigned count)
 static int integer_argument(double n, int minimum, int maximum, int *out)
 {
     double result, fraction;
+#if defined(_MSDOS) || defined(__WATCOMC__) || defined(__LITTLE_ENDIAN__) || defined(__x86_64__) || defined(__aarch64__)
+    {
+        const unsigned short *w = (const unsigned short *)&n;
+        unsigned int w3 = w[3];
+        if (w[0] == 0 && w[1] == 0) {
+            if ((w3 & 0x7FFFU) == 0 && w[2] == 0) {
+                if (0 < minimum || 0 > maximum) return 0;
+                *out = 0;
+                return 1;
+            }
+            {
+                unsigned int bexp = (w3 >> 4) & 0x7FFU;
+                if (bexp >= 1023U && bexp <= 1043U) {
+                    unsigned int shift = 1043U - bexp;
+                    unsigned long hi21 = (((unsigned long)(w3 & 0x000FU) << 16) | (unsigned long)w[2]) | 0x00100000UL;
+                    unsigned long mag = hi21 >> shift;
+                    if ((mag << shift) == hi21) {
+                        long lv = (w3 & 0x8000U) ? -(long)mag : (long)mag;
+                        if (lv < (long)minimum || lv > (long)maximum) return 0;
+                        *out = (int)lv;
+                        return 1;
+                    }
+                }
+            }
+        }
+    }
+#endif
     if (!(n >= (double)minimum - .5 && n <= (double)maximum + .5)) return 0;
     result = floor(n);
     fraction = n - result;

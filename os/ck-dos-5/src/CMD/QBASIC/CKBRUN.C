@@ -1129,16 +1129,19 @@ static int precedence(const Parser *p)
 {
     int t = p->token;
     if (!t) return 0;
-    if (t == '+' || t == '-') return 5;
-    if (t == '*' || t == '/') return 8;
+    if (t == '+' || t == '-') return 8;
+    if (t == '*' || t == '/') return 11;
     if (t == '=' || t == '<' || t == '>' ||
-        t == T_LE || t == T_GE || t == T_NE) return 4;
-    if (t == '\\') return 7;
-    if (t == '^') return 10;
+        t == T_LE || t == T_GE || t == T_NE) return 7;
+    if (t == '\\') return 10;
+    if (t == '^') return 13;
     if (t == T_NAME) {
-        if (p->first_upper == 'M' && word(p, "MOD")) return 6;
-        if (p->first_upper == 'A' && word(p, "AND")) return 2;
-        if (p->first_upper == 'O' && word(p, "OR")) return 1;
+        if (p->first_upper == 'M' && word(p, "MOD")) return 9;
+        if (p->first_upper == 'A' && word(p, "AND")) return 5;
+        if (p->first_upper == 'O' && word(p, "OR")) return 4;
+        if (p->first_upper == 'X' && word(p, "XOR")) return 3;
+        if (p->first_upper == 'E' && word(p, "EQV")) return 2;
+        if (p->first_upper == 'I' && word(p, "IMP")) return 1;
     }
     return 0;
 }
@@ -1177,7 +1180,7 @@ static void operate(Parser *p, Value *a, const Value *b, int op, int rank, int r
     long x, y;
     unsigned length;
     if (record_size(a->kind) || record_size(b->kind) || a->string != b->string ||
-        (a->string && op != '+' && rank != 4)) {
+        (a->string && op != '+' && rank != 7)) {
         fail(p, "Type mismatch");
         return;
     }
@@ -1199,7 +1202,7 @@ static void operate(Parser *p, Value *a, const Value *b, int op, int rank, int r
         memcpy(text + length - b->length, ckb_string_bytes(b), b->length + 1);
         return;
     }
-    if (rank == 4) {
+    if (rank == 7) {
         if (a->string) comparison = ckb_string_compare(a, b);
         else if (try_exact_int21(n, &x) && try_exact_int21(m, &y)) comparison = (x > y) - (x < y);
         else comparison = (n > m) - (n < m);
@@ -1219,7 +1222,7 @@ static void operate(Parser *p, Value *a, const Value *b, int op, int rank, int r
     result_rank = numeric_rank(a->kind);
     if (numeric_rank(b->kind) > result_rank) result_rank = numeric_rank(b->kind);
     if ((op == '/' || op == '^') && result_rank < 3) result_rank = 3;
-    if (rank <= 2 || op == '\\' || rank == 6)
+    if (rank <= 5 || op == '\\' || rank == 9)
         result_rank = result_rank == 1 ? 1 : 2;
     result_kind = result_rank == 4 ? '#' : result_rank == 3 ? '!' :
                   result_rank == 2 ? '&' : '%';
@@ -1253,8 +1256,11 @@ static void operate(Parser *p, Value *a, const Value *b, int op, int rank, int r
     default:
         x = integer_operand(p, n, run);
         y = integer_operand(p, m, run);
-        if (rank == 1) n = (double)(x | y);
-        else if (rank == 2) n = (double)(x & y);
+        if (rank == 5) n = (double)(x & y);
+        else if (rank == 4) n = (double)(x | y);
+        else if (rank == 3) n = (double)(x ^ y);
+        else if (rank == 2) n = (double)~(x ^ y);
+        else if (rank == 1) n = (double)((~x) | y);
         else if (!y) fail(p, "Division by zero");
         else if (x == (-2147483647L - 1) && y == -1) fail(p, "Overflow");
         else if (op == '\\') n = (double)(x / y);
@@ -1381,7 +1387,7 @@ static void expression_reference(Parser *p, Value *v, int minimum, unsigned dept
         (p->token == T_NAME && p->first_upper == 'N' && word(p, "NOT"))) {
         op = p->token;
         scan(p);
-        expression(p, v, op == T_NAME ? 3 : 9, depth + 1, run);
+        expression(p, v, op == T_NAME ? 6 : 12, depth + 1, run);
         if (v->string || record_size(v->kind)) fail(p, "Type mismatch");
         else if (op == '-') {
             v->number = -v->number;
@@ -2919,7 +2925,7 @@ static int case_matches(Parser *p, const Value *selected, int run, Value *value)
                 return 0;
             }
             scan(p);
-            expression(p, value, 5, 0, run);
+            expression(p, value, 8, 0, run);
             if (record_size(value->kind)) fail(p, "Type mismatch");
             if (selected && !error_message) {
                 if (value->string != selected->string) fail(p, "Type mismatch");

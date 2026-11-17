@@ -706,12 +706,17 @@ static int raw_get_pixel(int x, int y)
         unsigned stride = screen_mode == 7 ? 40U : 80U;
         unsigned off = (unsigned)y * stride + (unsigned)(x >> 3);
         unsigned bit = (unsigned)(7 - (x & 7));
-        int p, val = 0;
-        for (p = 0; p < 4; ++p) {
-            outp(0x3ce, 0x04);
-            outp(0x3cf, p);
-            val |= ((vram[off] >> bit) & 1) << p;
-        }
+        int val;
+        outp(0x3ce, 0x04);
+        outp(0x3cf, 0);
+        val = (vram[off] >> bit) & 1;
+        outp(0x3cf, 1);
+        val |= ((vram[off] >> bit) & 1) << 1;
+        outp(0x3cf, 2);
+        val |= ((vram[off] >> bit) & 1) << 2;
+        outp(0x3cf, 3);
+        val |= ((vram[off] >> bit) & 1) << 3;
+        outp(0x3cf, 0);
         return val;
     }
     case 13: {
@@ -1538,9 +1543,13 @@ double ckb_timer(void)
     unsigned long bda = 0;
     unsigned sub = 0;
     unsigned long total = read_pit_sample(&bda, &sub);
+    double dbda;
     timer_has_prev = 1;
     timer_prev_total = total;
-    return ((double)bda * 65536.0 + (double)sub) * 8.380953445225638e-7;
+    if (bda == 0) return (double)sub * 8.380953445225638e-7;
+    dbda = (double)bda;
+    ((unsigned short *)&dbda)[3] = (unsigned short)(((unsigned short *)&dbda)[3] + (16U << 4));
+    return (dbda + (double)sub) * 8.380953445225638e-7;
 }
 
 int ckb_inkey(char *out_two_bytes)
