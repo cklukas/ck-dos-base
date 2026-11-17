@@ -16,7 +16,8 @@ struct CkbStringTemp {
     CkbStringTemp *previous;
 };
 
-static CkbStringTemp *temporaries;
+#define temporaries ckb_temporaries
+CkbStringTemp *temporaries;
 static char temp_arena[256];
 static unsigned temp_arena_used;
 
@@ -52,6 +53,11 @@ static char *string_temp(unsigned length)
     item->previous = temporaries;
     temporaries = item;
     return (char *)(item + 1);
+}
+
+char *ckb_string_temp_alloc(unsigned length)
+{
+    return string_temp(length);
 }
 
 char *ckb_string_buffer(CkbValue *value, unsigned length)

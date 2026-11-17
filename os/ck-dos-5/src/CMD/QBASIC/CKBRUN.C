@@ -2462,9 +2462,9 @@ void free_proc_locals(Variable *locals, unsigned n_locals, int pooled)
     unsigned i;
     if (!locals) return;
     for (i = 0; i < n_locals; ++i) {
-        unbind_field(&locals[i]);
-        release_array(&locals[i]);
-        free(locals[i].text);
+        if (any_field_bound) unbind_field(&locals[i]);
+        if (locals[i].elements) release_array(&locals[i]);
+        if (locals[i].text) free(locals[i].text);
     }
     if (pooled) local_pool_top -= n_locals;
     else free(locals);

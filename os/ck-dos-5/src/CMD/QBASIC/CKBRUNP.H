@@ -145,6 +145,7 @@ typedef struct {
     unsigned block;
     double last, step;
     long ilast, istep;
+    Variable *fast_var;
     unsigned body_pc;
     unsigned char fast_i16;
 } ForFrame;

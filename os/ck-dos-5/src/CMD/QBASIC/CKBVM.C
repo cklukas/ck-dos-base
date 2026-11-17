@@ -374,7 +374,7 @@ int ckb_vm_execute(void)
             }
             first_error = err_at;
             sp = sp_base;
-            if (ckb_string_mark() != str_base) ckb_string_release(str_base);
+            if (ckb_temporaries != str_base) ckb_string_release(str_base);
 
             if (!handling_error && error_handler[current_scope + 1] < line_count) {
                 unsigned handler = error_handler[current_scope + 1];
@@ -412,7 +412,7 @@ int ckb_vm_execute(void)
             break;
         }
 
-        if (sp == sp_base && ckb_string_mark() != str_base)
+        if (ckb_temporaries != str_base && sp == sp_base)
             ckb_string_release(str_base);
 
         cur_op_pc = pc;
@@ -553,12 +553,21 @@ int ckb_vm_execute(void)
             break;
         }
 
-        case OP_LOAD_GINT: {
-            unsigned id = code[pc++];
+        case OP_LOAD_GINT_I16: {
+            Variable *gv = VM_GVAR_PTR(code[pc++]);
             VmVal *v = &vstack[sp++];
-            v->kind = variables[id].kind;
+            v->kind = '%';
             v->is_ref = 0;
-            v->u.i = VAR_IVAL(&variables[id]);
+            v->u.i = VAR_IVAL(gv);
+            break;
+        }
+
+        case OP_LOAD_GINT_I32: {
+            Variable *gv = VM_GVAR_PTR(code[pc++]);
+            VmVal *v = &vstack[sp++];
+            v->kind = '&';
+            v->is_ref = 0;
+            v->u.i = VAR_IVAL(gv);
             break;
         }
 
@@ -572,12 +581,21 @@ int ckb_vm_execute(void)
             break;
         }
 
-        case OP_LOAD_GFLT: {
-            unsigned id = code[pc++];
+        case OP_LOAD_GFLT_SNG: {
+            Variable *gv = VM_GVAR_PTR(code[pc++]);
             VmVal *v = &vstack[sp++];
-            v->kind = variables[id].kind;
+            v->kind = '!';
             v->is_ref = 0;
-            v->u.f = variables[id].number;
+            v->u.f = gv->number;
+            break;
+        }
+
+        case OP_LOAD_GFLT_DBL: {
+            Variable *gv = VM_GVAR_PTR(code[pc++]);
+            VmVal *v = &vstack[sp++];
+            v->kind = '#';
+            v->is_ref = 0;
+            v->u.f = gv->number;
             break;
         }
 
@@ -592,8 +610,8 @@ int ckb_vm_execute(void)
         }
 
         case OP_LOAD_GSTR: {
-            unsigned id = code[pc++];
-            vm_read_var_str(&variables[id], 0, &vstack[sp++]);
+            Variable *gv = VM_GVAR_PTR(code[pc++]);
+            vm_read_var_str(gv, 0, &vstack[sp++]);
             break;
         }
 
@@ -607,13 +625,19 @@ int ckb_vm_execute(void)
             break;
         }
 
-        case OP_STORE_GINT: {
-            unsigned id = code[pc++];
+        case OP_STORE_GINT_I16: {
+            Variable *gv = VM_GVAR_PTR(code[pc++]);
             long val = vstack[--sp].u.i;
-            if (variables[id].kind == '%' && (val < -32768L || val > 32767L))
+            if (val < -32768L || val > 32767L)
                 error_message = "Overflow";
             else
-                VAR_IVAL(&variables[id]) = val;
+                VAR_IVAL(gv) = val;
+            break;
+        }
+
+        case OP_STORE_GINT_I32: {
+            Variable *gv = VM_GVAR_PTR(code[pc++]);
+            VAR_IVAL(gv) = vstack[--sp].u.i;
             break;
         }
 
@@ -631,15 +655,23 @@ int ckb_vm_execute(void)
             break;
         }
 
-        case OP_STORE_GFLT: {
-            unsigned id = code[pc++];
+        case OP_STORE_GFLT_SNG: {
+            Variable *gv = VM_GVAR_PTR(code[pc++]);
             double val = vstack[--sp].u.f;
-            char k = variables[id].kind;
-            if (!finite_number(val) ||
-                (k == '!' && (val < -3.4028234663852886e38 || val > 3.4028234663852886e38)))
+            if (!finite_number(val) || val < -3.4028234663852886e38 || val > 3.4028234663852886e38)
                 error_message = "Overflow";
             else
-                variables[id].number = (k == '!') ? ckb_single_precision(val) : val;
+                gv->number = ckb_single_precision(val);
+            break;
+        }
+
+        case OP_STORE_GFLT_DBL: {
+            Variable *gv = VM_GVAR_PTR(code[pc++]);
+            double val = vstack[--sp].u.f;
+            if (!finite_number(val))
+                error_message = "Overflow";
+            else
+                gv->number = val;
             break;
         }
 
@@ -661,9 +693,9 @@ int ckb_vm_execute(void)
         }
 
         case OP_STORE_GSTR: {
-            unsigned id = code[pc++];
+            Variable *gv = VM_GVAR_PTR(code[pc++]);
             VmVal *sv = &vstack[--sp];
-            vm_store_var_str(&variables[id], 0, sv->u.fs, sv->length);
+            vm_store_var_str(gv, 0, sv->u.fs, sv->length);
             break;
         }
 
@@ -680,8 +712,30 @@ int ckb_vm_execute(void)
 
         case OP_LOAD_ARR1: {
             unsigned id = code[pc++];
-            long idx = vstack[--sp].u.i;
-            Variable *av = vm_ready_array((int)id, 1);
+            long idx = vstack[sp - 1].u.i;
+            Variable *av = &variables[id];
+            if (!av->frame_slot && !av->reference.target && av->elements && av->dimensions == 1U) {
+                if (idx < av->bounds[0].lower || idx > av->bounds[0].upper) {
+                    --sp;
+                    error_message = "Subscript out of range";
+                } else if (av->kind == '%') {
+                    unsigned cell = (unsigned)(idx - av->bounds[0].lower);
+                    vstack[sp - 1].kind = '%';
+                    vstack[sp - 1].is_ref = 0;
+                    vstack[sp - 1].u.i = (long)((const short *)av->elements)[cell];
+                } else if (av->kind == '&') {
+                    unsigned cell = (unsigned)(idx - av->bounds[0].lower);
+                    vstack[sp - 1].kind = '&';
+                    vstack[sp - 1].is_ref = 0;
+                    vstack[sp - 1].u.i = ((const long *)av->elements)[cell];
+                } else {
+                    --sp;
+                    vm_load_elem(av, (unsigned)(idx - av->bounds[0].lower), &vstack[sp++]);
+                }
+                break;
+            }
+            --sp;
+            av = vm_ready_array((int)id, 1);
             if (av) {
                 if (idx < av->bounds[0].lower || idx > av->bounds[0].upper)
                     error_message = "Subscript out of range";
@@ -712,14 +766,30 @@ int ckb_vm_execute(void)
 
         case OP_STORE_ARR1: {
             unsigned id = code[pc++];
-            VmVal val = vstack[--sp];
-            long idx = vstack[--sp].u.i;
-            Variable *av = vm_ready_array((int)id, 1);
-            if (av) {
-                if (idx < av->bounds[0].lower || idx > av->bounds[0].upper)
+            Variable *av = &variables[id];
+            if (!av->frame_slot && !av->reference.target && av->elements && av->dimensions == 1U &&
+                (av->kind == '%' || av->kind == '&')) {
+                long val_i = vstack[--sp].u.i;
+                long idx = vstack[--sp].u.i;
+                if (idx < av->bounds[0].lower || idx > av->bounds[0].upper) {
                     error_message = "Subscript out of range";
-                else
-                    vm_store_elem(av, (unsigned)(idx - av->bounds[0].lower), &val);
+                } else if (av->kind == '%') {
+                    ((short *)av->elements)[(unsigned)(idx - av->bounds[0].lower)] = (short)val_i;
+                } else {
+                    ((long *)av->elements)[(unsigned)(idx - av->bounds[0].lower)] = val_i;
+                }
+                break;
+            }
+            {
+                VmVal val = vstack[--sp];
+                long idx = vstack[--sp].u.i;
+                av = vm_ready_array((int)id, 1);
+                if (av) {
+                    if (idx < av->bounds[0].lower || idx > av->bounds[0].upper)
+                        error_message = "Subscript out of range";
+                    else
+                        vm_store_elem(av, (unsigned)(idx - av->bounds[0].lower), &val);
+                }
             }
             break;
         }
@@ -940,9 +1010,15 @@ int ckb_vm_execute(void)
 
         case OP_MUL_I16: {
             long b = vstack[--sp].u.i;
-            long r = vstack[sp - 1].u.i * b;
-            if (r < -32768L || r > 32767L) error_message = "Overflow";
-            else { vstack[sp - 1].u.i = r; vstack[sp - 1].kind = '%'; }
+            long a = vstack[sp - 1].u.i;
+            if ((unsigned)((int)a + 181) <= 362U && (unsigned)((int)b + 181) <= 362U) {
+                vstack[sp - 1].u.i = (long)((int)a * (int)b);
+                vstack[sp - 1].kind = '%';
+            } else {
+                long r = a * b;
+                if (r < -32768L || r > 32767L) error_message = "Overflow";
+                else { vstack[sp - 1].u.i = r; vstack[sp - 1].kind = '%'; }
+            }
             break;
         }
 
@@ -951,7 +1027,12 @@ int ckb_vm_execute(void)
             long a = vstack[sp - 1].u.i;
             if (!b) error_message = "Division by zero";
             else if (a == -32768L && b == -1L) error_message = "Overflow";
-            else { vstack[sp - 1].u.i = a / b; vstack[sp - 1].kind = '%'; }
+            else {
+                vstack[sp - 1].u.i = (a != -32768L && b != -32768L)
+                                         ? (long)((int)a / (int)b)
+                                         : (a / b);
+                vstack[sp - 1].kind = '%';
+            }
             break;
         }
 
@@ -960,7 +1041,12 @@ int ckb_vm_execute(void)
             long a = vstack[sp - 1].u.i;
             if (!b) error_message = "Division by zero";
             else if (a == -32768L && b == -1L) error_message = "Overflow";
-            else { vstack[sp - 1].u.i = a % b; vstack[sp - 1].kind = '%'; }
+            else {
+                vstack[sp - 1].u.i = (a != -32768L && b != -32768L)
+                                         ? (long)((int)a % (int)b)
+                                         : (a % b);
+                vstack[sp - 1].kind = '%';
+            }
             break;
         }
 
@@ -1003,8 +1089,16 @@ int ckb_vm_execute(void)
             int cop = (int)code[pc++];
             long b = vstack[--sp].u.i;
             long a = vstack[sp - 1].u.i;
-            int cmp = (a > b) - (a < b);
-            vstack[sp - 1].u.i = vm_eval_rel(cmp, cop) ? -1L : 0L;
+            int res;
+            switch (cop) {
+            case '=': res = a == b; break;
+            case '<': res = a < b; break;
+            case '>': res = a > b; break;
+            case T_LE: res = a <= b; break;
+            case T_GE: res = a >= b; break;
+            default: res = a != b; break;
+            }
+            vstack[sp - 1].u.i = res ? -1L : 0L;
             vstack[sp - 1].kind = '%';
             break;
         }
@@ -1178,15 +1272,12 @@ int ckb_vm_execute(void)
             VmVal *b = &vstack[--sp];
             VmVal *a = &vstack[sp - 1];
             unsigned total = a->length + b->length;
-            CkbValue tmp;
             char *dst;
             if (total > STRING_MAX) {
                 error_message = "String too long";
                 break;
             }
-            INIT_VALUE(&tmp);
-            /* Always allocate in temp_arena (> CKB_INLINE_STRING or force wide via temp_arena) */
-            dst = ckb_string_buffer(&tmp, total < CKB_INLINE_STRING + 1U ? CKB_INLINE_STRING + 1U : total);
+            dst = ckb_string_temp_alloc(total);
             if (!dst) {
                 error_message = "Out of memory";
                 break;
@@ -1229,30 +1320,56 @@ int ckb_vm_execute(void)
                 while (a->length && a->u.fs[a->length - 1] == ' ') --a->length;
                 break;
             case SFN_STR: {
-                CkbValue nv, tmp;
-                char num_buf[48];
-                unsigned nlen;
                 char *dst;
-                INIT_VALUE(&nv);
-                nv.kind = a->kind;
-                nv.number = (a->kind == '%' || a->kind == '&') ? (double)a->u.i : a->u.f;
-                ckb_number_text(num_buf, &nv);
-                nlen = (unsigned)strlen(num_buf);
-                INIT_VALUE(&tmp);
-                dst = ckb_string_buffer(&tmp, CKB_INLINE_STRING + 1U + nlen);
-                if (!dst) { error_message = "Out of memory"; break; }
-                memcpy(dst, num_buf, nlen + 1U);
+                unsigned nlen = 0;
+                if (a->kind == '%' || a->kind == '&') {
+                    long lv = a->u.i;
+                    unsigned long uv;
+                    char rev[14];
+                    unsigned rn = 0;
+                    dst = ckb_string_temp_alloc(14U);
+                    if (!dst) { error_message = "Out of memory"; break; }
+                    if (lv < 0) {
+                        dst[nlen++] = '-';
+                        uv = 0UL - (unsigned long)lv;
+                    } else {
+                        dst[nlen++] = ' ';
+                        uv = (unsigned long)lv;
+                    }
+                    if (uv <= 65535UL) {
+                        unsigned u16 = (unsigned)uv;
+                        do {
+                            rev[rn++] = (char)('0' + (u16 % 10U));
+                            u16 /= 10U;
+                        } while (u16 != 0U);
+                    } else {
+                        do {
+                            rev[rn++] = (char)('0' + (unsigned)(uv % 10UL));
+                            uv /= 10UL;
+                        } while (uv != 0UL);
+                    }
+                    while (rn--) dst[nlen++] = rev[rn];
+                    dst[nlen] = '\0';
+                } else {
+                    CkbValue nv;
+                    char num_buf[48];
+                    nv.kind = a->kind;
+                    nv.number = a->u.f;
+                    ckb_number_text(num_buf, &nv);
+                    nlen = (unsigned)strlen(num_buf);
+                    dst = ckb_string_temp_alloc(nlen);
+                    if (!dst) { error_message = "Out of memory"; break; }
+                    memcpy(dst, num_buf, nlen + 1U);
+                }
                 a->u.fs = (const char __far *)dst;
                 a->length = nlen;
                 a->kind = '$';
                 break;
             }
             case SFN_CHR: {
-                CkbValue tmp;
                 char *dst;
                 if (a->u.i < 0 || a->u.i > 255L) { error_message = "Illegal function call"; break; }
-                INIT_VALUE(&tmp);
-                dst = ckb_string_buffer(&tmp, CKB_INLINE_STRING + 2U);
+                dst = ckb_string_temp_alloc(1U);
                 if (!dst) { error_message = "Out of memory"; break; }
                 dst[0] = (char)a->u.i;
                 dst[1] = '\0';
@@ -1262,7 +1379,6 @@ int ckb_vm_execute(void)
                 break;
             }
             case SFN_SPACE: {
-                CkbValue tmp;
                 char *dst;
                 unsigned n;
                 if (a->u.i < 0 || a->u.i > (long)STRING_MAX) { error_message = "Illegal function call"; break; }
@@ -1273,8 +1389,7 @@ int ckb_vm_execute(void)
                     a->kind = '$';
                     break;
                 }
-                INIT_VALUE(&tmp);
-                dst = ckb_string_buffer(&tmp, n < CKB_INLINE_STRING + 1U ? CKB_INLINE_STRING + 1U : n);
+                dst = ckb_string_temp_alloc(n);
                 if (!dst) { error_message = "Out of memory"; break; }
                 memset(dst, ' ', n);
                 dst[n] = '\0';
@@ -1285,12 +1400,10 @@ int ckb_vm_execute(void)
             }
             case SFN_UCASE:
             case SFN_LCASE: {
-                CkbValue tmp;
                 char *dst;
                 unsigned i, n = a->length;
                 if (!n) break;
-                INIT_VALUE(&tmp);
-                dst = ckb_string_buffer(&tmp, n < CKB_INLINE_STRING + 1U ? CKB_INLINE_STRING + 1U : n);
+                dst = ckb_string_temp_alloc(n);
                 if (!dst) { error_message = "Out of memory"; break; }
                 for (i = 0; i < n; ++i) {
                     unsigned char ch = (unsigned char)a->u.fs[i];
@@ -1605,6 +1718,43 @@ int ckb_vm_execute(void)
             break;
         }
 
+        case OP_FOR_INIT_I16: {
+            int vid = (int)code[pc++];
+            unsigned bidx = code[pc++];
+            unsigned has_step = code[pc++];
+            unsigned skip_pc = code[pc++];
+            long istp = has_step ? vstack[--sp].u.i : 1L;
+            long ilst = vstack[--sp].u.i;
+            long ibeg = vstack[--sp].u.i;
+            Reference ref = reference_at(vid, 0);
+            Variable *fv = variable_storage(vid);
+            if (!vm_write_ref_int(ref, ibeg)) break;
+            while (for_depth > (activation ? activation->for_base : 0) &&
+                   for_stack[for_depth - 1].block == bidx)
+                --for_depth;
+            if (istp >= 0L ? ibeg > ilst : ibeg < ilst) {
+                pc = skip_pc;
+            } else if (for_depth >= STACK_MAX) {
+                error_message = "Too many active FOR loops";
+            } else {
+                ForFrame *ff = &for_stack[for_depth++];
+                ff->variable = vid;
+                ff->block = bidx;
+                ff->ilast = ilst;
+                ff->istep = istp;
+                ff->fast_var = fv;
+                ff->body_pc = pc;
+                if (!fv->reference.target) {
+                    ff->fast_i16 = 1;
+                } else {
+                    ff->last = (double)ilst;
+                    ff->step = (double)istp;
+                    ff->fast_i16 = 0;
+                }
+            }
+            break;
+        }
+
         case OP_FOR_INIT: {
             int vid = (int)code[pc++];
             unsigned bidx = code[pc++];
@@ -1635,13 +1785,15 @@ int ckb_vm_execute(void)
                 error_message = "Too many active FOR loops";
             } else {
                 ForFrame *ff = &for_stack[for_depth++];
+                Variable *fv = variable_storage(vid);
                 ff->variable = vid;
                 ff->block = bidx;
                 ff->last = lst;
                 ff->step = stp;
+                ff->fast_var = fv;
                 ff->body_pc = pc;
                 ff->fast_i16 = 0;
-                if (vk == '%' && !variable_storage(vid)->reference.target &&
+                if (vk == '%' && !fv->reference.target &&
                     try_exact_int21(lst, &ilst) && try_exact_int21(stp, &istp)) {
                     ff->ilast = ilst;
                     ff->istep = istp;
@@ -1665,7 +1817,7 @@ int ckb_vm_execute(void)
                 break;
             }
             if (ff->fast_i16) {
-                Variable *fv = variable_storage(ff->variable);
+                Variable *fv = ff->fast_var;
                 long nxt = VAR_IVAL(fv) + ff->istep;
                 if (nxt < -32768L || nxt > 32767L) {
                     error_message = "Overflow";
@@ -1790,26 +1942,31 @@ int ckb_vm_execute(void)
 
         case OP_PUSH_REF_VAR: {
             unsigned vid = code[pc++];
+            Reference r = reference_at((int)vid, 0);
             VmVal *v = &vstack[sp++];
             v->is_ref = 1;
-            v->kind = variables[vid].kind;
-            v->u.ref = reference_at((int)vid, 0);
+            v->kind = r.kind;
+            v->u.sref.target = r.target;
+            v->u.sref.cell = r.cell;
             break;
         }
 
         case OP_PUSH_REF_ARR: {
             unsigned vid = code[pc++];
             Variable *av = array_storage((int)vid);
+            Reference r;
             VmVal *v;
             if (!av->elements && av->dynamic != ARRAY_DYNAMIC) {
                 Parser dp;
                 memset(&dp, 0, sizeof(dp));
                 implicit_array(&dp, av, 1);
             }
+            r = reference_at((int)vid, 0);
             v = &vstack[sp++];
             v->is_ref = 1;
-            v->kind = variables[vid].kind;
-            v->u.ref = reference_at((int)vid, 0);
+            v->kind = r.kind;
+            v->u.sref.target = r.target;
+            v->u.sref.cell = r.cell;
             break;
         }
 
@@ -1824,11 +1981,8 @@ int ckb_vm_execute(void)
                     VmVal *v = &vstack[sp++];
                     v->is_ref = 1;
                     v->kind = av->kind;
-                    v->u.ref.target = av;
-                    v->u.ref.cell = (unsigned)(idx - av->bounds[0].lower);
-                    v->u.ref.offset = 0;
-                    v->u.ref.width = av->fixed_width;
-                    v->u.ref.kind = av->kind;
+                    v->u.sref.target = av;
+                    v->u.sref.cell = (unsigned)(idx - av->bounds[0].lower);
                 }
             }
             break;
@@ -1878,7 +2032,11 @@ int ckb_vm_execute(void)
                                      : &variables[param_id];
                 VmVal *arg = &vstack[--sp];
                 if (arg->is_ref) {
-                    pvar->reference = arg->u.ref;
+                    pvar->reference.target = arg->u.sref.target;
+                    pvar->reference.cell = arg->u.sref.cell;
+                    pvar->reference.offset = 0;
+                    pvar->reference.width = arg->u.sref.target->fixed_width;
+                    pvar->reference.kind = arg->kind;
                 } else {
                     char pk = variables[param_id].kind;
                     pvar->reference.target = NULL;
@@ -1905,24 +2063,23 @@ int ckb_vm_execute(void)
             }
             pf = &pframes[--procedure_depth];
             if (pf->is_func && !error_message) {
-                Variable *rv = variable_storage(pf->result_var);
+                Variable *rv = pf->result_var >= 0 && variables[pf->result_var].frame_slot
+                                   ? &pf->frame.locals[variables[pf->result_var].frame_slot - 1U]
+                                   : &variables[pf->result_var];
                 has_ret = 1;
                 ret_val.kind = pf->result_kind;
                 ret_val.is_ref = 0;
                 if (pf->result_kind == '%' || pf->result_kind == '&') {
                     ret_val.u.i = VAR_IVAL(rv);
                 } else if (pf->result_kind == '$') {
-                    /* Copy return string into temp_arena BEFORE freeing local frame! */
                     VmVal tmp_s;
-                    CkbValue cv;
                     char *dst;
                     vm_read_var_str(rv, 0, &tmp_s);
                     if (tmp_s.length == 0) {
                         ret_val.u.fs = (const char __far *)"";
                         ret_val.length = 0;
                     } else {
-                        INIT_VALUE(&cv);
-                        dst = ckb_string_buffer(&cv, tmp_s.length < CKB_INLINE_STRING + 1U ? CKB_INLINE_STRING + 1U : tmp_s.length);
+                        dst = ckb_string_temp_alloc(tmp_s.length);
                         if (!dst) { error_message = "Out of memory"; has_ret = 0; }
                         else {
                             _fmemcpy(dst, tmp_s.u.fs, tmp_s.length);
@@ -1979,13 +2136,9 @@ int ckb_vm_execute(void)
             VmDefFnFrame __far *df = &vm.fnframes[--fn_depth];
             DefFn __far *fn = &def_fns[df->fn_id];
             unsigned pcount = fn->param_count, i;
-            /* If return value is string referencing param var, copy to temp_arena first */
             if (fn->result_kind == '$' && sp > 0 && vstack[sp - 1].length > 0) {
                 VmVal *rv = &vstack[sp - 1];
-                CkbValue cv;
-                char *dst;
-                INIT_VALUE(&cv);
-                dst = ckb_string_buffer(&cv, rv->length < CKB_INLINE_STRING + 1U ? CKB_INLINE_STRING + 1U : rv->length);
+                char *dst = ckb_string_temp_alloc(rv->length);
                 if (dst) {
                     _fmemcpy(dst, rv->u.fs, rv->length);
                     dst[rv->length] = '\0';

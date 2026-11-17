@@ -216,6 +216,7 @@ static int compile_f64_expr(VmCompiler *c, Parser *p)
 static void emit_coerce_to(VmCompiler *c, char from_k, char to_k)
 {
     if (from_k == to_k) return;
+    if (from_k == '%' && to_k == '&') return;
     if ((from_k == '%' || from_k == '&') && (to_k == '!' || to_k == '#')) {
         emit(c, OP_I2F);
         if (to_k == '!') emit(c, OP_CONV_F32);
@@ -674,9 +675,12 @@ static int compile_var_or_lvalue_load(VmCompiler *c, Parser *p, char *out_kind)
             else if (*out_kind == '$') emit2(c, OP_LOAD_LSTR, (unsigned)id);
             else emit2(c, OP_LOAD_LFLT, (unsigned)id);
         } else {
-            if (*out_kind == '%' || *out_kind == '&') emit2(c, OP_LOAD_GINT, (unsigned)id);
-            else if (*out_kind == '$') emit2(c, OP_LOAD_GSTR, (unsigned)id);
-            else emit2(c, OP_LOAD_GFLT, (unsigned)id);
+            unsigned garg = VM_GVAR_ARG(id);
+            if (*out_kind == '%') emit2(c, OP_LOAD_GINT_I16, garg);
+            else if (*out_kind == '&') emit2(c, OP_LOAD_GINT_I32, garg);
+            else if (*out_kind == '$') emit2(c, OP_LOAD_GSTR, garg);
+            else if (*out_kind == '!') emit2(c, OP_LOAD_GFLT_SNG, garg);
+            else emit2(c, OP_LOAD_GFLT_DBL, garg);
         }
         return 1;
     }
@@ -850,6 +854,22 @@ static int compile_gfx_coord_vm(VmCompiler *c, Parser *p, int *out_step)
     return 1;
 }
 
+static int is_reserved_stmt_vm(const char *s)
+{
+    static const char *const kw[] = {
+        "MID$", "ENVIRON", "OUT", "POKE", "PLAY", "SOUND", "SLEEP", "WIDTH",
+        "OPEN", "CLOSE", "INPUT", "WRITE", "READ", "RESTORE", "RANDOMIZE",
+        "SWAP", "LSET", "RSET", "ERASE", "REDIM", "CLEAR", "COMMON", "OPTION",
+        "CHAIN", "RUN", "SHELL", "FIELD", "SEEK", "LOCK", "UNLOCK", "KILL",
+        "NAME", "MKDIR", "RMDIR", "CHDIR", "LPRINT", "ERROR", "ON", "RESUME",
+        "CONST"
+    };
+    unsigned i;
+    for (i = 0; i < sizeof(kw) / sizeof(kw[0]); ++i)
+        if (kw[i][0] == s[0] && strcmp(kw[i], s) == 0) return 1;
+    return 0;
+}
+
 static int compile_assignment_vm(VmCompiler *c, Parser *p)
 {
     const char __far *name;
@@ -888,7 +908,9 @@ static int compile_assignment_vm(VmCompiler *c, Parser *p)
         int unsuf = unsuffixed_name(p);
         int is_arr;
         if (!identifier(p, vname, &vkind) || error_message) return 0;
+        if (is_reserved_stmt_vm(vname)) return 0;
         is_arr = (p->token == '(');
+        if (!is_arr && p->token != '=') return 0;
         id = named_variable(p, vname, vkind, is_arr, 0, unsuf, 0);
         if (id < 0 || error_message || variables[id].constant) return 0;
 
@@ -937,9 +959,12 @@ static int compile_assignment_vm(VmCompiler *c, Parser *p)
             else if (lk == '$') emit2(c, OP_STORE_LSTR, (unsigned)id);
             else emit2(c, OP_STORE_LFLT, (unsigned)id);
         } else {
-            if (lk == '%' || lk == '&') emit2(c, OP_STORE_GINT, (unsigned)id);
-            else if (lk == '$') emit2(c, OP_STORE_GSTR, (unsigned)id);
-            else emit2(c, OP_STORE_GFLT, (unsigned)id);
+            unsigned garg = VM_GVAR_ARG(id);
+            if (lk == '%') emit2(c, OP_STORE_GINT_I16, garg);
+            else if (lk == '&') emit2(c, OP_STORE_GINT_I32, garg);
+            else if (lk == '$') emit2(c, OP_STORE_GSTR, garg);
+            else if (lk == '!') emit2(c, OP_STORE_GFLT_SNG, garg);
+            else emit2(c, OP_STORE_GFLT_DBL, garg);
         }
         return end_statement(p);
     }
@@ -1129,7 +1154,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
                 emit_fixup(c, blocks[finish_idx].after, 0);
             return end_statement(p);
         }
-        return 0;
+        break;
 
     case 'D':
         if (take_word(p, "DO")) {
@@ -1185,7 +1210,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
             p->pos = lines[p->line].end;
             return 1;
         }
-        return 0;
+        break;
 
     case 'E':
         if (take_word(p, "END")) {
@@ -1240,7 +1265,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
             emit(c, OP_RET_PROC);
             return end_statement(p);
         }
-        return 0;
+        break;
 
     case 'F':
         if (take_word(p, "FOR")) {
@@ -1256,6 +1281,30 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
                 variables[vid].constant)
                 return 0;
             if (!take(p, '=')) return 0;
+            if (variables[vid].kind == '%') {
+                Parser sp_save = *p;
+                unsigned pc_save = vm.code_len, fc_save = vm.fconst_len, fx_save = c->fixup_len;
+                int all_int = 1;
+                if (!compile_expr(c, p, 1, &k1) || (k1 != '%' && k1 != '&')) all_int = 0;
+                if (all_int && !take_word(p, "TO")) return 0;
+                if (all_int && (!compile_expr(c, p, 1, &k2) || (k2 != '%' && k2 != '&'))) all_int = 0;
+                if (all_int && take_word(p, "STEP")) {
+                    if (!compile_expr(c, p, 1, &k3) || (k3 != '%' && k3 != '&')) all_int = 0;
+                    has_step = 1;
+                }
+                if (all_int && !error_message) {
+                    emit(c, OP_FOR_INIT_I16);
+                    emit3(c, (unsigned)vid, bidx, (unsigned)has_step);
+                    emit_fixup(c, blocks[blocks[bidx].peer].after, 0);
+                    return end_statement(p);
+                }
+                error_message = NULL;
+                *p = sp_save;
+                vm.code_len = pc_save;
+                vm.fconst_len = fc_save;
+                c->fixup_len = fx_save;
+                has_step = 0;
+            }
             if (!compile_expr(c, p, 1, &k1) || k1 == '$') return 0;
             if (k1 == '%' || k1 == '&') emit(c, OP_I2F);
             if (!take_word(p, "TO")) return 0;
@@ -1271,7 +1320,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
             emit_fixup(c, blocks[blocks[bidx].peer].after, 0);
             return end_statement(p);
         }
-        return 0;
+        break;
 
     case 'G':
         if (take_word(p, "GOTO")) {
@@ -1315,7 +1364,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
                   (unsigned)((s1 ? 1U : 0U) | (s2 ? 2U : 0U) | (has_idx ? 4U : 0U)));
             return end_statement(p);
         }
-        return 0;
+        break;
 
     case 'I':
         if (take_word(p, "IF")) {
@@ -1372,7 +1421,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
                 return end_statement(p);
             }
         }
-        return 0;
+        break;
 
     case 'L':
         if (take_word(p, "LOOP")) {
@@ -1557,7 +1606,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
             emit2(c, OP_CON_PALETTE, 1U);
             return end_statement(p);
         }
-        return 0;
+        break;
 
     case 'R':
         if (take_word(p, "RETURN")) {
@@ -1576,7 +1625,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
                 return end_statement(p);
             }
         }
-        return 0;
+        break;
 
     case 'S':
         if (take_word(p, "SELECT")) {
@@ -1619,7 +1668,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
             emit(c, OP_STOP_STMT);
             return end_statement(p);
         }
-        return 0;
+        break;
 
     case 'V':
         if (take_word(p, "VIEW")) {
@@ -1633,7 +1682,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
             emit2(c, OP_CON_VIEW_PRINT, 1U);
             return end_statement(p);
         }
-        return 0;
+        break;
 
     case 'W':
         if (take_word(p, "WHILE")) {
@@ -1653,7 +1702,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
             emit_fixup(c, blocks[blocks[bidx].peer].at, 0);
             return end_statement(p);
         }
-        return 0;
+        break;
 
     default:
         break;

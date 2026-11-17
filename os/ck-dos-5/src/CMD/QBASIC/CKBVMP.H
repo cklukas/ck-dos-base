@@ -43,19 +43,23 @@ enum {
     OP_LIT_STR,         /* w1: source offset, w2: length */
 
     /* Scalar Loads */
-    OP_LOAD_GINT,       /* w1: var_id (% or &) */
+    OP_LOAD_GINT_I16,   /* w1: near ptr &variables[id] (%) */
+    OP_LOAD_GINT_I32,   /* w1: near ptr &variables[id] (&) */
     OP_LOAD_LINT,       /* w1: var_id */
-    OP_LOAD_GFLT,       /* w1: var_id (! or #) */
+    OP_LOAD_GFLT_SNG,   /* w1: near ptr &variables[id] (!) */
+    OP_LOAD_GFLT_DBL,   /* w1: near ptr &variables[id] (#) */
     OP_LOAD_LFLT,       /* w1: var_id */
-    OP_LOAD_GSTR,       /* w1: var_id ($) */
+    OP_LOAD_GSTR,       /* w1: near ptr &variables[id] ($) */
     OP_LOAD_LSTR,       /* w1: var_id */
 
     /* Scalar Stores */
-    OP_STORE_GINT,      /* w1: var_id */
+    OP_STORE_GINT_I16,  /* w1: near ptr &variables[id] (%) */
+    OP_STORE_GINT_I32,  /* w1: near ptr &variables[id] (&) */
     OP_STORE_LINT,      /* w1: var_id */
-    OP_STORE_GFLT,      /* w1: var_id */
+    OP_STORE_GFLT_SNG,  /* w1: near ptr &variables[id] (!) */
+    OP_STORE_GFLT_DBL,  /* w1: near ptr &variables[id] (#) */
     OP_STORE_LFLT,      /* w1: var_id */
-    OP_STORE_GSTR,      /* w1: var_id */
+    OP_STORE_GSTR,      /* w1: near ptr &variables[id] ($) */
     OP_STORE_LSTR,      /* w1: var_id */
 
     /* 1D / 2D Array & Record Loads/Stores */
@@ -138,6 +142,7 @@ enum {
 
     /* Structured Loops & SELECT CASE */
     OP_FOR_INIT,        /* w1: var_id, w2: block_idx, w3: has_step, w4: skip_pc */
+    OP_FOR_INIT_I16,    /* w1: var_id, w2: block_idx, w3: has_step, w4: skip_pc */
     OP_FOR_NEXT,        /* w1: var_id_or_ffff */
     OP_SEL_PUSH,        /* w1: sel_slot, w2: first_case_pc */
     OP_SEL_CASE_VAL,    /* w1: sel_slot, w2: next_try_pc (matched jumps to body_pc: w3) */
@@ -196,15 +201,27 @@ typedef struct {
     unsigned char plus_two;
 } VmFixup;
 
+#if defined(__WATCOMC__) || defined(_MSDOS)
+#define VM_GVAR_ARG(id) ((unsigned)&variables[id])
+#define VM_GVAR_PTR(w)  ((Variable *)(w))
+#else
+#define VM_GVAR_ARG(id) ((unsigned)(id))
+#define VM_GVAR_PTR(w)  (&variables[w])
+#endif
+
 typedef struct {
     char kind;
     unsigned char is_ref;
     unsigned length;
+    unsigned pad0, pad1;
     union {
         long i;
         double f;
         const char __far *fs;
-        Reference ref;
+        struct {
+            Variable *target;
+            unsigned cell;
+        } sref;
     } u;
 } VmVal;
 

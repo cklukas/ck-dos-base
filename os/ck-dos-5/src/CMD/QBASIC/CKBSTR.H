@@ -19,8 +19,11 @@ typedef struct {
     char kind; /* Numeric BASIC type: %, &, !, or #. */
 } CkbValue;
 
+extern CkbStringTemp *ckb_temporaries;
+
 CkbStringTemp *ckb_string_mark(void);
 void ckb_string_release(CkbStringTemp *mark);
+char *ckb_string_temp_alloc(unsigned length);
 char *ckb_string_buffer(CkbValue *value, unsigned length);
 char *ckb_string_buffer_at(CkbValue *value);
 const char *ckb_string_bytes(const CkbValue *value);
