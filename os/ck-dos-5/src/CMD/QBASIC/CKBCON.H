@@ -4,6 +4,12 @@
 #ifndef CKBCON_H
 #define CKBCON_H
 
+#if defined(__WATCOMC__) || defined(_MSDOS)
+#define CKB_FAR __far
+#else
+#define CKB_FAR
+#endif
+
 enum {
     CKB_PUT_XOR = 0,
     CKB_PUT_PSET = 1,
@@ -45,8 +51,8 @@ const char *ckb_circle(int x, int y, double radius, int color,
                        int has_aspect, double aspect);
 const char *ckb_paint(int x, int y, int fill_color, int border_color);
 const char *ckb_gfx_get(int x1, int y1, int x2, int y2,
-                        unsigned char *buffer, unsigned capacity);
-const char *ckb_gfx_put(int x, int y, const unsigned char *buffer,
+                        unsigned char CKB_FAR *buffer, unsigned capacity);
+const char *ckb_gfx_put(int x, int y, const unsigned char CKB_FAR *buffer,
                         unsigned capacity, int action);
 
 double ckb_timer(void);

@@ -12,6 +12,7 @@
 #include <ctype.h>
 #include <direct.h>
 #include <dos.h>
+#include <io.h>
 #ifdef __WATCOMC__
 #include <i86.h>
 #else
@@ -44,6 +45,9 @@ extern void __far ui_end_frame(void);
 #endif
 
 #define SOURCE_LIMIT 60000U
+#define WORKSPACE_IMM_TAIL (CKB_IMMEDIATE_LIMIT + 4U)
+#define WORKSPACE_INIT_LEN 2048U
+#define WORKSPACE_SOURCE_CAP (SOURCE_LIMIT + WORKSPACE_IMM_TAIL)
 #define PATH_SIZE 128
 #define SCREEN_SAVE_PARAGRAPHS 1100 /* DOSUI_SAVE_PARAGRAPHS */
 #define VIEW_HEIGHT 18
@@ -112,6 +116,7 @@ struct source_view {
 
 struct workspace {
     char __far *text;
+    unsigned text_cap;
     char __far *clipboard;
     char immediate[2][CKB_IMMEDIATE_LIMIT + 1];
     unsigned immediate_row, immediate_col, immediate_line;
@@ -617,12 +622,51 @@ static void set_error(struct workspace *w, const char *message)
     strcpy(w->error, message);
 }
 
-/* Read into a second segment so a failed Open leaves the current source intact. */
+static int ensure_text_cap(struct workspace *w, unsigned req_len, int allow_shrink)
+{
+    unsigned target = req_len < WORKSPACE_INIT_LEN ? WORKSPACE_INIT_LEN : req_len;
+    unsigned total;
+    if (target > SOURCE_LIMIT) target = SOURCE_LIMIT;
+    total = target + WORKSPACE_IMM_TAIL;
+    if (w->text) {
+        char __far *nbuf;
+        if (!allow_shrink && total <= w->text_cap) return 1;
+        if (allow_shrink && total <= w->text_cap && w->text_cap - total < 1024U) return 1;
+#ifdef _CKCL_DOS_H
+        if (_dos_setblock((total + 15U) >> 4, FP_SEG(w->text), NULL) == 0) {
+            w->text_cap = total;
+            ckb_set_editor_source(w->text, w->length);
+            return 1;
+        }
+#endif
+        if (total <= w->text_cap) return 1;
+        nbuf = _fmalloc(total);
+        if (!nbuf) return 0;
+        if (w->length) _fmemcpy(nbuf, w->text, w->length);
+        nbuf[w->length] = '\0';
+        _ffree(w->text);
+        w->text = nbuf;
+        w->text_cap = total;
+        ckb_set_editor_source(w->text, w->length);
+        return 1;
+    }
+    w->text = _fmalloc(total);
+    if (!w->text) return 0;
+    w->text[0] = '\0';
+    w->text_cap = total;
+    ckb_set_editor_source(w->text, w->length);
+    return 1;
+}
+
+/* Read into a sized temporary buffer so a failed Open leaves current source intact
+ * without fragmenting conventional memory. */
 static int load_source(struct workspace *w, const char *path)
 {
     FILE *file;
     char __far *text;
-    unsigned length = 0;
+    int inplace;
+    long flen;
+    unsigned cap, length = 0;
     int ch, cr = 0;
     if (strlen(path) >= PATH_SIZE) {
         set_error(w, "File name too long");
@@ -633,31 +677,65 @@ static int load_source(struct workspace *w, const char *path)
         set_error(w, "Cannot open source file");
         return 0;
     }
-    text = _fmalloc(SOURCE_LIMIT + 1U);
-    if (!text) {
-        fclose(file);
-        set_error(w, "Not enough memory to open source");
-        return 0;
+    flen = filelength(fileno(file));
+    cap = (flen >= 0L && flen <= (long)SOURCE_LIMIT) ? (unsigned)flen : SOURCE_LIMIT;
+    inplace = (!w->length && !w->path[0] && !w->dirty);
+    if (inplace) {
+        if (!ensure_text_cap(w, cap + 64U, 0)) {
+            fclose(file);
+            set_error(w, "Not enough memory to open source");
+            return 0;
+        }
+        text = w->text;
+    } else {
+        text = _fmalloc(cap + 2U);
+        if (!text) {
+            fclose(file);
+            set_error(w, "Not enough memory to open source");
+            return 0;
+        }
     }
     while ((ch = fgetc(file)) != EOF && ch != 26) {
         if (ch == '\n' && cr) {
             cr = 0;
             continue;
         }
-        if (!ch || length == SOURCE_LIMIT) break;
+        if (!ch || length == SOURCE_LIMIT || (!inplace && length > cap)) break;
         cr = ch == '\r';
         text[length++] = cr ? '\n' : ch == '\t' ? ' ' : ch;
     }
     if (ferror(file) || (ch != EOF && ch != 26)) {
         fclose(file);
-        _ffree(text);
+        if (!inplace) _ffree(text);
+        else { w->length = 0; w->text[0] = '\0'; ckb_set_editor_source(w->text, 0); }
         set_error(w, "Source is unreadable, binary or too large");
         return 0;
     }
     fclose(file);
-    if (w->text) _ffree(w->text);
-    w->text = text;
+    if (!inplace) {
+        if (length + WORKSPACE_IMM_TAIL > w->text_cap) {
+            /* Free old w->text first so new w->text lands at bottom of heap,
+             * or promote `text` directly if reallocation fails. */
+            _ffree(w->text);
+            w->text = NULL;
+            w->text_cap = 0;
+            w->length = 0;
+            if (!ensure_text_cap(w, length + 256U, 0)) {
+                /* Fallback: adopt `text` only if we can extend or reallocate it */
+                w->text = text;
+                w->text_cap = cap + 2U;
+                text = NULL;
+            }
+        }
+        if (text) {
+            if (length) _fmemcpy(w->text, text, length);
+            _ffree(text);
+        }
+    }
+    w->text[length] = '\0';
     w->length = length;
+    ensure_text_cap(w, length + 256U, 1);
+    ckb_set_editor_source(w->text, w->length);
     strcpy(w->path, path);
     recenter(w);
     return 1;
@@ -2234,7 +2312,15 @@ static int replace(struct workspace *w, unsigned first, unsigned removed,
         return 0;
     }
     if (removed || length) {
-        unsigned i, kept = 0;
+        unsigned i, kept = 0, new_len = w->length - removed + length;
+        if (new_len + WORKSPACE_IMM_TAIL > w->text_cap) {
+            unsigned grow = new_len + 2048U;
+            if (grow > SOURCE_LIMIT) grow = SOURCE_LIMIT;
+            if (!ensure_text_cap(w, grow, 0)) {
+                set_error(w, "Out of memory");
+                return 0;
+            }
+        }
         ++w->text_gen;
         w->module_resume = edited_offset(w->module_resume, first, removed, length);
         for (i = 0; i < w->resume_count; ++i)
@@ -2246,7 +2332,9 @@ static int replace(struct workspace *w, unsigned first, unsigned removed,
         _fmemmove(w->text + first + length, w->text + first + removed,
                   w->length - first - removed);
         if (length) _fmemcpy(w->text + first, text, length);
-        w->length = w->length - removed + length;
+        w->length = new_len;
+        w->text[w->length] = '\0';
+        ckb_set_editor_source(w->text, w->length);
         w->dirty = 1;
         for (i = 0; i < w->breakpoint_count; ++i) {
             unsigned at = w->breakpoints[i];
@@ -3475,6 +3563,9 @@ static int dispatch(struct workspace *w, enum file_command command)
         if (confirm_discard(w)) {
             w->path[0] = '\0';
             w->length = 0;
+            w->text[0] = '\0';
+            ensure_text_cap(w, WORKSPACE_INIT_LEN, 1);
+            ckb_set_editor_source(w->text, 0);
             recenter(w);
         }
         break;
@@ -3793,22 +3884,25 @@ static int ckb_ide_session(struct workspace *wp, const char *path)
     w.cached_last_proc = -2;
     w.syntax_checking = 1;
     w.next_menu = MENU_NONE;
+    if (_dos_allocmem(SCREEN_SAVE_PARAGRAPHS, &segment)) {
+        fputs("Not enough memory to save the DOS screen\n", stderr);
+        return 1;
+    }
+    if (!prepare_output(&w) || !ensure_text_cap(&w, WORKSPACE_INIT_LEN, 0)) {
+        if (w.output) _ffree(w.output);
+        _dos_freemem(segment);
+        fputs("Not enough memory for workspace\n", stderr);
+        return 1;
+    }
     if (path && *path) {
         if (!load_source(&w, path)) {
             fprintf(stderr, "%s: %s\n", path, w.error);
+            ckb_set_editor_source(NULL, 0);
+            _ffree(w.text);
+            if (w.output) _ffree(w.output);
+            _dos_freemem(segment);
             return 1;
         }
-    } else {
-        w.text = _fmalloc(SOURCE_LIMIT + 1U);
-        if (!w.text) {
-            fputs("Not enough memory for workspace\n", stderr);
-            return 1;
-        }
-    }
-    if (_dos_allocmem(SCREEN_SAVE_PARAGRAPHS, &segment)) {
-        fputs("Not enough memory to save the DOS screen\n", stderr);
-        _ffree(w.text);
-        return 1;
     }
     ui_init(segment);
     while (!done && !w.exit_requested) {
@@ -3941,6 +4035,7 @@ static int ckb_ide_session(struct workspace *wp, const char *path)
     if (w.clipboard) _ffree(w.clipboard);
     if (w.output) _ffree(w.output);
     ckb_immediate_clear();
+    ckb_set_editor_source(NULL, 0);
     _ffree(w.text);
     return 0;
 #undef w

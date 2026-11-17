@@ -26,14 +26,18 @@
 
 #if defined(__WATCOMC__) || defined(_MSDOS)
 #define IMMEDIATE_START (SOURCE_MAX + 1)
-#define SOURCE_CAPACITY (IMMEDIATE_START + CKB_IMMEDIATE_LIMIT + 1)
-#define LINE_CAPACITY (LINE_MAX + 1)
+#define IMM_EXTRA_BYTES (CKB_IMMEDIATE_LIMIT + 4U)
 #else
-#define SOURCE_CAPACITY (SOURCE_MAX + 1)
-#define LINE_CAPACITY LINE_MAX
+#define IMMEDIATE_START (SOURCE_MAX + 1)
+#define IMM_EXTRA_BYTES 260U
 #endif
 
-char __far source[SOURCE_CAPACITY];
+char __far *source;
+static char __far *editor_source;
+static unsigned editor_source_len;
+static char __far *owned_source;
+static unsigned lines_cap, blocks_cap, data_cap;
+static unsigned imm_line_idx, imm_offset;
 Line __far *lines;
 static char __far *var_names;
 static unsigned long __far *var_shared_scopes;
@@ -470,10 +474,10 @@ unsigned member_size(char kind, unsigned width)
 
 unsigned array_element_size(const Variable *v)
 {
-    return v->kind == '$' ? sizeof(char *) : member_size(v->kind, 0);
+    return v->kind == '$' ? sizeof(char __far *) : member_size(v->kind, 0);
 }
 
-#define TOK_CACHE_MAX 1024U
+#define TOK_CACHE_MAX 64U
 
 typedef struct {
     unsigned offset;
@@ -490,20 +494,121 @@ static void tok_cache_clear(void)
     if (tok_cache) _fmemset(tok_cache, 0xFF, TOK_CACHE_MAX * sizeof(*tok_cache));
 }
 
-static int ensure_runtime_tables(void)
+static int ensure_base_tables(void)
 {
-    if (!lines) lines = (Line __far *)_fmalloc(LINE_CAPACITY * sizeof(*lines));
-    if (!line_scope) line_scope = (int __far *)_fmalloc(LINE_MAX * sizeof(*line_scope));
-    if (!blocks) blocks = (Block __far *)_fmalloc(BLOCK_MAX * sizeof(*blocks));
-    if (!data_statements) data_statements = (Position __far *)_fmalloc(DATA_MAX * sizeof(*data_statements));
-    if (!procedures) procedures = (Procedure __far *)_fmalloc(PROC_MAX * sizeof(*procedures));
     if (!var_names) var_names = (char __far *)_fmalloc((unsigned)VALUE_MAX * (BASIC_NAME_MAX + 1U));
     if (!var_shared_scopes) var_shared_scopes = (unsigned long __far *)_fmalloc((unsigned)VALUE_MAX * 2U * sizeof(unsigned long));
-    if (!common_ids) common_ids = (unsigned __far *)_fmalloc((unsigned)VALUE_MAX * sizeof(unsigned));
-    if (!def_fns) def_fns = (DefFn __far *)_fmalloc(DEF_FN_MAX * sizeof(*def_fns));
-    if (!tok_cache) tok_cache = (TokenVarCache __far *)_fmalloc(TOK_CACHE_MAX * sizeof(*tok_cache));
-    return lines && line_scope && blocks && data_statements && procedures &&
-           var_names && var_shared_scopes && common_ids && def_fns && tok_cache;
+    return var_names && var_shared_scopes;
+}
+
+static void release_exec_tables(void)
+{
+    if (lines) { _ffree(lines); lines = NULL; }
+    if (line_scope) { _ffree(line_scope); line_scope = NULL; }
+    if (blocks) { _ffree(blocks); blocks = NULL; }
+    if (data_statements) { _ffree(data_statements); data_statements = NULL; }
+    if (procedures) { _ffree(procedures); procedures = NULL; }
+    if (def_fns) { _ffree(def_fns); def_fns = NULL; }
+    if (common_ids) { _ffree(common_ids); common_ids = NULL; }
+    if (tok_cache) { _ffree(tok_cache); tok_cache = NULL; }
+    lines_cap = blocks_cap = data_cap = 0;
+    if (owned_source) { _ffree(owned_source); owned_source = NULL; }
+    source = editor_source;
+    imm_offset = editor_source ? (editor_source_len + 2U) : 0U;
+}
+
+static int ensure_program_tables(unsigned src_len)
+{
+    unsigned k, nlines = 1U, req_lines, req_blocks, req_data;
+    if (!ensure_base_tables()) return 0;
+    for (k = 0; k < src_len; ++k) {
+        if (source[k] == '\n') ++nlines;
+    }
+    if (nlines > LINE_MAX) nlines = LINE_MAX;
+    req_lines = nlines + 2U;
+    req_blocks = nlines * 2U + 32U;
+    if (req_blocks > BLOCK_MAX) req_blocks = BLOCK_MAX;
+    req_data = nlines + 16U;
+    if (req_data > DATA_MAX) req_data = DATA_MAX;
+
+    if (lines) { _ffree(lines); lines = NULL; }
+    if (line_scope) { _ffree(line_scope); line_scope = NULL; }
+    if (blocks) { _ffree(blocks); blocks = NULL; }
+    if (data_statements) { _ffree(data_statements); data_statements = NULL; }
+    if (procedures) { _ffree(procedures); procedures = NULL; }
+    if (def_fns) { _ffree(def_fns); def_fns = NULL; }
+    if (common_ids) { _ffree(common_ids); common_ids = NULL; }
+
+    lines = (Line __far *)_fmalloc(req_lines * sizeof(*lines));
+    line_scope = (int __far *)_fmalloc(req_lines * sizeof(*line_scope));
+    if (!lines || !line_scope) return 0;
+    lines_cap = req_lines;
+    imm_line_idx = lines_cap - 1U;
+
+    if (!tok_cache) {
+        tok_cache = (TokenVarCache __far *)_fmalloc(TOK_CACHE_MAX * sizeof(*tok_cache));
+        if (!tok_cache) return 0;
+    }
+
+    blocks = (Block __far *)_fmalloc(req_blocks * sizeof(*blocks));
+    if (!blocks) return 0;
+    blocks_cap = req_blocks;
+
+    data_statements = (Position __far *)_fmalloc(req_data * sizeof(*data_statements));
+    if (!data_statements) return 0;
+    data_cap = req_data;
+    return 1;
+}
+
+static void shrink_program_tables(void)
+{
+    if (blocks) {
+        unsigned keep_blocks = block_count + 32U;
+        if (keep_blocks < blocks_cap) {
+            blocks = (Block __far *)ckb_compact_block(blocks, keep_blocks * sizeof(*blocks));
+            blocks_cap = keep_blocks;
+        }
+    }
+    data_statements = (Position __far *)ckb_compact_block(data_statements, data_count * sizeof(*data_statements));
+    data_cap = data_count;
+    procedures = (Procedure __far *)ckb_compact_block(procedures, procedure_count * sizeof(*procedures));
+    def_fns = (DefFn __far *)ckb_compact_block(def_fns, def_fn_count * sizeof(*def_fns));
+    common_ids = (unsigned __far *)ckb_compact_block(common_ids, common_count * sizeof(*common_ids));
+}
+
+static int ensure_immediate_tables(void)
+{
+    if (!ensure_base_tables()) return 0;
+    if (!source) {
+        if (editor_source) {
+            source = editor_source;
+            imm_offset = editor_source_len + 2U;
+        } else {
+            owned_source = (char __far *)_fmalloc(IMM_EXTRA_BYTES);
+            if (!owned_source) return 0;
+            source = owned_source;
+            imm_offset = 0U;
+        }
+    } else if (source == editor_source) {
+        imm_offset = editor_source_len + 2U;
+    }
+    if (!lines) {
+        lines = (Line __far *)_fmalloc(2U * sizeof(*lines));
+        line_scope = (int __far *)_fmalloc(2U * sizeof(*line_scope));
+        if (!lines || !line_scope) return 0;
+        lines_cap = 2U;
+    }
+    imm_line_idx = lines_cap - 1U;
+    if (!blocks) {
+        blocks = (Block __far *)_fmalloc(32U * sizeof(*blocks));
+        if (!blocks) return 0;
+        blocks_cap = 32U;
+    }
+    if (!tok_cache) {
+        tok_cache = (TokenVarCache __far *)_fmalloc(TOK_CACHE_MAX * sizeof(*tok_cache));
+        if (!tok_cache) return 0;
+    }
+    return 1;
 }
 
 static void clear_far_bytes(void __far *dst, unsigned count)
@@ -875,19 +980,19 @@ void unbind_field(const Variable *variable)
 }
 
 static void fixed_string_store(char *item, unsigned width, const Value *value);
-static void fixed_string_fetch(Parser *p, Value *value, const char *item, unsigned width);
+static void fixed_string_fetch(Parser *p, Value *value, const char __far *item, unsigned width);
 
 void variable_string_store_raw(Parser *p, Variable *v, unsigned cell, const char __far *src, unsigned src_len)
 {
-    char **slot = v->array ? (char **)v->elements + cell : &v->text;
-    char *cur = *slot;
+    char __far * __far *slot = v->array ? (char __far * __far *)v->elements + cell : &v->text;
+    char __far *cur = *slot;
     unsigned length = v->fixed_width ? v->fixed_width : src_len;
     if (any_field_bound) unbind_field(v);
     if (v->fixed_width) {
         unsigned n = src_len > length ? length : src_len;
         if (!cur) {
             if (!length) return;
-            cur = malloc(length);
+            cur = ckb_salloc(length);
             if (!cur) {
                 fail(p, "Out of memory");
                 return;
@@ -895,13 +1000,13 @@ void variable_string_store_raw(Parser *p, Variable *v, unsigned cell, const char
             *slot = cur;
         }
         if (n) _fmemmove(cur, src, n);
-        if (n < length) memset(cur + n, ' ', length - n);
+        if (n < length) _fmemset(cur + n, ' ', length - n);
         return;
     }
     if (cur) {
         unsigned cap = (unsigned char)cur[2] | ((unsigned)(unsigned char)cur[3] << 8);
         if (!length && cap > 64U) {
-            free(cur);
+            ckb_sfree(cur);
             *slot = NULL;
             return;
         }
@@ -913,13 +1018,13 @@ void variable_string_store_raw(Parser *p, Variable *v, unsigned cell, const char
         }
     }
     if (!length) {
-        free(cur);
+        ckb_sfree(cur);
         *slot = NULL;
         return;
     }
     {
         unsigned cap = length < 32U ? 32U : length;
-        char *copy = malloc(cap + 4U);
+        char __far *copy = ckb_salloc(cap + 4U);
         if (!copy) {
             fail(p, "Out of memory");
             return;
@@ -929,7 +1034,7 @@ void variable_string_store_raw(Parser *p, Variable *v, unsigned cell, const char
         copy[2] = (char)cap;
         copy[3] = (char)(cap >> 8);
         _fmemcpy(copy + 4U, src, length);
-        free(cur);
+        ckb_sfree(cur);
         *slot = copy;
     }
 }
@@ -941,10 +1046,10 @@ static void variable_string_store(Parser *p, Variable *v, unsigned cell, const V
 
 static void variable_string_fetch(Parser *p, const Variable *v, unsigned cell, Value *value)
 {
-    const char *stored = v->array ? ((char *const *)v->elements)[cell] : v->text;
+    const char __far *stored = v->array ? ((char __far *const __far *)v->elements)[cell] : v->text;
     unsigned width;
     const char *field = any_field_bound ? field_data(v, &width) : NULL;
-    if (field) fixed_string_fetch(p, value, field, width);
+    if (field) fixed_string_fetch(p, value, (const char __far *)field, width);
     else if (v->fixed_width) fixed_string_fetch(p, value, stored, v->fixed_width);
     else {
         width = stored ? (unsigned char)stored[0] | ((unsigned)(unsigned char)stored[1] << 8) : 0;
@@ -961,14 +1066,14 @@ static void fixed_string_store(char *item, unsigned width, const Value *value)
     memset(item + n, ' ', width - n);
 }
 
-static void fixed_string_fetch(Parser *p, Value *value, const char *item, unsigned width)
+static void fixed_string_fetch(Parser *p, Value *value, const char __far *item, unsigned width)
 {
     char *bytes = ckb_string_buffer(value, width);
     if (!bytes) {
         fail(p, "Out of memory");
         return;
     }
-    if (item) memcpy(bytes, item, width);
+    if (item) _fmemcpy(bytes, item, width);
     else memset(bytes, 0, width);
     bytes[width] = 0;
 }
@@ -978,13 +1083,13 @@ char *record_data(Parser *p, Reference ref)
     Variable *v = ref.target;
     unsigned size = record_size(v->kind);
     if (!v->elements) {
-        v->elements = calloc(1, size);
+        v->elements = (void __far *)calloc(1, size);
         if (!v->elements) {
             fail(p, "Out of memory");
             return NULL;
         }
     }
-    return (char *)v->elements + ref.cell * size + ref.offset;
+    return (char *)(void *)v->elements + ref.cell * size + ref.offset;
 }
 
 static void record_float(char *bytes, void *value, unsigned size, int store)
@@ -1064,8 +1169,8 @@ void assign_reference(Parser *p, Reference ref, Value *value, int run)
         else packed_number(item, ref.kind, &value->number, 1);
     } else if (value->string) variable_string_store(p, v, ref.cell, value);
     else if (v->array) {
-        item = (char *)v->elements + ref.cell * array_element_size(v);
-        packed_number(item, ref.kind, &value->number, 1);
+        packed_number_far((char __far *)v->elements + ref.cell * array_element_size(v),
+                          ref.kind, &value->number, 1);
     }
     else v->number = value->number;
 }
@@ -1083,12 +1188,12 @@ void fetch_reference(Parser *p, Reference ref, int run, Value *value)
         item = record_data(p, ref);
         if (!item) return;
         if (record_size(ref.kind)) value->record = item;
-        else if (value->string) fixed_string_fetch(p, value, item, ref.width);
+        else if (value->string) fixed_string_fetch(p, value, (const char __far *)item, ref.width);
         else packed_number(item, ref.kind, &value->number, 0);
     } else if (value->string) variable_string_fetch(p, v, ref.cell, value);
     else if (v->array) {
-        item = (char *)v->elements + ref.cell * array_element_size(v);
-        packed_number(item, ref.kind, &value->number, 0);
+        packed_number_far((char __far *)v->elements + ref.cell * array_element_size(v),
+                          ref.kind, &value->number, 0);
     } else value->number = v->number;
 }
 
@@ -1851,6 +1956,10 @@ static void storage_statement(Parser *p, int common)
             if (common) {
                 if (v->common) fail(p, "Duplicate definition");
                 else {
+                    if (!common_ids) {
+                        common_ids = (unsigned __far *)_fmalloc((unsigned)VALUE_MAX * sizeof(unsigned));
+                        if (!common_ids) { fail(p, "Out of memory"); return; }
+                    }
                     common_ids[common_count++] = (unsigned)id;
                     v->common = common_count;
                 }
@@ -2020,7 +2129,7 @@ static unsigned block(Parser *p, Position at, int kind, unsigned inline_depth)
         fail(p, "Invalid block");
         return 0;
     }
-    if (block_count == BLOCK_MAX) {
+    if (block_count >= blocks_cap || block_count == BLOCK_MAX) {
         fail(p, "Too many block statements");
         return 0;
     }
@@ -2160,7 +2269,7 @@ static void data_statement(Parser *p)
 {
     Value datum;
     if (checking && !end_data(p)) {
-        if (data_count == DATA_MAX) fail(p, "Too many DATA statements");
+        if (data_count >= data_cap || data_count == DATA_MAX) fail(p, "Too many DATA statements");
         else data_statements[data_count++] = position(p->line, p->start - (p->token == T_STRING));
     }
     while (!error_message && data_field(p, &datum) && take(p, ',')) {}
@@ -2413,7 +2522,7 @@ static void call_procedure(Parser *p, int id, unsigned depth, int run, Value *re
         for (i = 0; i < n_locals; ++i) {
             unbind_field(&frame.locals[i]);
             release_array(&frame.locals[i]);
-            free(frame.locals[i].text);
+            ckb_sfree(frame.locals[i].text);
         }
         if (pooled_locals) local_pool_top -= n_locals;
         else free(frame.locals);
@@ -2464,7 +2573,7 @@ void free_proc_locals(Variable *locals, unsigned n_locals, int pooled)
     for (i = 0; i < n_locals; ++i) {
         if (any_field_bound) unbind_field(&locals[i]);
         if (locals[i].elements) release_array(&locals[i]);
-        if (locals[i].text) free(locals[i].text);
+        if (locals[i].text) ckb_sfree(locals[i].text);
     }
     if (pooled) local_pool_top -= n_locals;
     else free(locals);
@@ -2490,7 +2599,7 @@ static void call_def_fn(Parser *p, int fn_id, Value *v, unsigned depth, int run)
     char rkind = fn->result_kind;
     Value args[PARAM_MAX];
     double saved_nums[PARAM_MAX];
-    char *saved_texts[PARAM_MAX];
+    char __far *saved_texts[PARAM_MAX];
     int param_ids[PARAM_MAX];
     unsigned i;
     int saved_scope = current_scope;
@@ -2541,7 +2650,7 @@ static void call_def_fn(Parser *p, int fn_id, Value *v, unsigned depth, int run)
         for (i = 0; i < pcount; ++i) {
             int pid = param_ids[i];
             if (pid >= 0) {
-                free(variables[pid].text);
+                ckb_sfree(variables[pid].text);
                 variables[pid].text = saved_texts[i];
                 variables[pid].number = saved_nums[i];
             }
@@ -2612,6 +2721,20 @@ static int expression_call(Parser *p, Value *v, unsigned depth, int run)
                 for (i = 0; i < FILE_MAX && file_open(&channels[i]); ++i) {}
                 if (i == FILE_MAX) fail(p, "Too many files");
                 else v->number = i + 1;
+            }
+            return 1;
+        }
+        if (take_word(p, "FRE")) {
+            Value arg;
+            v->kind = '&';
+            if (expect(p, '(', "Expected: (")) {
+                expression(p, &arg, 1, depth + 1, run);
+                expect(p, ')', "Expected: )");
+                if (run && !error_message) {
+                    long code = arg.string ? 0L : integer_operand(p, arg.number, 1);
+                    if (!error_message)
+                        v->number = (double)ckb_fre(arg.string, code);
+                }
             }
             return 1;
         }
@@ -2861,6 +2984,10 @@ static void index_def_fn(Parser *p, unsigned line)
         expect(p, ')', "Expected: )");
     }
     if (!expect(p, '=', "Expected: =")) return;
+    if (!def_fns) {
+        def_fns = (DefFn __far *)_fmalloc(DEF_FN_MAX * sizeof(*def_fns));
+        if (!def_fns) { fail(p, "Out of memory"); return; }
+    }
     fn->expr_at = position(line, p->start);
     _fmemcpy(&def_fns[def_fn_count++], fn, sizeof(*fn));
 }
@@ -2907,6 +3034,13 @@ static void index_procedures(void)
                 if (procedure_count == PROC_MAX) {
                     fail(&p, "Too many procedures");
                     continue;
+                }
+                if (!procedures) {
+                    procedures = (Procedure __far *)_fmalloc(PROC_MAX * sizeof(*procedures));
+                    if (!procedures) {
+                        fail(&p, "Out of memory");
+                        continue;
+                    }
                 }
                 id = (int)procedure_count++;
                 clear_far_bytes(&procedures[id], sizeof(procedures[id]));
@@ -3208,7 +3342,7 @@ static void immediate_statement(Parser *p, int run)
 static void immediate_line(int run)
 {
     Parser p;
-    initialize_parser(&p, position(LINE_MAX, IMMEDIATE_START));
+    initialize_parser(&p, position(imm_line_idx, imm_offset));
     while (p.token && !error_message && !stopped) {
         CkbStringTemp *mark = ckb_string_mark();
         immediate_statement(&p, run);
@@ -3226,9 +3360,10 @@ void ckb_immediate_clear(void)
     if (!immediate_idle) return;
     for (i = 0; i < variable_count; ++i) {
         release_array(&variables[i]);
-        free(variables[i].text);
+        ckb_sfree(variables[i].text);
         variables[i].text = NULL;
     }
+    ckb_sreset();
     variable_count = 0;
     var_hash_reset();
     immediate_idle = 0;
@@ -3256,7 +3391,7 @@ void ckb_immediate(const char *command, unsigned output_column, CkbImmediateResu
         result->error = "Line too long";
         return;
     }
-    if (!ensure_runtime_tables()) {
+    if (!ensure_immediate_tables()) {
         result->error = "Out of memory";
         return;
     }
@@ -3271,10 +3406,10 @@ void ckb_immediate(const char *command, unsigned output_column, CkbImmediateResu
         memset(default_kind, '!', sizeof(default_kind));
     }
     variables_before = variable_count;
-    _fmemcpy(source + IMMEDIATE_START, command, length + 1);
-    lines[LINE_MAX].start = lines[LINE_MAX].body = IMMEDIATE_START;
-    lines[LINE_MAX].end = IMMEDIATE_START + length;
-    lines[LINE_MAX].first_block = BLOCK_MAX;
+    _fmemcpy(source + imm_offset, command, length + 1);
+    lines[imm_line_idx].start = lines[imm_line_idx].body = imm_offset;
+    lines[imm_line_idx].end = imm_offset + length;
+    lines[imm_line_idx].first_block = BLOCK_MAX;
     screen_column = output_column;
     immediate_output = 0;
     immediate_active = 1;
@@ -3874,13 +4009,28 @@ static int load_source(const char *path)
 {
     FILE *in = fopen(path, "rb");
     int c;
-    unsigned size = 0;
+    unsigned size = 0, cap = SOURCE_MAX + 2U;
     if (!in) {
         fprintf(stderr, "%s: File not found\n", path);
         return 0;
     }
+#if defined(__WATCOMC__) || defined(_MSDOS)
+    {
+        long flen = filelength(fileno(in));
+        if (flen >= 0L && flen <= (long)SOURCE_MAX)
+            cap = (unsigned)flen + 2U;
+    }
+#endif
+    if (owned_source) { _ffree(owned_source); owned_source = NULL; }
+    owned_source = (char __far *)_fmalloc(cap + IMM_EXTRA_BYTES);
+    if (!owned_source) {
+        fprintf(stderr, "%s: Out of memory\n", path);
+        fclose(in);
+        return 0;
+    }
+    source = owned_source;
     while ((c = fgetc(in)) != EOF && c != 26) {
-        if (size == SOURCE_MAX || c == 0) {
+        if (size == SOURCE_MAX || size + 1U >= cap || c == 0) {
             fprintf(stderr, "%s: %s\n", path, c == 0 ? "Expected DOS text" : "Source too large");
             fclose(in);
             return 0;
@@ -3894,6 +4044,11 @@ static int load_source(const char *path)
     }
     fclose(in);
     source[size] = 0;
+    imm_offset = size + 2U;
+    if (!ensure_program_tables(size)) {
+        fprintf(stderr, "%s: Out of memory\n", path);
+        return 0;
+    }
     read_lines(size);
     return 1;
 }
@@ -3999,7 +4154,7 @@ static int execute_program(const char *path, int mbf, const char __far *text,
     int result = 0;
     if (report) memset(report, 0, sizeof(*report));
     if (strlen(path) > TEXT_INPUT_MAX) return 1;
-    if (!ensure_runtime_tables()) {
+    if (!ensure_base_tables()) {
         report_run_error(report, path, "Out of memory", text != NULL, 0, 0);
         return 1;
     }
@@ -4048,8 +4203,29 @@ static int execute_program(const char *path, int mbf, const char __far *text,
                 result = 1;
                 break;
             }
-            _fmemcpy(source, text, length);
-            source[length] = 0;
+            if (editor_source && text == editor_source) {
+                source = editor_source;
+                editor_source_len = length;
+                source[length] = 0;
+                imm_offset = length + 2U;
+            } else {
+                if (owned_source) { _ffree(owned_source); owned_source = NULL; }
+                owned_source = (char __far *)_fmalloc(length + 2U + IMM_EXTRA_BYTES);
+                if (!owned_source) {
+                    report_run_error(report, current_path, "Out of memory", 1, 0, 0);
+                    result = 1;
+                    break;
+                }
+                if (length) _fmemcpy(owned_source, text, length);
+                owned_source[length] = 0;
+                source = owned_source;
+                imm_offset = length + 2U;
+            }
+            if (!ensure_program_tables(length)) {
+                report_run_error(report, current_path, "Out of memory", 1, 0, 0);
+                result = 1;
+                break;
+            }
             read_lines(length);
         } else if (!load_source(current_path)) { result = 1; break; }
         checking = 1;
@@ -4058,6 +4234,7 @@ static int execute_program(const char *path, int mbf, const char __far *text,
         if (line_count) walk_at(position(0, lines[0].body), 0);
         assign_frame_slots();
         checking = 0;
+        shrink_program_tables();
         current_scope = -1;
         if (!error_message && saved) {
             unsigned count = saved_count < common_count ? saved_count : common_count;
@@ -4090,7 +4267,7 @@ static int execute_program(const char *path, int mbf, const char __far *text,
         for (i = 0; i < variable_count; ++i) {
             Variable *v = &variables[i];
             release_array(v);
-            free(v->text);
+            ckb_sfree(v->text);
             v->text = NULL;
         }
         release_records();
@@ -4118,6 +4295,8 @@ static int execute_program(const char *path, int mbf, const char __far *text,
     }
     close_channels();
     free_common(saved, saved_count, saved_types);
+    ckb_sreset();
+    release_exec_tables();
     ckb_speaker_off();
     if (!text) ckb_con_reset_text();
     pause_execution = NULL;
@@ -4136,6 +4315,16 @@ int ckb_run(const char *path, int mbf)
 void ckb_set_debug_active(const int *flag)
 {
     debug_active_flag = flag;
+}
+
+void ckb_set_editor_source(char __far *buf, unsigned len)
+{
+    editor_source = buf;
+    editor_source_len = len;
+    if (!owned_source) {
+        source = buf;
+        imm_offset = buf ? (len + 2U) : 0U;
+    }
 }
 
 int ckb_run_source(const char *path, const char __far *text, unsigned length,

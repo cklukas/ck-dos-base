@@ -1227,7 +1227,7 @@ int parse_gfx_coord(Parser *p, int run, int *x_out, int *y_out)
     return !error_message;
 }
 
-static unsigned char *resolve_sprite_buffer(Parser *p, int run, unsigned *capacity_out)
+static unsigned char __far *resolve_sprite_buffer(Parser *p, int run, unsigned *capacity_out)
 {
     char name[BASIC_NAME_MAX + 1], kind;
     int id, unsuffixed = unsuffixed_name(p);
@@ -1250,7 +1250,7 @@ static unsigned char *resolve_sprite_buffer(Parser *p, int run, unsigned *capaci
     }
     esize = array_element_size(v);
     *capacity_out = (v->cells - cell) * esize;
-    return (unsigned char *)v->elements + cell * esize;
+    return (unsigned char __far *)v->elements + cell * esize;
 }
 
 void gfx_line_statement(Parser *p, int run)
@@ -1327,7 +1327,7 @@ void gfx_get_statement(Parser *p, int run)
 {
     int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
     unsigned cap = 0;
-    unsigned char *buf;
+    unsigned char __far *buf;
     if (!parse_gfx_coord(p, run, &x1, &y1)) return;
     if (!expect(p, '-', "Expected: -")) return;
     if (!parse_gfx_coord(p, run, &x2, &y2)) return;
@@ -1343,7 +1343,7 @@ void gfx_put_statement(Parser *p, int run)
 {
     int x = 0, y = 0, action = CKB_PUT_XOR;
     unsigned cap = 0;
-    unsigned char *buf;
+    unsigned char __far *buf;
     if (!parse_gfx_coord(p, run, &x, &y)) return;
     if (!expect(p, ',', "Expected: ,")) return;
     buf = resolve_sprite_buffer(p, run, &cap);
@@ -1401,20 +1401,26 @@ void clear_array(Variable *v)
 {
     unsigned i;
     if (v->kind == '$') {
-        char **items = v->elements;
+        char __far * __far *items = (char __far * __far *)v->elements;
         for (i = 0; i < v->cells; ++i) {
-            free(items[i]);
+            ckb_sfree(items[i]);
             items[i] = NULL;
         }
     } else if (v->elements) {
-        memset(v->elements, 0, v->cells * array_element_size(v));
+        if (record_size(v->kind))
+            memset((void *)v->elements, 0, v->cells * array_element_size(v));
+        else
+            _fmemset(v->elements, 0, v->cells * array_element_size(v));
     }
 }
 
 void release_array(Variable *v)
 {
     if (v->kind == '$') clear_array(v);
-    free(v->elements);
+    if (v->elements) {
+        if (record_size(v->kind)) free((void *)v->elements);
+        else _ffree(v->elements);
+    }
     free(v->bounds);
     v->elements = NULL;
     v->bounds = NULL;
@@ -1425,17 +1431,28 @@ void dimension_array(Parser *p, Variable *v, const Bounds *bounds, unsigned dime
                      unsigned cells)
 {
     Bounds *shape;
-    void *elements;
+    void __far *elements;
     unsigned size = array_element_size(v);
-    if (record_size(v->kind) && cells > 32767U / size) {
+    unsigned is_rec = record_size(v->kind);
+    unsigned long total = (unsigned long)cells * (unsigned long)size;
+    if ((is_rec && total > 32767UL) || (!is_rec && total > 65520UL)) {
         fail(p, "Out of memory");
         return;
     }
     shape = malloc(dimensions * sizeof(*shape));
-    elements = calloc(cells, size);
+    if (is_rec) {
+        elements = (void __far *)calloc(cells ? cells : 1U, size ? size : 1U);
+    } else {
+        unsigned bytes = (unsigned)(total ? total : 1UL);
+        elements = _fmalloc(bytes);
+        if (elements) _fmemset(elements, 0, bytes);
+    }
     if (!shape || !elements) {
         free(shape);
-        free(elements);
+        if (elements) {
+            if (is_rec) free((void *)elements);
+            else _ffree(elements);
+        }
         fail(p, "Out of memory");
         return;
     }
@@ -1678,11 +1695,15 @@ void free_common(CommonValue *saved, unsigned count, CommonType *types)
         CommonValue *v = &saved[i];
         if (v->array && v->kind == '$') {
             unsigned cell;
-            for (cell = 0; cell < v->cells; ++cell) free(((char **)v->elements)[cell]);
+            for (cell = 0; cell < v->cells; ++cell)
+                ckb_sfree(((char __far * __far *)v->elements)[cell]);
         }
-        free(v->elements);
+        if (v->elements) {
+            if (record_size(v->kind)) free((void *)v->elements);
+            else _ffree(v->elements);
+        }
         free(v->bounds);
-        free(v->text);
+        ckb_sfree(v->text);
     }
     free(saved);
     for (i = 0; i < RECORD_MAX; ++i) {

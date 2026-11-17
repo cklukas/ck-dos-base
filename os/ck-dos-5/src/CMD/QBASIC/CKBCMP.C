@@ -272,7 +272,8 @@ static int compile_proc_call_args(VmCompiler *c, Parser *p, int proc_id, int par
                             if (strcmp(vname, "NOT") != 0 && strcmp(vname, "TIMER") != 0 &&
                                 strcmp(vname, "RND") != 0 && strcmp(vname, "INKEY$") != 0 &&
                                 strcmp(vname, "ERR") != 0 && strcmp(vname, "ERL") != 0 &&
-                                strcmp(vname, "FREEFILE") != 0 && !ckb_string_function(vname)) {
+                                strcmp(vname, "FREEFILE") != 0 && strcmp(vname, "FRE") != 0 &&
+                                !ckb_string_function(vname)) {
                                 if (try_p.token == ',' || try_p.token == ')' || end_statement(&try_p)) {
                                     int vid = named_variable(&try_p, vname, vkind, 0, 0, unsuf, 0);
                                     if (vid >= 0 && !error_message && !variables[vid].constant) {
@@ -368,7 +369,7 @@ static int compile_builtin_call(VmCompiler *c, Parser *p, char *out_kind)
         }
         break;
     case 'F':
-        if (word(p, "FREEFILE")) return -1;
+        if (word(p, "FREEFILE") || word(p, "FRE")) return -1;
         if (def_fn_count) {
             int fn_id = lookup_deffn_token(p);
             if (fn_id >= 0) {
@@ -1851,7 +1852,7 @@ static void advance_default_type_compile(Parser *p, char kind)
 int compile_module(void)
 {
     VmCompiler comp;
-    unsigned line, i;
+    unsigned line, i, exec_lines = 0;
     unsigned proc_skip_patch[PROC_MAX];
     unsigned sel_blocks[VM_SEL_MAX], sel_slots[VM_SEL_MAX], sel_top = 0;
     int saved_scope = current_scope;
@@ -1860,22 +1861,28 @@ int compile_module(void)
     memset(&comp, 0, sizeof(comp));
     vm_free_module();
 
-    vm.code_cap = line_count * 18U + 1024U;
+    for (line = 0; line < line_count; ++line) {
+        if (lines[line].body < lines[line].end &&
+            source[lines[line].body] != '\'') {
+            ++exec_lines;
+        }
+    }
+
+    vm.code_cap = exec_lines * 18U + 1024U;
     if (vm.code_cap > VM_MAX_CODE) vm.code_cap = VM_MAX_CODE;
-    vm.stmt_cap = line_count * 2U + 128U;
+    vm.stmt_cap = exec_lines * 2U + 128U;
     if (vm.stmt_cap > VM_MAX_STMTS) vm.stmt_cap = VM_MAX_STMTS;
-    comp.fixup_cap = vm.stmt_cap + 256U;
+    comp.fixup_cap = exec_lines * 2U + 128U;
     if (comp.fixup_cap > VM_MAX_FIXUPS) comp.fixup_cap = VM_MAX_FIXUPS;
 
-    vm.code = (unsigned short __far *)_fmalloc(vm.code_cap * sizeof(unsigned short));
-    vm.fconsts = (double __far *)_fmalloc(VM_MAX_FCONSTS * sizeof(double));
     vm.line_pc = (unsigned short __far *)_fmalloc((line_count + 1U) * sizeof(unsigned short));
-    vm.stmts = (StmtSpan __far *)_fmalloc(vm.stmt_cap * sizeof(StmtSpan));
     vm.fnframes = def_fn_count ? (VmDefFnFrame __far *)_fmalloc(DEPTH_MAX * sizeof(VmDefFnFrame)) : NULL;
-    vm.sel_str_buf = (char __far *)_fmalloc(4U * 256U);
+    vm.fconsts = (double __far *)_fmalloc(VM_MAX_FCONSTS * sizeof(double));
+    vm.code = (unsigned short __far *)_fmalloc(vm.code_cap * sizeof(unsigned short));
+    vm.stmts = (StmtSpan __far *)_fmalloc(vm.stmt_cap * sizeof(StmtSpan));
     comp.fixups = (VmFixup __far *)_fmalloc(comp.fixup_cap * sizeof(VmFixup));
 
-    if (!vm.code || !vm.fconsts || !vm.line_pc || !vm.stmts || !vm.sel_str_buf ||
+    if (!vm.code || !vm.fconsts || !vm.line_pc || !vm.stmts ||
         (def_fn_count && !vm.fnframes) || !comp.fixups) {
         if (comp.fixups) _ffree(comp.fixups);
         vm_free_module();
@@ -2017,6 +2024,20 @@ int compile_module(void)
     }
 
     _ffree(comp.fixups);
+    vm.fconsts = (double __far *)ckb_compact_block(
+        vm.fconsts, (vm.fconst_len ? vm.fconst_len : 1U) * sizeof(double));
+    vm.code = (unsigned short __far *)ckb_compact_block(
+        vm.code, (vm.code_len ? vm.code_len : 1U) * sizeof(unsigned short));
+    vm.stmts = (StmtSpan __far *)ckb_compact_block(
+        vm.stmts, (vm.stmt_len ? vm.stmt_len : 1U) * sizeof(StmtSpan));
+    if (comp.select_next_slot > 0) {
+        unsigned nslots = comp.select_next_slot > 4U ? 4U : comp.select_next_slot;
+        vm.sel_str_buf = (char __far *)_fmalloc(nslots * 256U);
+        if (!vm.sel_str_buf) {
+            vm_free_module();
+            return 0;
+        }
+    }
     return 1;
 }
 

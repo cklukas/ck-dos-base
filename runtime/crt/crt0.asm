@@ -101,13 +101,13 @@ IFDEF FARCODE
         jbe     far_no_sp_move
         mov     sp, bx
         mov     ax, dx
-        add     ax, 18432
+        add     ax, 14336
         jc      far_all_stack
         cmp     bx, ax
         jbe     far_all_stack
         mov     __heap_ptr, dx
         mov     ax, bx
-        sub     ax, 18432
+        sub     ax, 14336
         mov     __heap_limit, ax
         mov     __stack_bottom, ax
         jmp     SHORT far_shrink

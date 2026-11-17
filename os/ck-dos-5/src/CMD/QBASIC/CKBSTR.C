@@ -3,11 +3,16 @@
  */
 
 #include "CKBSTR.H"
+#include "CKBRUNP.H"
 
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__WATCOMC__) || defined(_MSDOS)
+#include <dos.h>
+#include <malloc.h>
+#endif
 
 enum { ASC = 1, CHR, INSTR, LEFT, LEN, MID, SPACE, UCASE, VAL,
        RIGHT, LTRIM, RTRIM, REPEAT, STR, LCASE };
@@ -388,4 +393,208 @@ const char *ckb_string_apply(int id, CkbValue *out, const CkbValue *args,
         break;
     }
     return NULL;
+}
+
+void __far *ckb_compact_block(void __far *ptr, unsigned active_bytes)
+{
+    void __far *np;
+    if (!ptr) return NULL;
+    if (!active_bytes) {
+        _ffree(ptr);
+        return NULL;
+    }
+#ifdef _CKCL_DOS_H
+    np = _fmalloc(active_bytes);
+    if (np) {
+        if (FP_SEG(np) < FP_SEG(ptr)) {
+            _fmemcpy(np, ptr, active_bytes);
+            _ffree(ptr);
+            return np;
+        }
+        _ffree(np);
+    }
+    _dos_setblock((active_bytes + 15U) >> 4, FP_SEG(ptr), NULL);
+#endif
+    return ptr;
+}
+
+void packed_number_far(char __far *item, char kind, double *number, int store)
+{
+    unsigned sz = kind == '#' ? 8U : (kind == '%' ? 2U : 4U);
+    char buf[8];
+    if (!store) _fmemcpy(buf, item, sz);
+    packed_number(buf, kind, number, store);
+    if (store) _fmemcpy(item, buf, sz);
+}
+
+#define CKB_STR_SLABS     4U
+#define CKB_STR_SLAB_SIZE 16384U
+#define CKB_STR_SLAB_CAP  (CKB_STR_SLAB_SIZE - 4U)
+
+static unsigned char __far *str_slabs[CKB_STR_SLABS];
+static unsigned long str_used_bytes;
+
+char __far *ckb_salloc(unsigned n)
+{
+    unsigned s;
+    unsigned char __far *hdr;
+    n = (n + 1U) & ~1U;
+    if (!n) n = 2U;
+    if (n <= CKB_STR_SLAB_CAP) {
+        for (s = 0; s < CKB_STR_SLABS; ++s) {
+            unsigned char __far *slab = str_slabs[s];
+            unsigned off = 0;
+            if (!slab) continue;
+            while (off < CKB_STR_SLAB_SIZE) {
+                unsigned sz;
+                hdr = slab + off;
+                sz = (unsigned)hdr[0] | ((unsigned)hdr[1] << 8);
+                if (hdr[2] == 0 && sz >= n) {
+                    if (sz >= n + 8U) {
+                        unsigned rem = sz - n - 4U;
+                        unsigned char __far *nh = hdr + 4U + n;
+                        nh[0] = (unsigned char)rem;
+                        nh[1] = (unsigned char)(rem >> 8);
+                        nh[2] = 0;
+                        nh[3] = (unsigned char)s;
+                        sz = n;
+                    }
+                    hdr[0] = (unsigned char)sz;
+                    hdr[1] = (unsigned char)(sz >> 8);
+                    hdr[2] = 1;
+                    hdr[3] = (unsigned char)s;
+                    str_used_bytes += (unsigned long)sz + 4UL;
+                    return (char __far *)(hdr + 4U);
+                }
+                off += 4U + sz;
+            }
+        }
+        for (s = 0; s < CKB_STR_SLABS; ++s) {
+            unsigned char __far *slab;
+            if (str_slabs[s]) continue;
+            slab = (unsigned char __far *)_fmalloc(CKB_STR_SLAB_SIZE);
+            if (!slab) break;
+            str_slabs[s] = slab;
+            if (CKB_STR_SLAB_CAP >= n + 8U) {
+                unsigned rem = CKB_STR_SLAB_CAP - n - 4U;
+                unsigned char __far *nh = slab + 4U + n;
+                nh[0] = (unsigned char)rem;
+                nh[1] = (unsigned char)(rem >> 8);
+                nh[2] = 0;
+                nh[3] = (unsigned char)s;
+                slab[0] = (unsigned char)n;
+                slab[1] = (unsigned char)(n >> 8);
+                str_used_bytes += (unsigned long)n + 4UL;
+            } else {
+                slab[0] = (unsigned char)CKB_STR_SLAB_CAP;
+                slab[1] = (unsigned char)(CKB_STR_SLAB_CAP >> 8);
+                str_used_bytes += (unsigned long)CKB_STR_SLAB_CAP + 4UL;
+            }
+            slab[2] = 1;
+            slab[3] = (unsigned char)s;
+            return (char __far *)(slab + 4U);
+        }
+    }
+    hdr = (unsigned char __far *)_fmalloc(n + 4U);
+    if (!hdr) return NULL;
+    hdr[0] = (unsigned char)n;
+    hdr[1] = (unsigned char)(n >> 8);
+    hdr[2] = 0xff;
+    hdr[3] = 0;
+    str_used_bytes += (unsigned long)n + 4UL;
+    return (char __far *)(hdr + 4U);
+}
+
+void ckb_sfree(char __far *ptr)
+{
+    unsigned char __far *hdr, *slab;
+    unsigned sz, s, off;
+    if (!ptr) return;
+    hdr = (unsigned char __far *)ptr - 4U;
+    sz = (unsigned)hdr[0] | ((unsigned)hdr[1] << 8);
+    if (str_used_bytes >= (unsigned long)sz + 4UL)
+        str_used_bytes -= (unsigned long)sz + 4UL;
+    else
+        str_used_bytes = 0;
+    if (hdr[2] == 0xff) {
+        _ffree(hdr);
+        return;
+    }
+    s = hdr[3];
+    hdr[2] = 0;
+    if (s >= CKB_STR_SLABS || !str_slabs[s]) return;
+    slab = str_slabs[s];
+    off = 0;
+    while (off < CKB_STR_SLAB_SIZE) {
+        unsigned char __far *h = slab + off;
+        unsigned bsz = (unsigned)h[0] | ((unsigned)h[1] << 8);
+        unsigned next = off + 4U + bsz;
+        if (h[2] == 0 && next < CKB_STR_SLAB_SIZE && slab[next + 2U] == 0) {
+            unsigned nsz = (unsigned)slab[next] | ((unsigned)slab[next + 1U] << 8);
+            bsz += 4U + nsz;
+            h[0] = (unsigned char)bsz;
+            h[1] = (unsigned char)(bsz >> 8);
+            continue;
+        }
+        off = next;
+    }
+    if (slab[2] == 0 &&
+        (((unsigned)slab[0] | ((unsigned)slab[1] << 8)) == CKB_STR_SLAB_CAP)) {
+        _ffree(slab);
+        str_slabs[s] = NULL;
+    }
+}
+
+void ckb_sreset(void)
+{
+    unsigned s;
+    for (s = 0; s < CKB_STR_SLABS; ++s) {
+        if (str_slabs[s]) {
+            _ffree(str_slabs[s]);
+            str_slabs[s] = NULL;
+        }
+    }
+    str_used_bytes = 0;
+}
+
+static long dos_max_free_bytes(void)
+{
+#ifdef _CKCL_DOS_H
+    unsigned max_paras = 0;
+    _dos_allocmem(0xffffU, &max_paras);
+    return (long)max_paras * 16L;
+#else
+    return 163840L;
+#endif
+}
+
+long ckb_fre(int is_str, long arg)
+{
+    long conv;
+    unsigned s;
+    long slab_free = 0;
+    if (!is_str && arg == -1L) return dos_max_free_bytes();
+    if (!is_str && arg == -2L) {
+#if defined(__WATCOMC__) || defined(_MSDOS)
+        return (long)stackavail();
+#else
+        return 14336L;
+#endif
+    }
+    for (s = 0; s < CKB_STR_SLABS; ++s) {
+        unsigned char __far *slab = str_slabs[s];
+        unsigned off = 0;
+        if (!slab) continue;
+        while (off < CKB_STR_SLAB_SIZE) {
+            unsigned sz = (unsigned)slab[off] | ((unsigned)slab[off + 1U] << 8);
+            if (slab[off + 2U] == 0) slab_free += (long)sz;
+            off += 4U + sz;
+        }
+    }
+    conv = dos_max_free_bytes();
+    if (conv > 0) slab_free += conv;
+    {
+        long target = str_used_bytes < 32760UL ? (long)(32760UL - str_used_bytes) : 4096L;
+        return slab_free < target ? slab_free : target;
+    }
 }

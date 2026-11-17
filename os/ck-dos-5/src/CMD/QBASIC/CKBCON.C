@@ -1319,7 +1319,7 @@ static int sprite_decode_width(unsigned header_w, unsigned *width_out)
 }
 
 const char *ckb_gfx_get(int x1, int y1, int x2, int y2,
-                        unsigned char *buffer, unsigned capacity)
+                        unsigned char CKB_FAR *buffer, unsigned capacity)
 {
     int left, right, top, bottom;
     unsigned width, height, rbytes, total, ry, rx;
@@ -1345,7 +1345,7 @@ const char *ckb_gfx_get(int x1, int y1, int x2, int y2,
     buffer[1] = (unsigned char)(hdr_w >> 8);
     buffer[2] = (unsigned char)(height & 0xffU);
     buffer[3] = (unsigned char)(height >> 8);
-    memset(buffer + 4, 0, total - 4U);
+    _fmemset(buffer + 4, 0, total - 4U);
 
     if (screen_mode == 7 || screen_mode == 8 || screen_mode == 9 || screen_mode == 12) {
         unsigned pbytes = (width + 7U) >> 3;
@@ -1360,7 +1360,7 @@ const char *ckb_gfx_get(int x1, int y1, int x2, int y2,
             outp(0x3ce, 0x04);
             outp(0x3cf, p);
             for (ry = 0; ry < height; ++ry) {
-                unsigned char *pdst = buffer + 4U + ry * rbytes + (unsigned)p * pbytes;
+                unsigned char CKB_FAR *pdst = buffer + 4U + ry * rbytes + (unsigned)p * pbytes;
                 const unsigned char __far *srow = vram + (unsigned)(top + (int)ry) * stride + b0;
                 if (sh == 0U) {
                     for (b = 0; b < pbytes; ++b) pdst[b] = srow[b];
@@ -1375,7 +1375,7 @@ const char *ckb_gfx_get(int x1, int y1, int x2, int y2,
         outp(0x3cf, 0x00);
     } else {
         for (ry = 0; ry < height; ++ry) {
-            unsigned char *row_dst = buffer + 4U + ry * rbytes;
+            unsigned char CKB_FAR *row_dst = buffer + 4U + ry * rbytes;
             int sy = top + (int)ry;
             for (rx = 0; rx < width; ++rx) {
                 int c = raw_get_pixel(left + (int)rx, sy);
@@ -1391,7 +1391,7 @@ const char *ckb_gfx_get(int x1, int y1, int x2, int y2,
     return NULL;
 }
 
-const char *ckb_gfx_put(int x, int y, const unsigned char *buffer,
+const char *ckb_gfx_put(int x, int y, const unsigned char CKB_FAR *buffer,
                         unsigned capacity, int action)
 {
     unsigned hdr_w, width, height, rbytes, total, ry, rx;
@@ -1438,7 +1438,7 @@ const char *ckb_gfx_put(int x, int y, const unsigned char *buffer,
             outp(0x3c4, 0x02);
             outp(0x3c5, 1 << p);
             for (ry = 0; ry < height; ++ry) {
-                const unsigned char *psrc = buffer + 4U + ry * rbytes + (unsigned)p * pbytes;
+                const unsigned char CKB_FAR *psrc = buffer + 4U + ry * rbytes + (unsigned)p * pbytes;
                 unsigned row_off = (unsigned)(y + (int)ry) * stride + b_start;
                 unsigned db;
                 for (db = 0; db < nb; ++db) {
@@ -1474,7 +1474,7 @@ const char *ckb_gfx_put(int x, int y, const unsigned char *buffer,
     }
 
     for (ry = 0; ry < height; ++ry) {
-        const unsigned char *row_src = buffer + 4U + ry * rbytes;
+        const unsigned char CKB_FAR *row_src = buffer + 4U + ry * rbytes;
         int dy = y + (int)ry;
         unsigned pbytes = (width + 7U) >> 3;
         for (rx = 0; rx < width; ++rx) {

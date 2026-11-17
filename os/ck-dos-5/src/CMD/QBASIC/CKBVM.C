@@ -91,7 +91,7 @@ static long vm_read_ref_int(Reference ref)
         return (long)d;
     }
     if (v->array) {
-        char *item = (char *)v->elements + ref.cell * array_element_size(v);
+        const char __far *item = (const char __far *)v->elements + ref.cell * array_element_size(v);
         if (ref.kind == '%') {
             unsigned u = (unsigned char)item[0] | ((unsigned)(unsigned char)item[1] << 8);
             return (u & 0x8000U) ? ((long)u - 65536L) : (long)u;
@@ -124,7 +124,7 @@ static int vm_write_ref_int(Reference ref, long val)
         return 1;
     }
     if (v->array) {
-        char *item = (char *)v->elements + ref.cell * array_element_size(v);
+        char __far *item = (char __far *)v->elements + ref.cell * array_element_size(v);
         unsigned long u = (unsigned long)val;
         item[0] = (char)u;
         item[1] = (char)(u >> 8);
@@ -152,8 +152,8 @@ static double vm_read_ref_flt(Reference ref)
         return d;
     }
     if (v->array) {
-        char *item = (char *)v->elements + ref.cell * array_element_size(v);
-        packed_number(item, ref.kind, &d, 0);
+        packed_number_far((char __far *)v->elements + ref.cell * array_element_size(v),
+                          ref.kind, &d, 0);
         return d;
     }
     return v->number;
@@ -178,8 +178,8 @@ static int vm_write_ref_flt(Reference ref, double val)
         return 1;
     }
     if (v->array) {
-        char *item = (char *)v->elements + ref.cell * array_element_size(v);
-        packed_number(item, ref.kind, &val, 1);
+        packed_number_far((char __far *)v->elements + ref.cell * array_element_size(v),
+                          ref.kind, &val, 1);
         return 1;
     }
     v->number = val;
@@ -188,7 +188,7 @@ static int vm_write_ref_flt(Reference ref, double val)
 
 static void vm_read_var_str(const Variable *v, unsigned cell, VmVal *out)
 {
-    const char *stored = v->array ? ((char *const *)v->elements)[cell] : v->text;
+    const char __far *stored = v->array ? ((char __far *const __far *)v->elements)[cell] : v->text;
     unsigned w;
     const char *fld = any_field_bound ? field_data(v, &w) : NULL;
     out->kind = '$';
@@ -293,14 +293,14 @@ static Variable *vm_ready_array(int id, unsigned dims)
 static void vm_load_elem(Variable *v, unsigned cell, VmVal *dst)
 {
     char k = v->kind;
-    char *item;
+    const char __far *item;
     dst->kind = k;
     dst->is_ref = 0;
     if (k == '$') {
         vm_read_var_str(v, cell, dst);
         return;
     }
-    item = (char *)v->elements + cell * array_element_size(v);
+    item = (const char __far *)v->elements + cell * array_element_size(v);
     if (k == '%') {
         unsigned u = (unsigned char)item[0] | ((unsigned)(unsigned char)item[1] << 8);
         dst->u.i = (u & 0x8000U) ? ((long)u - 65536L) : (long)u;
@@ -311,19 +311,19 @@ static void vm_load_elem(Variable *v, unsigned cell, VmVal *dst)
                           ((unsigned long)(unsigned char)item[3] << 24);
         dst->u.i = (u & 0x80000000UL) ? (-(long)(~u) - 1L) : (long)u;
     } else {
-        packed_number(item, k, &dst->u.f, 0);
+        packed_number_far((char __far *)item, k, &dst->u.f, 0);
     }
 }
 
 static void vm_store_elem(Variable *v, unsigned cell, const VmVal *src)
 {
     char k = v->kind;
-    char *item;
+    char __far *item;
     if (k == '$') {
         vm_store_var_str(v, cell, src->u.fs, src->length);
         return;
     }
-    item = (char *)v->elements + cell * array_element_size(v);
+    item = (char __far *)v->elements + cell * array_element_size(v);
     if (k == '%') {
         unsigned u = (unsigned)src->u.i;
         item[0] = (char)u;
@@ -336,7 +336,7 @@ static void vm_store_elem(Variable *v, unsigned cell, const VmVal *src)
         item[3] = (char)(u >> 24);
     } else {
         double d = src->u.f;
-        packed_number(item, k, &d, 1);
+        packed_number_far(item, k, &d, 1);
     }
 }
 
@@ -762,11 +762,11 @@ int ckb_vm_execute(void)
                 } else if (av->kind == '%') {
                     top->kind = '%';
                     top->is_ref = 0;
-                    top->u.i = (long)((const short *)av->elements)[(unsigned)(idx - av->bounds[0].lower)];
+                    top->u.i = (long)((const short __far *)av->elements)[(unsigned)(idx - av->bounds[0].lower)];
                 } else if (av->kind == '&') {
                     top->kind = '&';
                     top->is_ref = 0;
-                    top->u.i = ((const long *)av->elements)[(unsigned)(idx - av->bounds[0].lower)];
+                    top->u.i = ((const long __far *)av->elements)[(unsigned)(idx - av->bounds[0].lower)];
                 } else {
                     --sp;
                     vm_load_elem(av, (unsigned)(idx - av->bounds[0].lower), &vstack[sp++]);
@@ -796,12 +796,12 @@ int ckb_vm_execute(void)
                     unsigned cell = (unsigned)(idx - av->bounds[0].lower);
                     vstack[sp - 1].kind = '%';
                     vstack[sp - 1].is_ref = 0;
-                    vstack[sp - 1].u.i = (long)((const short *)av->elements)[cell];
+                    vstack[sp - 1].u.i = (long)((const short __far *)av->elements)[cell];
                 } else if (av->kind == '&') {
                     unsigned cell = (unsigned)(idx - av->bounds[0].lower);
                     vstack[sp - 1].kind = '&';
                     vstack[sp - 1].is_ref = 0;
-                    vstack[sp - 1].u.i = ((const long *)av->elements)[cell];
+                    vstack[sp - 1].u.i = ((const long __far *)av->elements)[cell];
                 } else {
                     --sp;
                     vm_load_elem(av, (unsigned)(idx - av->bounds[0].lower), &vstack[sp++]);
@@ -847,9 +847,9 @@ int ckb_vm_execute(void)
                 if (idx < av->bounds[0].lower || idx > av->bounds[0].upper) {
                     error_message = "Subscript out of range";
                 } else if (av->kind == '%') {
-                    ((short *)av->elements)[(unsigned)(idx - av->bounds[0].lower)] = (short)val_i;
+                    ((short __far *)av->elements)[(unsigned)(idx - av->bounds[0].lower)] = (short)val_i;
                 } else {
-                    ((long *)av->elements)[(unsigned)(idx - av->bounds[0].lower)] = val_i;
+                    ((long __far *)av->elements)[(unsigned)(idx - av->bounds[0].lower)] = val_i;
                 }
                 break;
             }
@@ -877,9 +877,9 @@ int ckb_vm_execute(void)
                 if (idx < av->bounds[0].lower || idx > av->bounds[0].upper) {
                     error_message = "Subscript out of range";
                 } else if (av->kind == '%') {
-                    ((short *)av->elements)[(unsigned)(idx - av->bounds[0].lower)] = (short)val_i;
+                    ((short __far *)av->elements)[(unsigned)(idx - av->bounds[0].lower)] = (short)val_i;
                 } else {
-                    ((long *)av->elements)[(unsigned)(idx - av->bounds[0].lower)] = val_i;
+                    ((long __far *)av->elements)[(unsigned)(idx - av->bounds[0].lower)] = val_i;
                 }
                 break;
             }
@@ -2433,7 +2433,7 @@ int ckb_vm_execute(void)
             }
             for (i = 0; i < pcount; ++i) {
                 int pid = fn->param_var_ids[i];
-                free(variables[pid].text);
+                ckb_sfree(variables[pid].text);
                 variables[pid].text = df->saved_texts[i];
                 _fmemcpy(&variables[pid].number, df->saved_raw[i], sizeof(double));
             }
@@ -2557,7 +2557,7 @@ int ckb_vm_execute(void)
             if (cell >= av->cells) { error_message = "Subscript out of range"; break; }
             esize = array_element_size(av);
             cap = (av->cells - cell) * esize;
-            err = ckb_gfx_get(x1, y1, x2, y2, (unsigned char *)av->elements + cell * esize, cap);
+            err = ckb_gfx_get(x1, y1, x2, y2, (unsigned char __far *)av->elements + cell * esize, cap);
             if (err) error_message = err;
             break;
         }
@@ -2588,7 +2588,7 @@ int ckb_vm_execute(void)
             if (cell >= av->cells) { error_message = "Subscript out of range"; break; }
             esize = array_element_size(av);
             cap = (av->cells - cell) * esize;
-            err = ckb_gfx_put(x, y, (unsigned char *)av->elements + cell * esize, cap,
+            err = ckb_gfx_put(x, y, (unsigned char __far *)av->elements + cell * esize, cap,
                               (int)((flags >> 4) & 0x0fU));
             if (err) error_message = err;
             break;
@@ -2744,7 +2744,7 @@ int ckb_vm_execute(void)
         unsigned i;
         for (i = 0; i < fn->param_count; ++i) {
             int pid = fn->param_var_ids[i];
-            free(variables[pid].text);
+            ckb_sfree(variables[pid].text);
             variables[pid].text = df->saved_texts[i];
             _fmemcpy(&variables[pid].number, df->saved_raw[i], sizeof(double));
         }

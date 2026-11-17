@@ -214,8 +214,8 @@ enum {
     SFN_REPEAT, SFN_STR, SFN_LCASE
 };
 
-#define VM_MAX_CODE     15360U
-#define VM_MAX_FCONSTS  256U
+#define VM_MAX_CODE     14336U
+#define VM_MAX_FCONSTS  128U
 #define VM_MAX_STMTS    1600U
 #define VM_MAX_FIXUPS   1600U
 #define VM_STACK_MAX    32U
@@ -277,7 +277,7 @@ typedef struct {
     int fn_id;
     unsigned return_pc;
     char saved_raw[PARAM_MAX][sizeof(double)];
-    char *saved_texts[PARAM_MAX];
+    char __far *saved_texts[PARAM_MAX];
 } VmDefFnFrame;
 
 typedef struct {

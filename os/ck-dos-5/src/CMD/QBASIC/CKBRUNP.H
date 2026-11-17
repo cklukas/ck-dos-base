@@ -20,6 +20,7 @@
 #define __far
 #define _fmemcpy memcpy
 #define _fmemmove memmove
+#define _fmemset memset
 #define _fmemchr memchr
 #define _fmalloc malloc
 #define _ffree free
@@ -41,7 +42,7 @@
 #define DEF_FN_MAX 16
 #define PARAM_MAX 8
 #define DIMENSION_MAX 60
-#define ARRAY_CELL_MAX 4096
+#define ARRAY_CELL_MAX 32768U
 #define RECORD_MAX 16
 
 enum { T_NUMBER = 256, T_STRING, T_NAME, T_LE, T_GE, T_NE };
@@ -95,8 +96,8 @@ typedef struct {
 
 typedef struct {
     double number;
-    char *text;
-    void *elements;
+    char __far *text;
+    void __far *elements;
     Bounds *bounds;
     unsigned width, cells, dimensions;
     int array;
@@ -111,7 +112,7 @@ typedef struct {
 struct Variable {
     unsigned name_slot;
     double number;
-    char *text;
+    char __far *text;
     char kind;
     signed char scope;
     unsigned char first_upper;
@@ -120,7 +121,7 @@ struct Variable {
     unsigned fixed_width;
     unsigned cells, dimensions;
     Bounds *bounds;
-    void *elements;
+    void __far *elements;
     unsigned frame_slot;
     Reference reference;
 };
@@ -268,6 +269,12 @@ typedef struct {
 #define unbind_field ckbr_unbind_field
 #define record_data ckbr_record_data
 #define packed_number ckbr_packed_number
+#define packed_number_far ckbr_packed_number_far
+#define ckb_salloc ckbr_salloc
+#define ckb_sfree ckbr_sfree
+#define ckb_sreset ckbr_sreset
+#define ckb_fre ckbr_fre
+#define ckb_compact_block ckbr_compact_block
 #define assign_reference ckbr_assign_reference
 #define fetch_reference ckbr_fetch_reference
 #define string_value ckbr_string_value
@@ -404,7 +411,7 @@ extern unsigned record_count;
 extern unsigned __far *common_ids;
 extern unsigned common_count;
 
-extern char __far source[];
+extern char __far *source;
 extern Line __far *lines;
 extern int __far *line_scope;
 extern Block __far *blocks;
@@ -453,6 +460,12 @@ char *field_data(const Variable *variable, unsigned *width);
 void unbind_field(const Variable *variable);
 char *record_data(Parser *p, Reference ref);
 void packed_number(char *item, char kind, double *number, int store);
+void packed_number_far(char __far *item, char kind, double *number, int store);
+char __far *ckb_salloc(unsigned n);
+void ckb_sfree(char __far *ptr);
+void ckb_sreset(void);
+long ckb_fre(int is_str, long arg);
+void __far *ckb_compact_block(void __far *ptr, unsigned active_bytes);
 void assign_reference(Parser *p, Reference ref, Value *value, int run);
 void fetch_reference(Parser *p, Reference ref, int run, Value *value);
 void string_value(Parser *p, Value *v);
