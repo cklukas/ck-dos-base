@@ -6975,7 +6975,7 @@ WELCOME_INTERIOR:
         CALL    DOSUI_WRITE_Z
         MOV     SI,OFFSET WELCOME_COPYRIGHT_TEXT
         MOV     DH,9
-        MOV     DL,17
+        MOV     DL,26
         CALL    DOSUI_WRITE_Z
         MOV     SI,OFFSET WELCOME_RIGHTS_TEXT
         MOV     DH,10
@@ -14073,7 +14073,7 @@ UNTITLED_TEXT   DB 'Untitled',0
 STATUS_LEFT_TEXT DB ' CK-DOS Editor  <F1=Help> Press ALT to activate menus         ',0
 STATUS_POSITION_TEXT DB '00001:001',0
 WELCOME_TITLE_TEXT DB 'Welcome to the CK-DOS Editor',0
-WELCOME_COPYRIGHT_TEXT DB 'Copyright (C) C. Klukas / CK-DOS Project, 2026.',0
+WELCOME_COPYRIGHT_TEXT DB 'Copyright (C) 2026 C. Klukas.',0
 WELCOME_RIGHTS_TEXT DB 'All rights reserved.',0
 WELCOME_GUIDE_TEXT DB '< Press Enter to see the Survival Guide >',0
 WELCOME_DISMISS_TEXT DB '< Press ESC to clear this dialog box >',0

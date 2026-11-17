@@ -3665,7 +3665,7 @@ static void show_about(struct workspace *w)
         center(9, 12, 56, GRAY, "CK Basic Version 1.0 (QBASIC.EXE)");
         center(10, 12, 56, GRAY, "Copyright (c) 2026 C. Klukas. All rights reserved.");
         center(11, 12, 56, GRAY, "Independent clean-room BASIC IDE & interpreter.");
-        center(12, 12, 56, GRAY, "MIT License - CK-DOS Project.");
+        center(12, 12, 56, GRAY, "Licensed under the MIT License.");
         put(14, 36, SELECTED, "<  OK  >");
         ui_cursor(0xffff);
         event = ui_event();
