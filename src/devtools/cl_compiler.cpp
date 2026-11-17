@@ -890,6 +890,10 @@ public:
 
         // 4. SEGDEF (1: _TEXT, 2: _DATA, 3: CONST, 4: _BSS, [5: <MOD>_FAR_BSS])
         auto emit_segdef = [&](std::uint8_t acbp, std::size_t size, int name_idx, int class_idx) {
+            if (size > 0x10000U) {
+                throw std::runtime_error("ckcl: 16-bit segment exceeds 64 KB limit (" +
+                                         std::to_string(size) + " bytes)");
+            }
             std::vector<std::uint8_t> b;
             if (size == 0x10000U) {
                 b.push_back(static_cast<std::uint8_t>(acbp | 0x02U));  // Big bit = 64 KB
@@ -2265,6 +2269,34 @@ private:
         return e;
     }
 
+    bool is_far_lvalue_expr(const ExprPtr& sub) const {
+        if (!sub || opts_.model == MemoryModel::small_model) return false;
+        if (sub->kind == ExprKind::unary && sub->op == Tok::star) {
+            return sub->lhs && sub->lhs->type && sub->lhs->type->is_far;
+        }
+        if (sub->kind == ExprKind::member) {
+            if (sub->is_arrow) return sub->lhs && sub->lhs->type && sub->lhs->type->is_far;
+            return is_far_lvalue_expr(sub->lhs);
+        }
+        if (sub->kind == ExprKind::var) {
+            return sub->type && sub->type->kind != TypeKind::t_ptr &&
+                   sub->type->kind != TypeKind::t_func && sub->type->is_far;
+        }
+        if (sub->kind == ExprKind::cast) {
+            return is_far_lvalue_expr(sub->lhs);
+        }
+        return false;
+    }
+
+    static TypePtr qualify_far_subarray(TypePtr t, bool in_far) {
+        if (in_far && t && t->kind == TypeKind::t_array && !t->is_far) {
+            auto copy = std::make_shared<CType>(*t);
+            copy->is_far = true;
+            return copy;
+        }
+        return t;
+    }
+
     ExprPtr parse_expr_unary() {
         if (at(Tok::lparen) && is_type_start(1)) {
             consume(Tok::lparen, "");
@@ -2303,13 +2335,12 @@ private:
             e->lhs = sub;
             if (k == Tok::bang) e->type = make_prim(TypeKind::t_short);
             else if (k == Tok::star) {
-                e->type = (sub->type && sub->type->base) ? sub->type->base
-                                                         : make_prim(TypeKind::t_short);
+                e->type = (sub->type && sub->type->base)
+                              ? qualify_far_subarray(sub->type->base, sub->type->is_far)
+                              : make_prim(TypeKind::t_short);
             } else if (k == Tok::amp) {
                 bool ptr_far = default_far_data();
-                if (opts_.model != MemoryModel::small_model && sub &&
-                    sub->kind == ExprKind::unary && sub->op == Tok::star && sub->lhs &&
-                    sub->lhs->type && sub->lhs->type->is_far) {
+                if (is_far_lvalue_expr(sub)) {
                     ptr_far = true;
                 } else if (sub && sub->type && sub->type->kind == TypeKind::t_func) {
                     ptr_far = sub->type->is_far;
@@ -2338,7 +2369,7 @@ private:
                 deref->op = Tok::star;
                 deref->lhs = added;
                 deref->type = (added->type && added->type->base)
-                                  ? added->type->base
+                                  ? qualify_far_subarray(added->type->base, added->type->is_far)
                                   : make_prim(TypeKind::t_short);
                 e = std::move(deref);
             } else if (match(Tok::lparen)) {
@@ -2365,7 +2396,8 @@ private:
                         call->temp_bp_offset = next_local_offset_;
                     }
                     bool is_direct_global_call = false;
-                    if (call->lhs && call->lhs->kind == ExprKind::var) {
+                    if (call->lhs && call->lhs->kind == ExprKind::var &&
+                        call->lhs->type && call->lhs->type->kind == TypeKind::t_func) {
                         const VarSymbol* vs = lookup_var(call->lhs->name);
                         is_direct_global_call = (!vs || vs->is_global);
                     }
@@ -2390,6 +2422,9 @@ private:
                         }
                     }
                 }
+                const bool base_in_far = arrow ? (e && e->type && e->type->is_far)
+                                               : is_far_lvalue_expr(e);
+                ftype = qualify_far_subarray(std::move(ftype), base_in_far);
                 auto mem = std::make_shared<Expr>();
                 mem->kind = ExprKind::member;
                 mem->is_arrow = arrow;
@@ -7788,7 +7823,9 @@ private:
                     if (call_hidden_sret) push_sret_ptr();
                 }
 
-                if (e->lhs->kind == ExprKind::var && !find_local(e->lhs->name).has_value()) {
+                if (e->lhs->kind == ExprKind::var &&
+                    e->lhs->type && e->lhs->type->kind == TypeKind::t_func &&
+                    !find_local(e->lhs->name).has_value()) {
                     auto gf = parser_.global_syms.find(e->lhs->name);
                     std::string sym = !e->lhs->resolved_asm_name.empty()
                                           ? e->lhs->resolved_asm_name

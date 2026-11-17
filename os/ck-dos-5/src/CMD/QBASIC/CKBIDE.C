@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: MIT
  */
 #include "CKBIDE.H"
+#include "CKBCON.H"
 #include "CKBINI.H"
 #include "CKBHELP.H"
 #include "CKBFIND.H"
@@ -90,7 +91,7 @@ extern void __far ui_end_frame(void);
 #define KEY_SHIFT_F6 0x5900
 #define KEY_ALT 0x3800
 #define FIND_LIMIT 31
-#define PROCEDURE_LIMIT 256
+#define PROCEDURE_LIMIT 80
 #define PROCEDURE_NAME_LIMIT 40
 #define BREAKPOINT_LIMIT 128
 
@@ -1559,27 +1560,138 @@ static void search_menu(struct workspace *w)
     }
 }
 
-static void directory_list(unsigned row, unsigned col, unsigned width,
-                           unsigned rows, const char *pattern, int dirs)
+#define PATH_MAX_FILES 256
+#define PATH_MAX_DIRS 64
+
+struct path_state {
+    char __far *files;
+    char __far *dirs;
+    unsigned file_count, file_index, file_top;
+    unsigned dir_count, dir_index, dir_top;
+    char filter[13];
+};
+
+static void sort_names(char __far *list, unsigned start, unsigned count)
 {
-    struct find_t found;
-    unsigned result, used = 0;
-    result = _dos_findfirst(pattern, _A_SUBDIR | _A_RDONLY | _A_ARCH, &found);
-    while (!result && used < rows) {
-        if (!!(found.attrib & _A_SUBDIR) == dirs) {
-            if (!dirs || strcmp(found.name, ".") != 0) {
-                if (strlen(found.name) <= width) {
-                    put(row + used, col, GRAY, found.name);
-                    ++used;
-                }
-            }
+    unsigned i, j;
+    char temp[13];
+    for (i = start + 1; i < count; ++i) {
+        _fmemcpy(temp, list + i * 13U, 13);
+        j = i;
+        while (j > start) {
+            char prev[13];
+            _fmemcpy(prev, list + (j - 1U) * 13U, 13);
+            if (strcmp(prev, temp) <= 0) break;
+            _fmemcpy(list + j * 13U, prev, 13);
+            --j;
         }
-        if (used < rows) result = _dos_findnext(&found);
+        _fmemcpy(list + j * 13U, temp, 13);
     }
 }
 
+static int drive_exists(unsigned drive)
+{
+    union REGS regs = {0};
+    if (drive <= 2) {
+        unsigned equip = *(const unsigned __far *)MK_FP(0x40, 0x10);
+        unsigned floppies = (equip & 1) ? (((equip >> 6) & 3) + 1) : 0;
+        if (drive > floppies) return 0;
+    }
+    regs.x.ax = 0x4409;
+    regs.h.bl = (unsigned char)drive;
+    int86(0x21, &regs, &regs);
+    return !regs.x.cflag;
+}
+
+static void collect_path_lists(struct path_state *s)
+{
+    struct find_t found;
+    unsigned result, d, dir_sort_start = 0;
+    s->file_count = s->file_index = s->file_top = 0;
+    s->dir_count = s->dir_index = s->dir_top = 0;
+
+    result = _dos_findfirst(s->filter, _A_RDONLY | _A_ARCH, &found);
+    while (!result && s->file_count < PATH_MAX_FILES) {
+        if (!(found.attrib & _A_SUBDIR) && strlen(found.name) < 13) {
+            char __far *dst = s->files + s->file_count * 13U;
+            unsigned k;
+            for (k = 0; found.name[k]; ++k)
+                dst[k] = (char)toupper((unsigned char)found.name[k]);
+            dst[k] = '\0';
+            ++s->file_count;
+        }
+        result = _dos_findnext(&found);
+    }
+    sort_names(s->files, 0, s->file_count);
+
+    result = _dos_findfirst("*.*", _A_SUBDIR | _A_RDONLY | _A_ARCH, &found);
+    while (!result && s->dir_count < PATH_MAX_DIRS) {
+        if ((found.attrib & _A_SUBDIR) && strcmp(found.name, ".") != 0 &&
+            strlen(found.name) < 13) {
+            unsigned k;
+            if (strcmp(found.name, "..") == 0 && s->dir_count > 0) {
+                _fmemcpy(s->dirs + s->dir_count * 13U, s->dirs, 13);
+                _fmemcpy(s->dirs, "..", 3);
+                ++s->dir_count;
+                dir_sort_start = 1;
+            } else {
+                char __far *dst = s->dirs + s->dir_count * 13U;
+                if (strcmp(found.name, "..") == 0) dir_sort_start = 1;
+                for (k = 0; found.name[k]; ++k)
+                    dst[k] = (char)toupper((unsigned char)found.name[k]);
+                dst[k] = '\0';
+                ++s->dir_count;
+            }
+        }
+        result = _dos_findnext(&found);
+    }
+    sort_names(s->dirs, dir_sort_start, s->dir_count);
+
+    for (d = 1; d <= 26 && s->dir_count < PATH_MAX_DIRS; ++d) {
+        if (drive_exists(d)) {
+            char entry[6];
+            entry[0] = '[';
+            entry[1] = '-';
+            entry[2] = (char)('A' + d - 1);
+            entry[3] = '-';
+            entry[4] = ']';
+            entry[5] = '\0';
+            _fmemcpy(s->dirs + (s->dir_count++) * 13U, entry, 6);
+        }
+    }
+}
+
+static void draw_vscroll(unsigned top, unsigned bottom, unsigned col,
+                         unsigned index, unsigned count)
+{
+    unsigned height = bottom - top + 1, r, thumb = top + 1;
+    if (height > 2 && count > 1)
+        thumb = top + 1 + (unsigned)((unsigned long)(height - 3) * index / (count - 1));
+    for (r = top; r <= bottom; ++r) {
+        unsigned ch = r == top ? 0x18 : r == bottom ? 0x19 : r == thumb ? ' ' : 0xb0;
+        fill(r, col, ch, r == thumb ? SELECTED : GRAY, 1);
+    }
+}
+
+static int focus_is_files(int saving, unsigned focus)
+{
+    return !saving && focus == 1;
+}
+
+static int focus_is_dirs(int saving, unsigned focus)
+{
+    return saving ? focus == 1 : focus == 2;
+}
+
+static int focus_button(int saving, unsigned focus)
+{
+    unsigned base = saving ? 2 : 3;
+    return focus >= base && focus < base + 3 ? (int)(focus - base) : -1;
+}
+
 static void path_dialog(struct workspace *w, int saving, const char *name,
-                        unsigned caret, int marked, unsigned focus)
+                        unsigned caret, int marked, unsigned focus,
+                        const struct path_state *s)
 {
     static const unsigned char save_box[] = {3, 19, 20, 60, GRAY, GRAY};
     static const unsigned char open_box[] = {2, 6, 20, 72, GRAY, GRAY};
@@ -1588,42 +1700,100 @@ static void path_dialog(struct workspace *w, int saving, const char *name,
     unsigned row = box[0] + 2, left = box[1] + 14;
     unsigned first = caret >= width ? caret - width + 1 : 0;
     unsigned len = strlen(name + first);
-    char clipped[51], cwd[PATH_SIZE];
+    char clipped[51], cwd[PATH_SIZE], item[13];
     unsigned i, buttons[3];
+    int btn = focus_button(saving, focus);
     const char *const labels[3] = {"< OK >", "< Cancel >", "< Help >"};
     if (len > width) len = width;
     memcpy(clipped, name + first, len);
     clipped[len] = '\0';
     draw_workspace(w);
     draw_dialog(box, saving ? " Save As " : " Open ");
-    fill(row, left - 1, VERTICAL, GRAY, 1);
-    fill(row, left + width, VERTICAL, GRAY, 1);
+    display_frame(row - 1, left - 1, row + 1, left + width);
     put(row, box[1] + 2, GRAY, "File Name:");
-    put(row, left, marked ? SELECTED : GRAY, clipped);
-    if (getcwd(cwd, sizeof(cwd))) put(row + 2, box[1] + 2, GRAY, cwd);
+    put(row, left, focus == 0 && marked ? SELECTED : GRAY, clipped);
+    if (getcwd(cwd, sizeof(cwd))) {
+        unsigned max_cwd = saving ? 37 : 62;
+        if (strlen(cwd) > max_cwd) cwd[max_cwd] = '\0';
+        put(row + 2, box[1] + 2, GRAY, cwd);
+    }
     if (saving) {
         put(8, 34, GRAY, "Dirs/Drives");
-        directory_list(10, 24, 20, 8, "*.*", 1);
+        display_frame(9, 24, 17, 55);
+        for (i = 0; i < 7; ++i) {
+            unsigned idx = s->dir_top + i;
+            unsigned active = focus_is_dirs(1, focus) && idx < s->dir_count && idx == s->dir_index;
+            unsigned attr = active ? SELECTED : GRAY;
+            fill(10 + i, 25, ' ', attr, 30);
+            if (idx < s->dir_count) {
+                _fmemcpy(item, s->dirs + idx * 13U, 13);
+                item[12] = '\0';
+                put(10 + i, 26, attr, item);
+            }
+        }
+        draw_vscroll(10, 16, 55, s->dir_index, s->dir_count);
     } else {
-        put(7, 28, GRAY, "Files");
-        put(7, 57, GRAY, "Dirs/Drives");
-        directory_list(9, 12, 12, 8, "*.BAS", 0);
-        directory_list(9, 55, 12, 8, "*.*", 1);
+        unsigned col_idx, r;
+        put(7, 23, GRAY, "Files");
+        put(7, 54, GRAY, "Dirs/Drives");
+        display_frame(8, 8, 17, 46);
+        for (col_idx = 0; col_idx < 2; ++col_idx) {
+            unsigned cell_left = col_idx == 0 ? 9 : 28;
+            for (r = 0; r < 8; ++r) {
+                unsigned idx = s->file_top + col_idx * 8 + r;
+                unsigned active = focus_is_files(0, focus) && idx < s->file_count && idx == s->file_index;
+                unsigned attr = active ? SELECTED : GRAY;
+                fill(9 + r, cell_left, ' ', attr, 18);
+                if (idx < s->file_count) {
+                    _fmemcpy(item, s->files + idx * 13U, 13);
+                    item[12] = '\0';
+                    put(9 + r, cell_left + 1, attr, item);
+                }
+            }
+            if (col_idx == 0)
+                for (r = 0; r < 8; ++r) fill(9 + r, 27, VERTICAL, GRAY, 1);
+        }
+        draw_vscroll(9, 16, 46, s->file_index, s->file_count);
+
+        display_frame(8, 50, 17, 69);
+        for (r = 0; r < 8; ++r) {
+            unsigned idx = s->dir_top + r;
+            unsigned active = focus_is_dirs(0, focus) && idx < s->dir_count && idx == s->dir_index;
+            unsigned attr = active ? SELECTED : GRAY;
+            fill(9 + r, 51, ' ', attr, 18);
+            if (idx < s->dir_count) {
+                _fmemcpy(item, s->dirs + idx * 13U, 13);
+                item[12] = '\0';
+                put(9 + r, 52, attr, item);
+            }
+        }
+        draw_vscroll(9, 16, 69, s->dir_index, s->dir_count);
     }
+    fill(18, box[1], 0xc3, GRAY, 1);
+    fill(18, box[1] + 1, HORIZONTAL, GRAY, box[3] - box[1] - 1);
+    fill(18, box[3], 0xb4, GRAY, 1);
     buttons[0] = saving ? 26 : 17;
     buttons[1] = saving ? 36 : 34;
     buttons[2] = saving ? 50 : 55;
     for (i = 0; i < 3; ++i) {
         put(19, buttons[i], GRAY, labels[i]);
-        if ((!focus && !i) || focus == i + 1) {
+        if ((btn < 0 && !i) || btn == (int)i) {
             fill(19, buttons[i], '<', 0x7f, 1);
             fill(19, buttons[i] + strlen(labels[i]) - 1, '>', 0x7f, 1);
         }
     }
     fill(24, 0, ' ', STATUS, 80);
     put(24, 1, STATUS, "F1=Help   Enter=Execute   Esc=Cancel   Tab=Next Field   Arrow=Next Item");
-    if (w->error[0]) put(17, box[1] + 2, GRAY, w->error);
-    ui_cursor(focus ? 0xffff : POS(row, left + caret - first));
+    if (w->error[0]) put(18, box[1] + 2, SELECTED, w->error);
+    if (focus == 0) ui_cursor(POS(row, left + caret - first));
+    else if (focus_is_files(saving, focus)) {
+        unsigned rel = s->file_index >= s->file_top ? s->file_index - s->file_top : 0;
+        ui_cursor(POS(9 + (rel % 8), (rel >= 8 ? 29 : 10)));
+    } else if (focus_is_dirs(saving, focus)) {
+        unsigned rel = s->dir_index >= s->dir_top ? s->dir_index - s->dir_top : 0;
+        ui_cursor(POS((saving ? 10 : 9) + rel, saving ? 26 : 52));
+    } else if (btn >= 0) ui_cursor(POS(19, buttons[btn] + 2));
+    else ui_cursor(0xffff);
 }
 
 static int source_extension(char *name)
@@ -1675,36 +1845,261 @@ static int ask(struct workspace *w, const char *question, int cancel)
     }
 }
 
+static void sync_path_scroll(struct path_state *s, int saving)
+{
+    unsigned dir_rows = saving ? 7U : 8U;
+    if (s->file_index < s->file_top)
+        s->file_top = (s->file_index / 8U) * 8U;
+    else if (s->file_index >= s->file_top + 16U)
+        s->file_top = ((s->file_index - 8U) / 8U) * 8U;
+    if (s->dir_index < s->dir_top)
+        s->dir_top = s->dir_index;
+    else if (s->dir_index >= s->dir_top + dir_rows)
+        s->dir_top = s->dir_index - dir_rows + 1U;
+}
+
+static void select_file_into_name(const struct path_state *s, char *name,
+                                  unsigned *length, unsigned *caret, int *marked)
+{
+    if (!s->file_count) return;
+    _fmemcpy(name, s->files + s->file_index * 13U, 13);
+    name[12] = '\0';
+    *length = *caret = strlen(name);
+    *marked = 1;
+}
+
+static unsigned jump_list_letter(const char __far *list, unsigned count,
+                                 unsigned current, int ch, int allow_drive)
+{
+    unsigned i, target = (unsigned)toupper((unsigned char)ch);
+    if (!count) return 0;
+    for (i = 1; i <= count; ++i) {
+        unsigned idx = (current + i) % count;
+        const char __far *entry = list + idx * 13U;
+        unsigned first = (unsigned char)entry[0];
+        if (first == target) return idx;
+        if (allow_drive && first == '[' && entry[1] == '-' &&
+            (unsigned char)entry[2] == target)
+            return idx;
+    }
+    return current;
+}
+
+static int change_directory_target(const char *target)
+{
+    unsigned total = 0;
+    if (target[0] == '[' && target[1] == '-' && target[3] == '-' && target[4] == ']') {
+        unsigned drive = (unsigned)(toupper((unsigned char)target[2]) - 'A' + 1);
+        unsigned current = 0;
+        _dos_setdrive(drive, &total);
+        _dos_getdrive(&current);
+        return current == drive;
+    }
+    if (isalpha((unsigned char)target[0]) && target[1] == ':') {
+        unsigned drive = (unsigned)(toupper((unsigned char)target[0]) - 'A' + 1);
+        unsigned current = 0;
+        _dos_setdrive(drive, &total);
+        _dos_getdrive(&current);
+        if (current != drive) return 0;
+        if (!target[2]) return 1;
+    }
+    return chdir(target) == 0;
+}
+
+static int is_existing_directory(const char *path)
+{
+    struct find_t found;
+    unsigned len = strlen(path);
+    if (!len) return 0;
+    if (strcmp(path, ".") == 0 || strcmp(path, "..") == 0) return 1;
+    if (path[len - 1] == '\\' || path[len - 1] == '/' || path[len - 1] == ':') return 1;
+    if (strchr(path, '*') || strchr(path, '?')) return 0;
+    return _dos_findfirst(path, _A_SUBDIR | _A_RDONLY | _A_ARCH, &found) == 0 &&
+           (found.attrib & _A_SUBDIR) != 0;
+}
+
 static int choose_path(struct workspace *w, int saving)
 {
+    struct path_state s;
     char name[PATH_SIZE], path[PATH_SIZE];
-    unsigned length, caret, focus = 0, ch;
+    unsigned length, caret, focus = 0, focus_count = saving ? 5U : 6U;
     unsigned long event;
-    int marked = 1;
-    strcpy(name, saving ? w->path : "*.BAS");
+    int marked = 1, outcome = 0;
+
+    memset(&s, 0, sizeof(s));
+    strcpy(s.filter, "*.BAS");
+    s.files = (char __far *)_fmalloc(PATH_MAX_FILES * 13U);
+    s.dirs = (char __far *)_fmalloc(PATH_MAX_DIRS * 13U);
+    if (!s.files || !s.dirs) {
+        if (s.files) _ffree(s.files);
+        if (s.dirs) _ffree(s.dirs);
+        set_error(w, "Out of memory");
+        return 0;
+    }
+    collect_path_lists(&s);
+
+    strcpy(name, saving && w->path[0] ? w->path : s.filter);
     length = caret = strlen(name);
     w->error[0] = '\0';
+
     for (;;) {
-        path_dialog(w, saving, name, caret, marked, focus);
+        unsigned key, ch;
+        int btn;
+        sync_path_scroll(&s, saving);
+        path_dialog(w, saving, name, caret, marked, focus, &s);
         event = ui_event();
+        key = (unsigned)event;
+        ch = (unsigned char)key;
         if (event & MOUSE_EVENT) {
-            unsigned row = (event >> 8) & 255, col = event & 255;
-            unsigned ok = saving ? 26 : 17, cancel = saving ? 36 : 34;
-            if (row == (saving ? 5U : 4U)) focus = 0;
-            if (row != 19) continue;
-            if (col >= cancel && col < cancel + 10) break;
-            if (col < ok || col >= ok + 6) continue;
-            focus = 1;
-            event = '\r';
+            unsigned row = (key >> 8) & 255, col = key & 255;
+            unsigned ok = saving ? 26U : 17U, cancel = saving ? 36U : 34U;
+            unsigned help_col = saving ? 50U : 55U;
+            unsigned field_row = saving ? 5U : 4U;
+            unsigned field_left = (saving ? 19U : 6U) + 14U;
+            unsigned field_width = saving ? 25U : 50U;
+            if (row == field_row && col >= field_left && col < field_left + field_width) {
+                focus = 0;
+                marked = 0;
+                if (col - field_left <= length) caret = col - field_left;
+                else caret = length;
+                continue;
+            }
+            if (!saving && row >= 9 && row <= 16 && col >= 9 && col <= 46) {
+                if (col == 46) {
+                    if (row == 9 && s.file_top >= 8) s.file_top -= 8;
+                    else if (row == 16 && s.file_top + 16 < s.file_count) s.file_top += 8;
+                    if (s.file_index < s.file_top) s.file_index = s.file_top;
+                    if (s.file_index >= s.file_top + 16 && s.file_count)
+                        s.file_index = s.file_top + 15 < s.file_count ? s.file_top + 15 : s.file_count - 1;
+                    focus = 1;
+                    select_file_into_name(&s, name, &length, &caret, &marked);
+                    continue;
+                }
+                if (col != 27) {
+                    unsigned idx = s.file_top + (col >= 28 ? 8U : 0U) + (row - 9U);
+                    int double_click = focus == 1 && idx == s.file_index;
+                    focus = 1;
+                    if (idx < s.file_count) {
+                        s.file_index = idx;
+                        select_file_into_name(&s, name, &length, &caret, &marked);
+                        if (double_click) ch = '\r';
+                        else continue;
+                    } else continue;
+                } else continue;
+            } else if ((!saving && row >= 9 && row <= 16 && col >= 51 && col <= 69) ||
+                       (saving && row >= 10 && row <= 16 && col >= 25 && col <= 55)) {
+                unsigned d_top = saving ? 10U : 9U;
+                unsigned d_scroll = saving ? 55U : 69U;
+                unsigned d_focus = saving ? 1U : 2U;
+                if (col == d_scroll) {
+                    if (row == d_top && s.dir_index > 0) --s.dir_index;
+                    else if (row == 16 && s.dir_index + 1 < s.dir_count) ++s.dir_index;
+                    focus = d_focus;
+                    continue;
+                }
+                {
+                    unsigned idx = s.dir_top + (row - d_top);
+                    int double_click = focus == d_focus && idx == s.dir_index;
+                    focus = d_focus;
+                    if (idx < s.dir_count) {
+                        s.dir_index = idx;
+                        if (double_click) ch = '\r';
+                        else continue;
+                    } else continue;
+                }
+            } else if (row == 19) {
+                if (col >= cancel && col < cancel + 10) break;
+                if (col >= help_col && col < help_col + 8) {
+                    show_help(w, CKB_HELP_USING, 0);
+                    continue;
+                }
+                if (col >= ok && col < ok + 6) {
+                    focus = saving ? 2U : 3U;
+                    ch = '\r';
+                } else continue;
+            } else continue;
         }
-        ch = (unsigned char)event;
-        if (ch == 27 || (ch == '\r' && focus == 2)) break;
-        if (ch == '\t') {
-            focus = (focus + 1) % 4;
+
+        btn = focus_button(saving, focus);
+        if (ch == 27 || (ch == '\r' && btn == 1)) break;
+        if (key == 0x3b00 || (ch == '\r' && btn == 2)) {
+            show_help(w, CKB_HELP_USING, 0);
             continue;
         }
-        if (ch == '\r' && focus != 3) {
-            strcpy(path, name);
+        if (ch == '\t' || key == 0x0f00) {
+            focus = (focus + (key == 0x0f00 ? focus_count - 1U : 1U)) % focus_count;
+            if (focus == 0) marked = 1;
+            else if (focus_is_files(saving, focus))
+                select_file_into_name(&s, name, &length, &caret, &marked);
+            w->error[0] = '\0';
+            continue;
+        }
+        if (ch == '\r' && focus_is_dirs(saving, focus)) {
+            char target[13];
+            if (!s.dir_count) continue;
+            _fmemcpy(target, s.dirs + s.dir_index * 13U, 13);
+            target[12] = '\0';
+            if (change_directory_target(target)) {
+                collect_path_lists(&s);
+                if (!saving) {
+                    strcpy(name, s.filter);
+                    length = caret = strlen(name);
+                    marked = 1;
+                }
+                w->error[0] = '\0';
+            } else set_error(w, "Path not found");
+            continue;
+        }
+        if (ch == '\r') {
+            unsigned start = 0, end;
+            if (focus_is_files(saving, focus) && s.file_count)
+                select_file_into_name(&s, name, &length, &caret, &marked);
+            while (name[start] == ' ') ++start;
+            strcpy(path, name + start);
+            end = strlen(path);
+            while (end && path[end - 1] == ' ') path[--end] = '\0';
+            if (!*path) {
+                set_error(w, "Enter a file name");
+                continue;
+            }
+            if (strchr(path, '*') || strchr(path, '?')) {
+                char *sep = NULL, *p;
+                for (p = path; *p; ++p)
+                    if (*p == ':' || *p == '/' || *p == '\\') sep = p;
+                if (sep) {
+                    char dir_part[PATH_SIZE];
+                    unsigned dlen = (unsigned)(sep - path);
+                    if (*sep == ':' || dlen == 0 || (dlen == 2 && path[1] == ':')) ++dlen;
+                    memcpy(dir_part, path, dlen);
+                    dir_part[dlen] = '\0';
+                    if (!change_directory_target(dir_part)) {
+                        set_error(w, "Path not found");
+                        continue;
+                    }
+                    strncpy(s.filter, sep + 1, 12);
+                    s.filter[12] = '\0';
+                } else {
+                    strncpy(s.filter, path, 12);
+                    s.filter[12] = '\0';
+                }
+                if (!s.filter[0]) strcpy(s.filter, "*.*");
+                collect_path_lists(&s);
+                strcpy(name, s.filter);
+                length = caret = strlen(name);
+                marked = 1;
+                w->error[0] = '\0';
+                continue;
+            }
+            if (is_existing_directory(path)) {
+                if (change_directory_target(path)) {
+                    collect_path_lists(&s);
+                    strcpy(name, saving ? "" : s.filter);
+                    length = caret = strlen(name);
+                    marked = 1;
+                    w->error[0] = '\0';
+                } else set_error(w, "Path not found");
+                continue;
+            }
             if (!source_extension(path)) set_error(w, "Enter a file name");
             else if (saving) {
                 FILE *existing = fopen(path, "rb");
@@ -1712,18 +2107,80 @@ static int choose_path(struct workspace *w, int saving)
                     fclose(existing);
                     if (ask(w, "Replace the existing file?", 0) != 0) continue;
                 }
-                if (save_source(w, path)) return 1;
-            } else if (load_source(w, path)) return 1;
+                if (save_source(w, path)) {
+                    outcome = 1;
+                    break;
+                }
+            } else if (load_source(w, path)) {
+                outcome = 1;
+                break;
+            }
+            continue;
+        }
+        if (focus_is_files(saving, focus)) {
+            if (!s.file_count) continue;
+            switch (key) {
+            case KEY_UP: if (s.file_index) --s.file_index; break;
+            case KEY_DOWN: if (s.file_index + 1 < s.file_count) ++s.file_index; break;
+            case KEY_LEFT: s.file_index = s.file_index >= 8 ? s.file_index - 8 : 0; break;
+            case KEY_RIGHT:
+                s.file_index = s.file_index + 8 < s.file_count ? s.file_index + 8 : s.file_count - 1;
+                break;
+            case KEY_HOME: s.file_index = 0; break;
+            case KEY_END: s.file_index = s.file_count - 1; break;
+            case KEY_PREV: s.file_index = s.file_index >= 16 ? s.file_index - 16 : 0; break;
+            case KEY_NEXT:
+                s.file_index = s.file_index + 16 < s.file_count ? s.file_index + 16 : s.file_count - 1;
+                break;
+            default:
+                if (ch > 32 && ch < 127)
+                    s.file_index = jump_list_letter(s.files, s.file_count, s.file_index, (int)ch, 0);
+                else continue;
+            }
+            select_file_into_name(&s, name, &length, &caret, &marked);
+            w->error[0] = '\0';
+            continue;
+        }
+        if (focus_is_dirs(saving, focus)) {
+            unsigned page = saving ? 7U : 8U;
+            if (!s.dir_count) continue;
+            switch (key) {
+            case KEY_UP: if (s.dir_index) --s.dir_index; break;
+            case KEY_DOWN: if (s.dir_index + 1 < s.dir_count) ++s.dir_index; break;
+            case KEY_HOME: s.dir_index = 0; break;
+            case KEY_END: s.dir_index = s.dir_count - 1; break;
+            case KEY_PREV: s.dir_index = s.dir_index >= page ? s.dir_index - page : 0; break;
+            case KEY_NEXT:
+                s.dir_index = s.dir_index + page < s.dir_count ? s.dir_index + page : s.dir_count - 1;
+                break;
+            default:
+                if (ch > 32 && ch < 127)
+                    s.dir_index = jump_list_letter(s.dirs, s.dir_count, s.dir_index, (int)ch, 1);
+            }
+            w->error[0] = '\0';
+            continue;
+        }
+        if (btn >= 0) {
+            if (key == KEY_LEFT || key == KEY_UP)
+                focus = (saving ? 2U : 3U) + (unsigned)((btn + 2) % 3);
+            else if (key == KEY_RIGHT || key == KEY_DOWN)
+                focus = (saving ? 2U : 3U) + (unsigned)((btn + 1) % 3);
             continue;
         }
         if (focus) continue;
-        switch ((unsigned)event) {
+        switch (key) {
         case KEY_LEFT: if (caret) --caret; marked = 0; break;
         case KEY_RIGHT: if (caret < length) ++caret; marked = 0; break;
         case KEY_HOME: caret = 0; marked = 0; break;
         case KEY_END: caret = length; marked = 0; break;
+        case KEY_DOWN:
+            if (!saving && s.file_count) {
+                focus = 1;
+                select_file_into_name(&s, name, &length, &caret, &marked);
+            }
+            break;
         default:
-            if (ch == '\b' || (unsigned)event == KEY_DELETE || ch >= 32) {
+            if (ch == '\b' || key == KEY_DELETE || (ch >= 32 && ch != 127)) {
                 if (marked) {
                     name[0] = '\0';
                     length = caret = 0;
@@ -1733,20 +2190,22 @@ static int choose_path(struct workspace *w, int saving)
                     --caret;
                     --length;
                     memmove(name + caret, name + caret + 1, length - caret + 1);
-                } else if ((unsigned)event == KEY_DELETE && caret < length) {
+                } else if (key == KEY_DELETE && caret < length) {
                     --length;
                     memmove(name + caret, name + caret + 1, length - caret + 1);
-                } else if (ch >= 32 && length < PATH_SIZE - 1) {
+                } else if (ch >= 32 && ch != 127 && length < PATH_SIZE - 1) {
                     memmove(name + caret + 1, name + caret, length - caret + 1);
-                    name[caret++] = toupper(ch);
+                    name[caret++] = (char)toupper(ch);
                     ++length;
                 }
                 w->error[0] = '\0';
             }
         }
     }
+    _ffree(s.files);
+    _ffree(s.dirs);
     w->error[0] = '\0';
-    return 0;
+    return outcome;
 }
 
 static int confirm_discard(struct workspace *w)
@@ -2006,9 +2465,34 @@ static void output_screen(const struct workspace *w)
     ui_event();
 }
 
+static void ide_ensure_text_mode(struct workspace *w)
+{
+    if ((*(const unsigned char __far *)MK_FP(0x40, 0x49) & 0x7f) != 3) {
+        union REGS regs = {0};
+        unsigned i;
+        ckb_con_reset_text();
+        regs.x.ax = 0x0100;
+        regs.x.cx = 0x0607;
+        int86(0x10, &regs, &regs);
+        regs.x.ax = 0;
+        int86(0x33, &regs, &regs);
+        if (regs.x.ax) {
+            regs.x.ax = 1;
+            int86(0x33, &regs, &regs);
+        }
+        w->output_cursor = 0;
+        if (w->output)
+            for (i = 0; i < 2000; ++i) w->output[i] = 0x0720;
+    }
+}
+
 static void capture_output(struct workspace *w)
 {
     union REGS regs = {0};
+    if ((*(const unsigned char __far *)MK_FP(0x40, 0x49) & 0x7f) != 3) {
+        ide_ensure_text_mode(w);
+        return;
+    }
     regs.x.ax = 0x0300;
     int86(0x10, &regs, &regs);
     w->output_cursor = regs.x.dx;
@@ -2308,7 +2792,15 @@ static void run_workspace(struct workspace *w, enum run_mode mode)
                        &result, pause_workspace, should_break, w);
         mode = RUN_NORMAL;
     } while (w->restart_requested);
-    if (result.aborted) return;
+    if (result.aborted) {
+        ide_ensure_text_mode(w);
+        return;
+    }
+    if (!result.error && (*(const unsigned char __far *)MK_FP(0x40, 0x49) & 0x7f) != 3) {
+        ckb_con_acknowledge_graphics();
+        ide_ensure_text_mode(w);
+        return;
+    }
     capture_output(w);
     if (result.error) {
         if (result.editor_source && result.line) {
@@ -3284,13 +3776,12 @@ static int is_plain_cursor_key(unsigned key)
            key == KEY_RIGHT || key == KEY_HOME || key == KEY_END;
 }
 
-int ckb_ide(const char *path)
+static int ckb_ide_session(struct workspace *wp, const char *path)
 {
-    struct workspace w;
+#define w (*wp)
     unsigned segment, row, col;
     unsigned long event;
     int done = 0, workspace_clean = 0;
-    memset(&w, 0, sizeof(w));
     ckb_ini_load_display(&w.display);
     w.anchor = NO_MARK;
     w.procedure = -1;
@@ -3447,4 +3938,18 @@ int ckb_ide(const char *path)
     ckb_immediate_clear();
     _ffree(w.text);
     return 0;
+#undef w
+}
+
+int ckb_ide(const char *path)
+{
+    struct workspace *wp = calloc(1, sizeof(*wp));
+    int rc;
+    if (!wp) {
+        fputs("Not enough memory for workspace\n", stderr);
+        return 1;
+    }
+    rc = ckb_ide_session(wp, path);
+    free(wp);
+    return rc;
 }

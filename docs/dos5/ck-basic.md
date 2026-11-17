@@ -52,14 +52,15 @@ Built on the shared 16-bit `DOSUI` text windowing engine, the **CK Basic** IDE p
 - **Control Flow:** Block `IF ... ELSEIF ... ELSE ... END IF`, `SELECT CASE` (`IS`, ranges, comma lists), `DO [WHILE|UNTIL] ... LOOP [WHILE|UNTIL]`, `FOR ... NEXT`, `WHILE ... WEND`, `GOSUB ... RETURN`, `ON expr GOTO/GOSUB`, and `ON ERROR GOTO` / `RESUME` (`RESUME`, `RESUME NEXT`, `RESUME label`) with `ERR` and `ERL`.
 - **Procedures & Scoping:** True recursive `SUB` and `FUNCTION` procedures, `DECLARE`, `SHARED`, `DIM SHARED`, `COMMON SHARED`, `STATIC`, `REDIM`, `OPTION BASE 0|1`, `LBOUND`/`UBOUND`, and `ERASE`.
 - **Math & Strings:** Full transcendental math (`SIN`, `COS`, `TAN`, `ATN`, `EXP`, `LOG`, `SQR`, `ABS`, `SGN`, `INT`, `FIX`, `CINT`, `CLNG`, `CSNG`, `CDBL`, `RND`/`RANDOMIZE`), formatted `PRINT USING`, `LSET`/`RSET`, `MID$` assignment, `INSTR`, `LTRIM$`/`RTRIM$`, `UCASE$`/`LCASE$`, `HEX$`/`OCT$`, `STR$`/`VAL`, and `MK*$`/`CV*` binary packers.
-- **Files, Devices & System Integration:** `OPEN` for `INPUT`, `OUTPUT`, `APPEND`, `RANDOM` (`FIELD`, `GET`, `PUT`), and `BINARY` (`SEEK`, `LOC`, `LOF`, `EOF`, `FREEFILE`), serial `COM1:`/`COM2:` I/O, `LPRINT`, `SHELL`, `ENVIRON`/`ENVIRON$`, `COMMAND$`, `TIMER`, `SOUND`/`BEEP`, and `PEEK`/`POKE`/`INP`/`OUT`.
+- **Graphics, Sound & Timing:** EGA/VGA/CGA/MCGA `SCREEN` modes (`0, 1, 2, 7, 8, 9, 12, 13`), `PALETTE`, `VIEW PRINT`, `COLOR`, `LOCATE`, `CLS`, `PSET`/`PRESET`, `POINT`, `LINE` (`B`/`BF`), `CIRCLE` (ellipses and arcs), scanline `PAINT`, `GET`/`PUT` sprites (`PSET`, `XOR`, `OR`, `AND`, `PRESET`), MML `PLAY`, `SOUND`/`BEEP`, `SLEEP`, `INKEY$`, and sub-tick PIT-latched `TIMER` — running full graphical QBasic games such as `GORILLA.BAS`.
+- **Files, Devices & System Integration:** Interactive `Open` / `Save As` file and directory/drive browser in the IDE, `OPEN` for `INPUT`, `OUTPUT`, `APPEND`, `RANDOM` (`FIELD`, `GET`, `PUT`), and `BINARY` (`SEEK`, `LOC`, `LOF`, `EOF`, `FREEFILE`), serial `COM1:`/`COM2:` I/O, `LPRINT`, `SHELL`, `ENVIRON`/`ENVIRON$`, `COMMAND$`, `DEF FN`, `DEF SEG`, and `PEEK`/`POKE`/`INP`/`OUT`.
 
 ## Source Layout (`os/ck-dos-5/src/CMD/QBASIC/`)
 
 | Module | Responsibility |
 |---|---|
 | `QBASIC.C` | CLI switch parser (`/?`, `/RUN`, `/MBF`, `/EDITOR`, `/B`, `/G`, `/H`, `/NOHI`) and DOS memory setup |
-| `CKBIDE.C`, `CKBFIND.C`, `CKBPROC.C`, `CKBHELP.C`, `CKBINI.C` | Full-screen `DOSUI` IDE, `SUB`/`FUNCTION` procedure manager, search/replace, built-in keyword help, `About CK Basic`, and `QBASIC.INI` |
-| `CKBRUN.C` | Tokenizer, AST/bytecode evaluator, recursive procedure frames, arrays, `TYPE` records, `ON ERROR`, and debugger hooks |
+| `CKBIDE.C`, `CKBFIND.C`, `CKBPROC.C`, `CKBHELP.C`, `CKBINI.C` | Full-screen `DOSUI` IDE, file/directory browser dialogs, `SUB`/`FUNCTION` procedure manager, search/replace, built-in keyword help, `About CK Basic`, and `QBASIC.INI` |
+| `CKBRUN.C`, `CKBIO.C`, `CKBRUNP.H` | Structured QuickBASIC parser/evaluator, far-heap program/symbol tables, recursive procedure frames, arrays, `TYPE` records, `DEF FN`, file/device/graphics dispatch, `ON ERROR`, and debugger hooks |
 | `CKBNUM.C`, `CKBFMT.C`, `CKBSTR.C` | Exact numeric parsing, IEEE-754 / MBF conversions, `PRINT USING` formatter, and dynamic/fixed string engine |
-| `CKBCON.C`, `CKBSER.C`, `CKENV.C`, `CKBUI.ASM` | BIOS/DOS console & screen modes, `INT 14h` / UART serial `COMn:` support, DOS environment, and 16-bit `cdecl` far assembly bridges to `DOSUI.OBJ` |
+| `CKBCON.C`, `CKBSER.C`, `CKENV.C`, `CKBUI.ASM` | EGA/VGA/CGA/Mode 13h graphics, sprites, MML `PLAY` / PC-speaker audio, sub-tick `TIMER`, `INT 14h` / UART serial `COMn:` support, DOS environment, and 16-bit `cdecl` far assembly bridges to `DOSUI.OBJ` |
