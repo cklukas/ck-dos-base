@@ -194,6 +194,7 @@ DOSBASE_TEST(runtime_medium_model_mlibce_float_and_dos_link) {
 
     run_asm(rt_root / "crt" / "crt0.asm", "MCRT0.OBJ", true);
     run_asm(rt_root / "crt" / "crt_fmem.asm", "CRT_FMEM.OBJ", false);
+    run_asm(rt_root / "crt" / "crt_fp386.asm", "CRT_FP386.OBJ", false);
     run_cc_mm(rt_root / "crt" / "crt_mem.c", "CRT_MEM.OBJ");
     run_cc_mm(rt_root / "crt" / "crt_str.c", "CRT_STR.OBJ");
     run_cc_mm(rt_root / "crt" / "crt_fp.c", "CRT_FP.OBJ");
@@ -204,7 +205,7 @@ DOSBASE_TEST(runtime_medium_model_mlibce_float_and_dos_link) {
     {
         std::ostringstream rsp;
         rsp << "MLIBCE.LIB\nY\n"
-            << "+MCRT0.OBJ&\n+CRT_FMEM.OBJ&\n+CRT_MEM.OBJ&\n+CRT_STR.OBJ&\n"
+            << "+MCRT0.OBJ&\n+CRT_FMEM.OBJ&\n+CRT_FP386.OBJ&\n+CRT_MEM.OBJ&\n+CRT_STR.OBJ&\n"
             << "+CRT_FP.OBJ&\n+CRT_MATH.OBJ&\n+CRT_DOS.OBJ&\n+CRT_MSTDIO.OBJ;\n";
         write_text_file(d / "MLIBCE.RSP", rsp.str());
         DOSBASE_TEST_EXPECT_EQ(

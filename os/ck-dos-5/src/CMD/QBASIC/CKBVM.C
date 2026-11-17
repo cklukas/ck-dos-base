@@ -658,7 +658,9 @@ int ckb_vm_execute(void)
         case OP_STORE_GFLT_SNG: {
             Variable *gv = VM_GVAR_PTR(code[pc++]);
             double val = vstack[--sp].u.f;
-            if (!finite_number(val) || val < -3.4028234663852886e38 || val > 3.4028234663852886e38)
+            unsigned wx = ((const unsigned short *)&val)[3] & 0x7FFFU;
+            if (wx >= 0x47EFU &&
+                (wx >= 0x7FF0U || val < -3.4028234663852886e38 || val > 3.4028234663852886e38))
                 error_message = "Overflow";
             else
                 gv->number = ckb_single_precision(val);
@@ -668,7 +670,7 @@ int ckb_vm_execute(void)
         case OP_STORE_GFLT_DBL: {
             Variable *gv = VM_GVAR_PTR(code[pc++]);
             double val = vstack[--sp].u.f;
-            if (!finite_number(val))
+            if ((((const unsigned short *)&val)[3] & 0x7FF0U) == 0x7FF0U)
                 error_message = "Overflow";
             else
                 gv->number = val;
@@ -683,11 +685,19 @@ int ckb_vm_execute(void)
                 vm_write_ref_flt(sv->reference, val);
             } else {
                 char k = variables[id].kind;
-                if (!finite_number(val) ||
-                    (k == '!' && (val < -3.4028234663852886e38 || val > 3.4028234663852886e38)))
-                    error_message = "Overflow";
-                else
-                    sv->number = (k == '!') ? ckb_single_precision(val) : val;
+                unsigned wx = ((const unsigned short *)&val)[3] & 0x7FFFU;
+                if (k == '!') {
+                    if (wx >= 0x47EFU &&
+                        (wx >= 0x7FF0U || val < -3.4028234663852886e38 || val > 3.4028234663852886e38))
+                        error_message = "Overflow";
+                    else
+                        sv->number = ckb_single_precision(val);
+                } else {
+                    if (wx >= 0x7FF0U)
+                        error_message = "Overflow";
+                    else
+                        sv->number = val;
+                }
             }
             break;
         }

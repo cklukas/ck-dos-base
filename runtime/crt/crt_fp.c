@@ -18,10 +18,11 @@ typedef int32_t  fp_i32;
 #endif
 
 int __ck_has_x87 = 0;
-void (*__ck_x87_dadd)(double *, const double *, const double *) = 0;
-void (*__ck_x87_dsub)(double *, const double *, const double *) = 0;
-void (*__ck_x87_dmul)(double *, const double *, const double *) = 0;
-void (*__ck_x87_ddiv)(double *, const double *, const double *) = 0;
+int __ck_has_fast_fp = 0;
+int  (*__ck_x87_dadd)(double *, const double *, const double *) = 0;
+int  (*__ck_x87_dsub)(double *, const double *, const double *) = 0;
+int  (*__ck_x87_dmul)(double *, const double *, const double *) = 0;
+int  (*__ck_x87_ddiv)(double *, const double *, const double *) = 0;
 int  (*__ck_x87_dcmp)(const double *, const double *) = 0;
 void (*__ck_x87_ltod)(double *, fp_i32) = 0;
 void (*__ck_x87_ultod)(double *, fp_u32) = 0;
@@ -356,13 +357,13 @@ static fp_u64 fp_add_core(fp_u64 ra, fp_u64 rb, int negate_b)
 
 void __dadd(double *out, const double *a, const double *b)
 {
-    if (__ck_has_x87) { __ck_x87_dadd(out, a, b); return; }
+    if (__ck_has_fast_fp && __ck_x87_dadd(out, a, b)) return;
     fp_store(out, fp_add_core(fp_load(a), fp_load(b), 0));
 }
 
 void __dsub(double *out, const double *a, const double *b)
 {
-    if (__ck_has_x87) { __ck_x87_dsub(out, a, b); return; }
+    if (__ck_has_fast_fp && __ck_x87_dsub(out, a, b)) return;
     fp_store(out, fp_add_core(fp_load(a), fp_load(b), 1));
 }
 
@@ -386,7 +387,7 @@ void __dmul(double *out, const double *a, const double *b)
     fp_u32 sticky;
     fp_u64 sig;
 
-    if (__ck_has_x87) { __ck_x87_dmul(out, a, b); return; }
+    if (__ck_has_fast_fp && __ck_x87_dmul(out, a, b)) return;
     ra = fp_load(a);
     rb = fp_load(b);
 
@@ -451,7 +452,7 @@ void __ddiv(double *out, const double *a, const double *b)
     int rsign, rexp, i;
     fp_u64 rem, den, q;
 
-    if (__ck_has_x87) { __ck_x87_ddiv(out, a, b); return; }
+    if (__ck_has_fast_fp && __ck_x87_ddiv(out, a, b)) return;
     ra = fp_load(a);
     rb = fp_load(b);
 
@@ -507,7 +508,7 @@ int __dcmp(const double *a, const double *b)
     fp_u32 ma_hi, mb_hi;
     int sa, sb, mag_cmp;
 
-    if (__ck_has_x87) return __ck_x87_dcmp(a, b);
+    if (__ck_has_fast_fp) return __ck_x87_dcmp(a, b);
     ra = fp_load(a);
     rb = fp_load(b);
     ma_hi = ra.hi & (fp_u32)0x7FFFFFFFUL;
@@ -552,13 +553,13 @@ static void fp_from_u32(double *out, int sign, fp_u32 v)
 
 void __ultod(double *out, fp_u32 v)
 {
-    if (__ck_has_x87) { __ck_x87_ultod(out, v); return; }
+    if (__ck_has_fast_fp) { __ck_x87_ultod(out, v); return; }
     fp_from_u32(out, 0, v);
 }
 
 void __ltod(double *out, fp_i32 v)
 {
-    if (__ck_has_x87) { __ck_x87_ltod(out, v); return; }
+    if (__ck_has_fast_fp) { __ck_x87_ltod(out, v); return; }
     if (v < (fp_i32)0) {
         fp_from_u32(out, 1, (fp_u32)0 - (fp_u32)v);
     } else {
@@ -568,13 +569,13 @@ void __ltod(double *out, fp_i32 v)
 
 void __utod(double *out, unsigned int v)
 {
-    if (__ck_has_x87) { __ck_x87_ltod(out, (fp_i32)(fp_u32)v); return; }
+    if (__ck_has_fast_fp) { __ck_x87_ltod(out, (fp_i32)(fp_u32)v); return; }
     fp_from_u32(out, 0, (fp_u32)v);
 }
 
 void __itod(double *out, int v)
 {
-    if (__ck_has_x87) { __ck_x87_ltod(out, (fp_i32)v); return; }
+    if (__ck_has_fast_fp) { __ck_x87_ltod(out, (fp_i32)v); return; }
     __ltod(out, (fp_i32)v);
 }
 
@@ -648,6 +649,10 @@ fp_u32 __dtos(const double *a)
     int exp, fbexp;
 
     if (__ck_has_x87 && (w[3] & 0x7FF0U) != 0x7FF0U) return __ck_x87_dtos(a);
+    if (__ck_has_fast_fp) {
+        unsigned int wx = w[3] & 0x7FF0U;
+        if ((unsigned int)(wx - 0x3820U) <= (0x47D0U - 0x3820U)) return __ck_x87_dtos(a);
+    }
     raw = fp_load(a);
 
     fp_unpack(raw, &u);
@@ -707,7 +712,7 @@ void __stod(double *out, fp_u32 fbits)
     int exp, bexp;
     fp_u64 dfrac;
 
-    if (__ck_has_x87 && (fbits & (fp_u32)0x7F800000UL) != (fp_u32)0x7F800000UL) {
+    if (__ck_has_fast_fp && (fbits & (fp_u32)0x7F800000UL) != (fp_u32)0x7F800000UL) {
         __ck_x87_stod(out, fbits);
         return;
     }

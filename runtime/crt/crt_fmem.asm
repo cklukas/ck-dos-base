@@ -4,6 +4,7 @@ _DATA   SEGMENT WORD PUBLIC 'DATA'
         EXTRN   __psp:WORD
         EXTRN   __stack_bottom:WORD
         EXTRN   ___ck_has_x87:WORD
+        EXTRN   ___ck_has_fast_fp:WORD
         EXTRN   ___ck_x87_dadd:DWORD
         EXTRN   ___ck_x87_dsub:DWORD
         EXTRN   ___ck_x87_dmul:DWORD
@@ -17,6 +18,8 @@ _DATA   SEGMENT WORD PUBLIC 'DATA'
 _DATA   ENDS
 
 DGROUP  GROUP   _DATA
+
+        EXTRN   __386_fp_init:FAR
 
 CRT_FMEM_TEXT SEGMENT BYTE PUBLIC 'CODE'
         ASSUME  CS:CRT_FMEM_TEXT, DS:DGROUP
@@ -886,7 +889,7 @@ x87_after_386:
         mov     es:[1Ah], dx
         popf
         test    bx, bx
-        jnz     x87_no_fpu_near
+        jnz     x87_not_386
         ; 3. Check CR0.EM (bit 2) and CR0.TS (bit 3)
         test    ax, 000Ch
         jnz     x87_no_fpu_near
@@ -903,6 +906,9 @@ x87_after_386:
         cmp     ax, 003Fh
         je      x87_present
 x87_no_fpu_near:
+        ; 386+ CPU confirmed (bx == 0), no physical x87 -> install 386 integer FP fast paths
+        call    FAR PTR __386_fp_init
+x87_not_386:
         jmp     SHORT x87_absent
 x87_present:
         ; 5. Set CW = 027Fh (53-bit IEEE-754 double, nearest-even, all masked)
@@ -930,6 +936,7 @@ x87_present:
         mov     WORD PTR [___ck_x87_stod+0], OFFSET __x87_stod
         mov     WORD PTR [___ck_x87_stod+2], ax
         mov     WORD PTR [___ck_has_x87], 1
+        mov     WORD PTR [___ck_has_fast_fp], 1
 x87_absent:
         pop     es
         pop     dx
@@ -949,6 +956,7 @@ __x87_dadd PROC FAR
         DB      0DCh, 07h               ; fadd qword ptr [bx]
         mov     bx, [bp+6]
         DB      0DDh, 1Fh               ; fstp qword ptr [bx]
+        mov     ax, 1
         pop     bp
         ret
 __x87_dadd ENDP
@@ -962,6 +970,7 @@ __x87_dsub PROC FAR
         DB      0DCh, 27h               ; fsub qword ptr [bx]
         mov     bx, [bp+6]
         DB      0DDh, 1Fh               ; fstp qword ptr [bx]
+        mov     ax, 1
         pop     bp
         ret
 __x87_dsub ENDP
@@ -975,6 +984,7 @@ __x87_dmul PROC FAR
         DB      0DCh, 0Fh               ; fmul qword ptr [bx]
         mov     bx, [bp+6]
         DB      0DDh, 1Fh               ; fstp qword ptr [bx]
+        mov     ax, 1
         pop     bp
         ret
 __x87_dmul ENDP
@@ -988,6 +998,7 @@ __x87_ddiv PROC FAR
         DB      0DCh, 37h               ; fdiv qword ptr [bx]
         mov     bx, [bp+6]
         DB      0DDh, 1Fh               ; fstp qword ptr [bx]
+        mov     ax, 1
         pop     bp
         ret
 __x87_ddiv ENDP

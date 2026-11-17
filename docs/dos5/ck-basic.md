@@ -62,5 +62,6 @@ Built on the shared 16-bit `DOSUI` text windowing engine, the **CK Basic** IDE p
 | `QBASIC.C` | CLI switch parser (`/?`, `/RUN`, `/MBF`, `/EDITOR`, `/B`, `/G`, `/H`, `/NOHI`) and DOS memory setup |
 | `CKBIDE.C`, `CKBFIND.C`, `CKBPROC.C`, `CKBHELP.C`, `CKBINI.C` | Full-screen `DOSUI` IDE, file/directory browser dialogs, `SUB`/`FUNCTION` procedure manager, search/replace, built-in keyword help, `About CK Basic`, and `QBASIC.INI` |
 | `CKBRUN.C`, `CKBIO.C`, `CKBRUNP.H` | Structured QuickBASIC parser/evaluator, far-heap program/symbol tables, recursive procedure frames, arrays, `TYPE` records, `DEF FN`, file/device/graphics dispatch, `ON ERROR`, and debugger hooks |
+| `CKBCMP.C`, `CKBVM.C`, `CKBVMP.H` | 16-bit bytecode compiler and native-typed stack VM with jump-table dispatch, direct `DGROUP` scalar loads/stores, 1D integer array fast paths, and transparent AST fallback |
 | `CKBNUM.C`, `CKBFMT.C`, `CKBSTR.C` | Exact numeric parsing, IEEE-754 / MBF conversions, `PRINT USING` formatter, and dynamic/fixed string engine |
 | `CKBCON.C`, `CKBSER.C`, `CKENV.C`, `CKBUI.ASM` | EGA/VGA/CGA/Mode 13h graphics, sprites, MML `PLAY` / PC-speaker audio, sub-tick `TIMER`, `INT 14h` / UART serial `COMn:` support, DOS environment, and 16-bit `cdecl` far assembly bridges to `DOSUI.OBJ` |
