@@ -2811,6 +2811,11 @@ private:
         LabelId target = 0;
     };
 
+    struct CodeLabelFixup {
+        std::size_t raw_pos = 0;
+        LabelId target = 0;
+    };
+
     struct LocalBinding {
         TypePtr type;
         int bp_offset = 0;
@@ -2820,6 +2825,7 @@ private:
     std::size_t fn_code_start_ = 0;
     std::vector<std::size_t> label_raw_pos_;
     std::vector<BranchSite> branches_;
+    std::vector<CodeLabelFixup> label_word_fixups_;
     LabelId epilogue_label_ = 0;
     std::vector<std::unordered_map<std::string, LocalBinding>> local_vars_;
     std::unordered_map<int, RegVar> reg_by_var_id_;
@@ -2915,7 +2921,7 @@ private:
                 throw FormatError(0, "undefined label: " + name);
             }
         }
-        if (branches_.empty()) return;
+        if (branches_.empty() && label_word_fixups_.empty()) return;
 
         const std::size_t raw_len = omf_.code.data.size() - fn_code_start_;
         std::vector<std::uint8_t> raw_bytes(
@@ -3014,6 +3020,19 @@ private:
         for (std::size_t i = cf_start; i < omf_.code.fixups.size(); ++i) {
             omf_.code.fixups[i].offset =
                 fn_code_start_ + raw_to_relaxed[omf_.code.fixups[i].offset - fn_code_start_];
+        }
+        for (const CodeLabelFixup& lw : label_word_fixups_) {
+            const std::size_t fix_off = raw_to_relaxed[lw.raw_pos];
+            const std::uint16_t tgt_off =
+                static_cast<std::uint16_t>(fn_code_start_ + raw_to_relaxed[label_raw_pos_[lw.target]]);
+            write_u16(out_code, fix_off, tgt_off);
+            omf_.code.fixups.push_back(
+                {fn_code_start_ + fix_off, FixupKind::near_offset_code, 1, 0});
+        }
+        if (!label_word_fixups_.empty()) {
+            std::sort(omf_.code.fixups.begin() + static_cast<std::ptrdiff_t>(cf_start),
+                      omf_.code.fixups.end(),
+                      [](const Fixup& a, const Fixup& b) { return a.offset < b.offset; });
         }
 
         omf_.code.data.resize(fn_code_start_);
@@ -4605,6 +4624,7 @@ private:
         const std::size_t cf_start = omf_.code.fixups.size();
         label_raw_pos_.clear();
         branches_.clear();
+        label_word_fixups_.clear();
         epilogue_label_ = new_label();
         break_stack_.clear();
         continue_stack_.clear();
@@ -5385,17 +5405,76 @@ private:
                 emit_jmp(l_after);
 
                 bind_label(l_dispatch);
-                for (const auto& [val, target_lbl] : cases) {
-                    const std::uint16_t uval = static_cast<std::uint16_t>(val);
-                    if (uval == 0) {
-                        emit_u8(0x85); emit_u8(0xC0);  // test ax, ax
-                    } else {
-                        emit_u8(0x3D); emit_u16(uval);  // cmp ax, imm16
+                bool emitted_jtable = false;
+                if (cases.size() >= 6 && (!s->cond || !produces_dxax(s->cond->type))) {
+                    std::uint16_t min_u = 0xFFFFU, max_u = 0U;
+                    std::int16_t min_s = 32767, max_s = -32768;
+                    std::unordered_map<std::uint16_t, LabelId> cmap;
+                    cmap.reserve(cases.size());
+                    bool dup = false;
+                    for (const auto& [val, target_lbl] : cases) {
+                        const std::uint16_t u = static_cast<std::uint16_t>(val);
+                        const std::int16_t sv = static_cast<std::int16_t>(u);
+                        if (!cmap.emplace(u, target_lbl).second) {
+                            dup = true;
+                            break;
+                        }
+                        if (u < min_u) min_u = u;
+                        if (u > max_u) max_u = u;
+                        if (sv < min_s) min_s = sv;
+                        if (sv > max_s) max_s = sv;
                     }
-                    emit_jcc(0x74, target_lbl);
+                    if (!dup) {
+                        const std::uint32_t span_u = static_cast<std::uint32_t>(max_u - min_u);
+                        const std::uint32_t span_s = static_cast<std::uint32_t>(
+                            static_cast<std::int32_t>(max_s) - static_cast<std::int32_t>(min_s));
+                        const bool use_signed_arc = span_s < span_u;
+                        const std::uint32_t span = use_signed_arc ? span_s : span_u;
+                        const std::uint16_t base_u =
+                            use_signed_arc ? static_cast<std::uint16_t>(min_s) : min_u;
+                        if (span <= 512U && (span + 1U) <= cases.size() * 3U) {
+                            const LabelId fallback_lbl = def_lbl.value_or(l_after);
+                            const LabelId l_table = new_label();
+                            if (base_u != 0U) {
+                                emit_u8(0x2D);
+                                emit_u16(base_u);  // sub ax, base_u
+                            }
+                            emit_u8(0x3D);
+                            emit_u16(static_cast<std::uint16_t>(span));  // cmp ax, span
+                            emit_jcc(0x77, fallback_lbl);                // ja fallback_lbl
+                            emit_u8(0x8B); emit_u8(0xD8);                // mov bx, ax
+                            emit_u8(0xD1); emit_u8(0xE3);                // shl bx, 1
+                            emit_u8(0x2E); emit_u8(0xFF); emit_u8(0xA7); // jmp word ptr cs:[bx+tbl]
+                            label_word_fixups_.push_back(
+                                {omf_.code.data.size() - fn_code_start_, l_table});
+                            emit_u16(0);
+                            bind_label(l_table);
+                            for (std::uint32_t k = 0; k <= span; ++k) {
+                                const std::uint16_t key =
+                                    static_cast<std::uint16_t>(base_u + static_cast<std::uint16_t>(k));
+                                const auto it = cmap.find(key);
+                                const LabelId entry_lbl = (it != cmap.end()) ? it->second : fallback_lbl;
+                                label_word_fixups_.push_back(
+                                    {omf_.code.data.size() - fn_code_start_, entry_lbl});
+                                emit_u16(0);
+                            }
+                            emitted_jtable = true;
+                        }
+                    }
                 }
-                if (def_lbl.has_value()) {
-                    emit_jmp(*def_lbl);
+                if (!emitted_jtable) {
+                    for (const auto& [val, target_lbl] : cases) {
+                        const std::uint16_t uval = static_cast<std::uint16_t>(val);
+                        if (uval == 0) {
+                            emit_u8(0x85); emit_u8(0xC0);  // test ax, ax
+                        } else {
+                            emit_u8(0x3D); emit_u16(uval);  // cmp ax, imm16
+                        }
+                        emit_jcc(0x74, target_lbl);
+                    }
+                    if (def_lbl.has_value()) {
+                        emit_jmp(*def_lbl);
+                    }
                 }
                 bind_label(l_after);
                 break_stack_.pop_back();

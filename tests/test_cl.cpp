@@ -1036,4 +1036,25 @@ DOSBASE_TEST(cl_c89_multiline_macro_static_fwd_and_32bit_unary) {
     DOSBASE_TEST_EXPECT(contains_seq(code, {0xF7, 0xDA, 0xF7, 0xD8, 0x83, 0xDA, 0x00}));
     // 32-bit bitwise ~ emits not ax; not dx (F7 D0 F7 D2)
     DOSBASE_TEST_EXPECT(contains_seq(code, {0xF7, 0xD0, 0xF7, 0xD2}));
+
+    // Dense switch (>= 6 cases) emits CS: indirect jump table: shl bx, 1; jmp word ptr cs:[bx+tbl]
+    {
+        const char* sw_src =
+            "int dispatch_op(unsigned op, int x) {\n"
+            "    switch (op) {\n"
+            "    case 0: return x + 1;\n"
+            "    case 1: return x - 1;\n"
+            "    case 2: return x * 2;\n"
+            "    case 4: return x + 4;\n"
+            "    case 5: return x - 5;\n"
+            "    case 6: return x ^ 7;\n"
+            "    default: return -1;\n"
+            "    }\n"
+            "}\n";
+        const auto sw_obj = compile_c_to_omf(sw_src, opts);
+        const auto sw_recs = parse_omf_records(sw_obj, 0, true);
+        const auto sw_code = extract_code_bytes(sw_recs);
+        DOSBASE_TEST_EXPECT(contains_seq(sw_code, {0x8B, 0xD8, 0xD1, 0xE3, 0x2E, 0xFF, 0xA7}));
+        DOSBASE_TEST_EXPECT(has_record_type(sw_recs, OmfType::fixupp));
+    }
 }

@@ -6604,9 +6604,11 @@ class Assembler {
             }
             if (a.kind == Operand::lab) a = label_as_memory(a);
             if (b.kind == Operand::lab) b = label_as_memory(b);
-            const bool word = a.size == 2 || b.size == 2;
+            const bool wide32 = a.wide || b.wide || a.size == 4 || b.size == 4;
+            const bool word = wide32 || a.size == 2 || b.size == 2;
             if ((a.kind == Operand::r16 || a.kind == Operand::r8) &&
                 (b.kind == Operand::r16 || b.kind == Operand::r8)) {
+                emit_opsize(wide32);
                 emit_byte(word ? 0x85 : 0x84);
                 // Register-register TEST puts the FIRST operand in the
                 // reg field (DEBCOM2's `TEST AX,BX` is 85 C3).
@@ -6616,6 +6618,7 @@ class Assembler {
             if (a.kind == Operand::mem &&
                 (b.kind == Operand::r16 || b.kind == Operand::r8)) {
                 emit_override(a);
+                emit_opsize(wide32);
                 emit_byte(word ? 0x85 : 0x84);
                 emit_modrm_mem(b.reg, a);
                 return;
@@ -6623,6 +6626,7 @@ class Assembler {
             if (b.kind == Operand::mem &&
                 (a.kind == Operand::r16 || a.kind == Operand::r8)) {
                 emit_override(b);
+                emit_opsize(wide32);
                 emit_byte(word ? 0x85 : 0x84);
                 emit_modrm_mem(a.reg, b);
                 return;
@@ -6637,10 +6641,13 @@ class Assembler {
                 // `test word ptr Switches,flagec35` -- F6/F7 /0 with the
                 // immediate trailing (SYSINIT2).
                 emit_override(a);
+                emit_opsize(a.wide || a.size == 4);
                 emit_byte(a.size == 1 ? 0xF6 : 0xF7);
                 emit_modrm_mem(0, a);
                 if (a.size == 1) {
                     emit_byte(static_cast<std::uint8_t>(b.value));
+                } else if (a.wide || a.size == 4) {
+                    emit_dword(static_cast<std::uint32_t>(b.value));
                 } else {
                     emit_word(static_cast<std::uint16_t>(b.value));
                 }
@@ -6654,13 +6661,15 @@ class Assembler {
                 return;
             }
             if ((a.kind == Operand::r16 || a.kind == Operand::r8) && b.kind == Operand::imm) {
+                emit_opsize(a.wide);
                 if (a.reg == 0) {
                     emit_byte(a.kind == Operand::r16 ? 0xA9 : 0xA8);
                 } else {
                     emit_byte(a.kind == Operand::r16 ? 0xF7 : 0xF6);
                     emit_modrm_reg(0, a.reg);
                 }
-                if (a.kind == Operand::r16) emit_word(static_cast<std::uint16_t>(b.value));
+                if (a.wide) emit_dword(static_cast<std::uint32_t>(b.value));
+                else if (a.kind == Operand::r16) emit_word(static_cast<std::uint16_t>(b.value));
                 else emit_byte(static_cast<std::uint8_t>(b.value));
                 // Pass 1 sized a forward constant as memory (4 bytes);
                 // the shrunken accumulator form pads with NOP(s)
@@ -6721,6 +6730,7 @@ class Assembler {
                 Operand& target = operands[0];
                 if (target.kind == Operand::lab) target = label_as_memory(target);
                 if (target.kind == Operand::r16) {
+                    emit_opsize(target.wide);
                     emit_byte(0xF7);
                     emit_modrm_reg(entry->second, target.reg);
                     return;
@@ -6732,6 +6742,7 @@ class Assembler {
                 }
                 if (target.kind == Operand::mem) {
                     emit_override(target);
+                    emit_opsize(target.wide || target.size == 4);
                     emit_byte(target.size == 1 ? 0xF6 : 0xF7);
                     emit_modrm_mem(entry->second, target);
                     return;
@@ -6887,6 +6898,36 @@ class Assembler {
             } else {
                 emit_modrm_mem(operands[1].reg, operands[0]);
             }
+            return;
+        }
+        if ((op == "BSF" || op == "BSR") && operands.size() == 2 &&
+            operands[0].kind == Operand::r16) {
+            Operand& dst = operands[0];
+            Operand& src = operands[1];
+            if (src.kind == Operand::lab) src = label_as_memory(src);
+            if (src.kind == Operand::mem) emit_override(src);
+            emit_opsize(dst.wide || src.wide || src.size == 4);
+            emit_byte(0x0F);
+            emit_byte(op == "BSF" ? 0xBC : 0xBD);
+            if (src.kind == Operand::mem) emit_modrm_mem(dst.reg, src);
+            else emit_modrm_reg(dst.reg, src.reg);
+            return;
+        }
+        if ((op == "SHLD" || op == "SHRD") && operands.size() == 3 &&
+            operands[1].kind == Operand::r16) {
+            Operand& dst = operands[0];
+            Operand& src = operands[1];
+            Operand& cnt = operands[2];
+            if (dst.kind == Operand::lab) dst = label_as_memory(dst);
+            const bool by_cl = cnt.kind == Operand::r8 && cnt.reg == 1;
+            if (!by_cl && cnt.kind != Operand::imm) return fail("unsupported " + op + " count");
+            if (dst.kind == Operand::mem) emit_override(dst);
+            emit_opsize(dst.wide || src.wide || dst.size == 4);
+            emit_byte(0x0F);
+            emit_byte(static_cast<std::uint8_t>((op == "SHLD" ? 0xA4 : 0xAC) + (by_cl ? 1 : 0)));
+            if (dst.kind == Operand::mem) emit_modrm_mem(src.reg, dst);
+            else emit_modrm_reg(src.reg, dst.reg);
+            if (!by_cl) emit_byte(static_cast<std::uint8_t>(cnt.value));
             return;
         }
         // Pass 1 tolerates an opcode that a not-yet-collected macro will

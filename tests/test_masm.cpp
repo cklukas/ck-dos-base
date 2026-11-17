@@ -769,3 +769,28 @@ DOSBASE_TEST(masm_reports_what_it_refuses_by_name) {
     DOSBASE_TEST_EXPECT(!result.errors.empty());
     DOSBASE_TEST_EXPECT(result.errors.front().find("BOUND") != std::string::npos);
 }
+
+DOSBASE_TEST(masm_encodes_386_mul_div_bsr_shld_shrd) {
+    const auto object = assemble("fp386.asm",
+                                 std::string(kPrologue) +
+                                     ".386\n"
+                                     "        mul ebx\n"
+                                     "        div DWORD PTR [bp-8]\n"
+                                     "        test eax, edx\n"
+                                     "        bsr edx, eax\n"
+                                     "        shld edx, eax, 11\n"
+                                     "        shld edx, eax, cl\n"
+                                     "        shrd eax, edx, 7\n"
+                                     "        shrd eax, edx, cl\n" +
+                                     kEpilogue);
+    DOSBASE_TEST_EXPECT_EQ(
+        hex(code_bytes(object)),
+        std::string{"66f7e3"       // mul ebx
+                    "66f776f8"     // div dword ptr [bp-8]
+                    "6685c2"       // test eax, edx
+                    "660fbdd0"     // bsr edx, eax
+                    "660fa4c20b"   // shld edx, eax, 11
+                    "660fa5c2"     // shld edx, eax, cl
+                    "660facd007"   // shrd eax, edx, 7
+                    "660fadd0"});  // shrd eax, edx, cl
+}
