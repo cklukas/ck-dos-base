@@ -26,6 +26,7 @@ typedef struct {
     VmFixup __far *fixups;
     unsigned fixup_cap, fixup_len;
     unsigned select_next_slot;
+    unsigned last_cmp_pc, last_cmp_end;
     int overflowed;
 } VmCompiler;
 
@@ -662,7 +663,10 @@ static int compile_var_or_lvalue_load(VmCompiler *c, Parser *p, char *out_kind)
                 return 1;
             }
             if (p->token == '.') return 0;
-            emit2(c, dims == 1 ? OP_LOAD_ARR1 : OP_LOAD_ARR2, (unsigned)id);
+            if (dims == 1 && !variables[id].frame_slot)
+                emit2(c, OP_LOAD_GARR1, VM_GVAR_ARG(id));
+            else
+                emit2(c, dims == 1 ? OP_LOAD_ARR1 : OP_LOAD_ARR2, (unsigned)id);
             *out_kind = variables[id].kind;
             return 1;
         }
@@ -670,10 +674,12 @@ static int compile_var_or_lvalue_load(VmCompiler *c, Parser *p, char *out_kind)
         if (record_size(variables[id].kind)) return 0;
         *out_kind = variables[id].kind;
         if (variables[id].frame_slot) {
-            if (*out_kind == '%') emit2(c, OP_LOAD_LINT, (unsigned)id);
-            else if (*out_kind == '&') emit2(c, OP_LOAD_LINT, (unsigned)id);
+            unsigned larg = VM_LVAR_ARG(id);
+            if (*out_kind == '%') emit2(c, OP_LOAD_LINT_I16, larg);
+            else if (*out_kind == '&') emit2(c, OP_LOAD_LINT_I32, larg);
             else if (*out_kind == '$') emit2(c, OP_LOAD_LSTR, (unsigned)id);
-            else emit2(c, OP_LOAD_LFLT, (unsigned)id);
+            else if (*out_kind == '!') emit2(c, OP_LOAD_LFLT_SNG, larg);
+            else emit2(c, OP_LOAD_LFLT_DBL, larg);
         } else {
             unsigned garg = VM_GVAR_ARG(id);
             if (*out_kind == '%') emit2(c, OP_LOAD_GINT_I16, garg);
@@ -749,10 +755,17 @@ static int compile_expr(VmCompiler *c, Parser *p, int min_prec, char *out_kind)
     while (!c->overflowed && !error_message && (rank = op_precedence_vm(p)) >= min_prec) {
         int op = p->token;
         char rk = 0;
+        unsigned rhs_pc;
+        int rhs_lit_i16;
+        unsigned rhs_imm;
         scan(p);
+        rhs_pc = vm.code_len;
         if (!compile_expr(c, p, rank + 1, &rk)) return 0;
         if (record_size(lk) || record_size(rk) || ((lk == '$') != (rk == '$')))
             return 0;
+        rhs_lit_i16 = (rk == '%' && !c->overflowed &&
+                       vm.code_len == rhs_pc + 2U && vm.code[rhs_pc] == OP_LIT_I16);
+        rhs_imm = rhs_lit_i16 ? vm.code[rhs_pc + 1U] : 0U;
 
         if (lk == '$') {
             if (op == '+') {
@@ -768,7 +781,19 @@ static int compile_expr(VmCompiler *c, Parser *p, int min_prec, char *out_kind)
         if (rank == 7) {
             /* Relational comparison -> result is '%' */
             if ((lk == '%' || lk == '&') && (rk == '%' || rk == '&')) {
-                emit2(c, OP_CMP_I, (unsigned)op);
+                unsigned cidx = (op == '=') ? 0U : (op == T_NE) ? 1U :
+                                (op == '<') ? 2U : (op == T_LE) ? 3U :
+                                (op == '>') ? 4U : 5U;
+                if (rhs_lit_i16) {
+                    vm.code_len = rhs_pc;
+                    c->last_cmp_pc = vm.code_len;
+                    emit2(c, OP_CMP_EQ_I_IMM + cidx, rhs_imm);
+                    c->last_cmp_end = vm.code_len;
+                } else {
+                    c->last_cmp_pc = vm.code_len;
+                    emit(c, OP_CMP_EQ_I + cidx);
+                    c->last_cmp_end = vm.code_len;
+                }
             } else {
                 if (lk == '%' || lk == '&') emit(c, OP_I2F_UNDER);
                 if (rk == '%' || rk == '&') emit(c, OP_I2F);
@@ -796,9 +821,13 @@ static int compile_expr(VmCompiler *c, Parser *p, int min_prec, char *out_kind)
                 if (res_rank == 1) {
                     if (op == '\\') emit(c, OP_IDIV_I16);
                     else if (rank == 9) emit(c, OP_MOD_I16);
-                    else if (rank == 5) emit(c, OP_AND_I16);
-                    else if (rank == 4) emit(c, OP_OR_I16);
-                    else if (rank == 3) emit(c, OP_XOR_I16);
+                    else if (rank == 5) {
+                        if (rhs_lit_i16) { vm.code_len = rhs_pc; emit2(c, OP_AND_I16_IMM, rhs_imm); }
+                        else emit(c, OP_AND_I16);
+                    } else if (rank == 4) {
+                        if (rhs_lit_i16) { vm.code_len = rhs_pc; emit2(c, OP_OR_I16_IMM, rhs_imm); }
+                        else emit(c, OP_OR_I16);
+                    } else if (rank == 3) emit(c, OP_XOR_I16);
                     else if (rank == 2) emit(c, OP_EQV_I16);
                     else emit(c, OP_IMP_I16);
                 } else {
@@ -815,9 +844,20 @@ static int compile_expr(VmCompiler *c, Parser *p, int min_prec, char *out_kind)
             }
 
             if (res_rank == 1) {
-                if (op == '+') emit(c, OP_ADD_I16);
-                else if (op == '-') emit(c, OP_SUB_I16);
-                else emit(c, OP_MUL_I16);
+                if (op == '+') {
+                    if (rhs_lit_i16) { vm.code_len = rhs_pc; emit2(c, OP_ADD_I16_IMM, rhs_imm); }
+                    else emit(c, OP_ADD_I16);
+                } else if (op == '-') {
+                    if (rhs_lit_i16 && (short)rhs_imm != -32768) {
+                        vm.code_len = rhs_pc;
+                        emit2(c, OP_ADD_I16_IMM, (unsigned)(unsigned short)(-(short)rhs_imm));
+                    } else {
+                        emit(c, OP_SUB_I16);
+                    }
+                } else {
+                    if (rhs_lit_i16) { vm.code_len = rhs_pc; emit2(c, OP_MUL_I16_IMM, rhs_imm); }
+                    else emit(c, OP_MUL_I16);
+                }
             } else if (res_rank == 2) {
                 if (op == '+') emit(c, OP_ADD_I32);
                 else if (op == '-') emit(c, OP_SUB_I32);
@@ -944,7 +984,10 @@ static int compile_assignment_vm(VmCompiler *c, Parser *p)
             if (!compile_expr(c, p, 1, &rk)) return 0;
             if ((lk == '$') != (rk == '$') || record_size(rk)) return 0;
             if (lk != '$') emit_coerce_to(c, rk, lk);
-            emit2(c, dims == 1 ? OP_STORE_ARR1 : OP_STORE_ARR2, (unsigned)id);
+            if (dims == 1 && !variables[id].frame_slot)
+                emit2(c, OP_STORE_GARR1, VM_GVAR_ARG(id));
+            else
+                emit2(c, dims == 1 ? OP_STORE_ARR1 : OP_STORE_ARR2, (unsigned)id);
             return end_statement(p);
         }
 
@@ -955,9 +998,12 @@ static int compile_assignment_vm(VmCompiler *c, Parser *p)
         if ((lk == '$') != (rk == '$') || record_size(rk)) return 0;
         if (lk != '$') emit_coerce_to(c, rk, lk);
         if (variables[id].frame_slot) {
-            if (lk == '%' || lk == '&') emit2(c, OP_STORE_LINT, (unsigned)id);
+            unsigned larg = VM_LVAR_ARG(id);
+            if (lk == '%') emit2(c, OP_STORE_LINT_I16, larg);
+            else if (lk == '&') emit2(c, OP_STORE_LINT_I32, larg);
             else if (lk == '$') emit2(c, OP_STORE_LSTR, (unsigned)id);
-            else emit2(c, OP_STORE_LFLT, (unsigned)id);
+            else if (lk == '!') emit2(c, OP_STORE_LFLT_SNG, larg);
+            else emit2(c, OP_STORE_LFLT_DBL, larg);
         } else {
             unsigned garg = VM_GVAR_ARG(id);
             if (lk == '%') emit2(c, OP_STORE_GINT_I16, garg);
@@ -1002,9 +1048,34 @@ static int compile_inline_list(VmCompiler *c, Parser *p, unsigned inline_depth,
 static int compile_cond_bool(VmCompiler *c, Parser *p)
 {
     char k = 0;
+    c->last_cmp_pc = 0xffffU;
+    c->last_cmp_end = 0xffffU;
     if (!compile_expr(c, p, 1, &k)) return 0;
     if (k == '$' || record_size(k)) return 0;
     return 1;
+}
+
+static void emit_cond_jump(VmCompiler *c, unsigned jop)
+{
+    static const unsigned char inv_idx[6] = { 1, 0, 5, 4, 3, 2 }; /* EQ<->NE, LT<->GE, LE<->GT */
+    if (!c->overflowed && c->last_cmp_end == vm.code_len && c->last_cmp_pc < vm.code_len) {
+        unsigned cop = vm.code[c->last_cmp_pc];
+        if (cop >= OP_CMP_EQ_I && cop <= OP_CMP_GE_I) {
+            unsigned idx = cop - OP_CMP_EQ_I;
+            if (jop == OP_JFALSE) idx = inv_idx[idx];
+            vm.code[c->last_cmp_pc] = (unsigned short)(OP_JEQ_I + idx);
+            c->last_cmp_end = 0xffffU;
+            return;
+        }
+        if (cop >= OP_CMP_EQ_I_IMM && cop <= OP_CMP_GE_I_IMM) {
+            unsigned idx = cop - OP_CMP_EQ_I_IMM;
+            if (jop == OP_JFALSE) idx = inv_idx[idx];
+            vm.code[c->last_cmp_pc] = (unsigned short)(OP_JEQ_I_IMM + idx);
+            c->last_cmp_end = 0xffffU;
+            return;
+        }
+    }
+    emit(c, jop);
 }
 
 static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_depth,
@@ -1166,7 +1237,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
             else if (take_word(p, "UNTIL")) lkind = C_UNTIL;
             if (lkind != C_ALWAYS) {
                 if (!compile_cond_bool(c, p)) return 0;
-                emit(c, lkind == C_WHILE ? OP_JFALSE : OP_JTRUE);
+                emit_cond_jump(c, lkind == C_WHILE ? OP_JFALSE : OP_JTRUE);
                 emit_fixup(c, blocks[blocks[bidx].peer].after, 0);
             }
             return end_statement(p);
@@ -1242,7 +1313,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
             emit_fixup(c, blocks[finish_idx].after, 0);
             /* Word 2..: condition check */
             if (!compile_cond_bool(c, p) || !take_word(p, "THEN")) return 0;
-            emit(c, OP_JFALSE);
+            emit_cond_jump(c, OP_JFALSE);
             if (blocks[peer_idx].kind == B_ELSEIF)
                 emit_fixup(c, blocks[peer_idx].at, 1);
             else
@@ -1374,7 +1445,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
                 unsigned patch_skip;
                 Position tp;
                 if (error_message || tgt >= line_count) return 0;
-                emit(c, OP_JFALSE);
+                emit_cond_jump(c, OP_JFALSE);
                 patch_skip = vm.code_len;
                 emit(c, 0);
                 tp.line = tgt;
@@ -1392,7 +1463,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
                 bidx = block_at_pos(at);
                 if (bidx == BLOCK_MAX) return 0;
                 peer_idx = blocks[bidx].peer;
-                emit(c, OP_JFALSE);
+                emit_cond_jump(c, OP_JFALSE);
                 if (blocks[peer_idx].kind == B_ELSEIF)
                     emit_fixup(c, blocks[peer_idx].at, 1);
                 else
@@ -1402,7 +1473,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
             if (inline_depth >= 3) return 0;
             {
                 unsigned patch_false, patch_end;
-                emit(c, OP_JFALSE);
+                emit_cond_jump(c, OP_JFALSE);
                 patch_false = vm.code_len;
                 emit(c, 0);
                 if (!compile_inline_list(c, p, inline_depth + 1U, sel_blocks, sel_slots, sel_top))
@@ -1436,7 +1507,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
                 emit_fixup(c, blocks[blocks[bidx].peer].at, 0);
             } else {
                 if (!compile_cond_bool(c, p)) return 0;
-                emit(c, lkind == C_WHILE ? OP_JTRUE : OP_JFALSE);
+                emit_cond_jump(c, lkind == C_WHILE ? OP_JTRUE : OP_JFALSE);
                 emit_fixup(c, blocks[blocks[bidx].peer].at, 0);
             }
             return end_statement(p);
@@ -1690,7 +1761,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
             bidx = block_at_pos(at);
             if (bidx == BLOCK_MAX) return 0;
             if (!compile_cond_bool(c, p)) return 0;
-            emit(c, OP_JFALSE);
+            emit_cond_jump(c, OP_JFALSE);
             emit_fixup(c, blocks[blocks[bidx].peer].after, 0);
             return end_statement(p);
         }

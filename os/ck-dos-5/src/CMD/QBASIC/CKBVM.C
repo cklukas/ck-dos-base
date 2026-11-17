@@ -340,6 +340,8 @@ static void vm_store_elem(Variable *v, unsigned cell, const VmVal *src)
     }
 }
 
+#define I16_OVERFLOW(r) ((unsigned)(((unsigned long)(r) + 32768UL) >> 16) != 0U)
+
 int ckb_vm_execute(void)
 {
     VmVal vstack[VM_STACK_MAX];
@@ -571,11 +573,19 @@ int ckb_vm_execute(void)
             break;
         }
 
-        case OP_LOAD_LINT: {
-            unsigned id = code[pc++];
-            Variable *sv = &activation->locals[variables[id].frame_slot - 1];
+        case OP_LOAD_LINT_I16: {
+            Variable *sv = VM_LVAR_PTR(code[pc++]);
             VmVal *v = &vstack[sp++];
-            v->kind = variables[id].kind;
+            v->kind = '%';
+            v->is_ref = 0;
+            v->u.i = sv->reference.target ? vm_read_ref_int(sv->reference) : VAR_IVAL(sv);
+            break;
+        }
+
+        case OP_LOAD_LINT_I32: {
+            Variable *sv = VM_LVAR_PTR(code[pc++]);
+            VmVal *v = &vstack[sp++];
+            v->kind = '&';
             v->is_ref = 0;
             v->u.i = sv->reference.target ? vm_read_ref_int(sv->reference) : VAR_IVAL(sv);
             break;
@@ -599,11 +609,19 @@ int ckb_vm_execute(void)
             break;
         }
 
-        case OP_LOAD_LFLT: {
-            unsigned id = code[pc++];
-            Variable *sv = &activation->locals[variables[id].frame_slot - 1];
+        case OP_LOAD_LFLT_SNG: {
+            Variable *sv = VM_LVAR_PTR(code[pc++]);
             VmVal *v = &vstack[sp++];
-            v->kind = variables[id].kind;
+            v->kind = '!';
+            v->is_ref = 0;
+            v->u.f = sv->reference.target ? vm_read_ref_flt(sv->reference) : sv->number;
+            break;
+        }
+
+        case OP_LOAD_LFLT_DBL: {
+            Variable *sv = VM_LVAR_PTR(code[pc++]);
+            VmVal *v = &vstack[sp++];
+            v->kind = '#';
             v->is_ref = 0;
             v->u.f = sv->reference.target ? vm_read_ref_flt(sv->reference) : sv->number;
             break;
@@ -628,7 +646,7 @@ int ckb_vm_execute(void)
         case OP_STORE_GINT_I16: {
             Variable *gv = VM_GVAR_PTR(code[pc++]);
             long val = vstack[--sp].u.i;
-            if (val < -32768L || val > 32767L)
+            if (I16_OVERFLOW(val))
                 error_message = "Overflow";
             else
                 VAR_IVAL(gv) = val;
@@ -641,17 +659,26 @@ int ckb_vm_execute(void)
             break;
         }
 
-        case OP_STORE_LINT: {
-            unsigned id = code[pc++];
+        case OP_STORE_LINT_I16: {
+            Variable *sv = VM_LVAR_PTR(code[pc++]);
             long val = vstack[--sp].u.i;
-            Variable *sv = &activation->locals[variables[id].frame_slot - 1];
             if (sv->reference.target) {
                 vm_write_ref_int(sv->reference, val);
-            } else if (variables[id].kind == '%' && (val < -32768L || val > 32767L)) {
+            } else if (I16_OVERFLOW(val)) {
                 error_message = "Overflow";
             } else {
                 VAR_IVAL(sv) = val;
             }
+            break;
+        }
+
+        case OP_STORE_LINT_I32: {
+            Variable *sv = VM_LVAR_PTR(code[pc++]);
+            long val = vstack[--sp].u.i;
+            if (sv->reference.target)
+                vm_write_ref_int(sv->reference, val);
+            else
+                VAR_IVAL(sv) = val;
             break;
         }
 
@@ -677,27 +704,31 @@ int ckb_vm_execute(void)
             break;
         }
 
-        case OP_STORE_LFLT: {
-            unsigned id = code[pc++];
+        case OP_STORE_LFLT_SNG: {
+            Variable *sv = VM_LVAR_PTR(code[pc++]);
             double val = vstack[--sp].u.f;
-            Variable *sv = &activation->locals[variables[id].frame_slot - 1];
             if (sv->reference.target) {
                 vm_write_ref_flt(sv->reference, val);
             } else {
-                char k = variables[id].kind;
                 unsigned wx = ((const unsigned short *)&val)[3] & 0x7FFFU;
-                if (k == '!') {
-                    if (wx >= 0x47EFU &&
-                        (wx >= 0x7FF0U || val < -3.4028234663852886e38 || val > 3.4028234663852886e38))
-                        error_message = "Overflow";
-                    else
-                        sv->number = ckb_single_precision(val);
-                } else {
-                    if (wx >= 0x7FF0U)
-                        error_message = "Overflow";
-                    else
-                        sv->number = val;
-                }
+                if (wx >= 0x47EFU &&
+                    (wx >= 0x7FF0U || val < -3.4028234663852886e38 || val > 3.4028234663852886e38))
+                    error_message = "Overflow";
+                else
+                    sv->number = ckb_single_precision(val);
+            }
+            break;
+        }
+
+        case OP_STORE_LFLT_DBL: {
+            Variable *sv = VM_LVAR_PTR(code[pc++]);
+            double val = vstack[--sp].u.f;
+            if (sv->reference.target) {
+                vm_write_ref_flt(sv->reference, val);
+            } else if ((((const unsigned short *)&val)[3] & 0x7FF0U) == 0x7FF0U) {
+                error_message = "Overflow";
+            } else {
+                sv->number = val;
             }
             break;
         }
@@ -717,6 +748,39 @@ int ckb_vm_execute(void)
                 vm_store_var_str(sv->reference.target, sv->reference.cell, val->u.fs, val->length);
             else
                 vm_store_var_str(sv, 0, val->u.fs, val->length);
+            break;
+        }
+
+        case OP_LOAD_GARR1: {
+            Variable *av = VM_GVAR_PTR(code[pc++]);
+            VmVal *top = &vstack[sp - 1];
+            long idx = top->u.i;
+            if (!av->reference.target && av->elements && av->dimensions == 1U) {
+                if (idx < av->bounds[0].lower || idx > av->bounds[0].upper) {
+                    --sp;
+                    error_message = "Subscript out of range";
+                } else if (av->kind == '%') {
+                    top->kind = '%';
+                    top->is_ref = 0;
+                    top->u.i = (long)((const short *)av->elements)[(unsigned)(idx - av->bounds[0].lower)];
+                } else if (av->kind == '&') {
+                    top->kind = '&';
+                    top->is_ref = 0;
+                    top->u.i = ((const long *)av->elements)[(unsigned)(idx - av->bounds[0].lower)];
+                } else {
+                    --sp;
+                    vm_load_elem(av, (unsigned)(idx - av->bounds[0].lower), &vstack[sp++]);
+                }
+                break;
+            }
+            --sp;
+            av = vm_ready_array((int)(av - variables), 1);
+            if (av) {
+                if (idx < av->bounds[0].lower || idx > av->bounds[0].upper)
+                    error_message = "Subscript out of range";
+                else
+                    vm_load_elem(av, (unsigned)(idx - av->bounds[0].lower), &vstack[sp++]);
+            }
             break;
         }
 
@@ -769,6 +833,35 @@ int ckb_vm_execute(void)
                     unsigned ext2 = (unsigned)(av->bounds[1].upper - av->bounds[1].lower + 1L);
                     unsigned cell = c1 * ext2 + (unsigned)(idx2 - av->bounds[1].lower);
                     vm_load_elem(av, cell, &vstack[sp++]);
+                }
+            }
+            break;
+        }
+
+        case OP_STORE_GARR1: {
+            Variable *av = VM_GVAR_PTR(code[pc++]);
+            if (!av->reference.target && av->elements && av->dimensions == 1U &&
+                (av->kind == '%' || av->kind == '&')) {
+                long val_i = vstack[--sp].u.i;
+                long idx = vstack[--sp].u.i;
+                if (idx < av->bounds[0].lower || idx > av->bounds[0].upper) {
+                    error_message = "Subscript out of range";
+                } else if (av->kind == '%') {
+                    ((short *)av->elements)[(unsigned)(idx - av->bounds[0].lower)] = (short)val_i;
+                } else {
+                    ((long *)av->elements)[(unsigned)(idx - av->bounds[0].lower)] = val_i;
+                }
+                break;
+            }
+            {
+                VmVal val = vstack[--sp];
+                long idx = vstack[--sp].u.i;
+                av = vm_ready_array((int)(av - variables), 1);
+                if (av) {
+                    if (idx < av->bounds[0].lower || idx > av->bounds[0].upper)
+                        error_message = "Subscript out of range";
+                    else
+                        vm_store_elem(av, (unsigned)(idx - av->bounds[0].lower), &val);
                 }
             }
             break;
@@ -1004,31 +1097,72 @@ int ckb_vm_execute(void)
 
         case OP_ADD_I16: {
             long b = vstack[--sp].u.i;
-            long r = vstack[sp - 1].u.i + b;
-            if (r < -32768L || r > 32767L) error_message = "Overflow";
-            else { vstack[sp - 1].u.i = r; vstack[sp - 1].kind = '%'; }
+            VmVal *va = &vstack[sp - 1];
+            long r = va->u.i + b;
+            if (I16_OVERFLOW(r)) error_message = "Overflow";
+            else { va->u.i = r; va->kind = '%'; }
             break;
         }
 
         case OP_SUB_I16: {
             long b = vstack[--sp].u.i;
-            long r = vstack[sp - 1].u.i - b;
-            if (r < -32768L || r > 32767L) error_message = "Overflow";
-            else { vstack[sp - 1].u.i = r; vstack[sp - 1].kind = '%'; }
+            VmVal *va = &vstack[sp - 1];
+            long r = va->u.i - b;
+            if (I16_OVERFLOW(r)) error_message = "Overflow";
+            else { va->u.i = r; va->kind = '%'; }
             break;
         }
 
         case OP_MUL_I16: {
             long b = vstack[--sp].u.i;
-            long a = vstack[sp - 1].u.i;
+            VmVal *va = &vstack[sp - 1];
+            long a = va->u.i;
             if ((unsigned)((int)a + 181) <= 362U && (unsigned)((int)b + 181) <= 362U) {
-                vstack[sp - 1].u.i = (long)((int)a * (int)b);
-                vstack[sp - 1].kind = '%';
+                va->u.i = (long)((int)a * (int)b);
+                va->kind = '%';
             } else {
                 long r = a * b;
-                if (r < -32768L || r > 32767L) error_message = "Overflow";
-                else { vstack[sp - 1].u.i = r; vstack[sp - 1].kind = '%'; }
+                if (I16_OVERFLOW(r)) error_message = "Overflow";
+                else { va->u.i = r; va->kind = '%'; }
             }
+            break;
+        }
+
+        case OP_ADD_I16_IMM: {
+            long b = (long)(short)code[pc++];
+            VmVal *va = &vstack[sp - 1];
+            long r = va->u.i + b;
+            if (I16_OVERFLOW(r)) error_message = "Overflow";
+            else { va->u.i = r; va->kind = '%'; }
+            break;
+        }
+
+        case OP_MUL_I16_IMM: {
+            int bi = (int)(short)code[pc++];
+            VmVal *va = &vstack[sp - 1];
+            long a = va->u.i;
+            if ((unsigned)((int)a + 181) <= 362U && (unsigned)(bi + 181) <= 362U) {
+                va->u.i = (long)((int)a * bi);
+                va->kind = '%';
+            } else {
+                long r = a * (long)bi;
+                if (I16_OVERFLOW(r)) error_message = "Overflow";
+                else { va->u.i = r; va->kind = '%'; }
+            }
+            break;
+        }
+
+        case OP_AND_I16_IMM: {
+            VmVal *va = &vstack[sp - 1];
+            va->u.i &= (long)(short)code[pc++];
+            va->kind = '%';
+            break;
+        }
+
+        case OP_OR_I16_IMM: {
+            VmVal *va = &vstack[sp - 1];
+            va->u.i |= (long)(short)code[pc++];
+            va->kind = '%';
             break;
         }
 
@@ -1095,21 +1229,163 @@ int ckb_vm_execute(void)
             break;
         }
 
-        case OP_CMP_I: {
-            int cop = (int)code[pc++];
+        case OP_CMP_EQ_I: {
             long b = vstack[--sp].u.i;
-            long a = vstack[sp - 1].u.i;
-            int res;
-            switch (cop) {
-            case '=': res = a == b; break;
-            case '<': res = a < b; break;
-            case '>': res = a > b; break;
-            case T_LE: res = a <= b; break;
-            case T_GE: res = a >= b; break;
-            default: res = a != b; break;
-            }
-            vstack[sp - 1].u.i = res ? -1L : 0L;
-            vstack[sp - 1].kind = '%';
+            VmVal *va = &vstack[sp - 1];
+            va->u.i = (va->u.i == b) ? -1L : 0L;
+            va->kind = '%';
+            break;
+        }
+        case OP_CMP_NE_I: {
+            long b = vstack[--sp].u.i;
+            VmVal *va = &vstack[sp - 1];
+            va->u.i = (va->u.i != b) ? -1L : 0L;
+            va->kind = '%';
+            break;
+        }
+        case OP_CMP_LT_I: {
+            long b = vstack[--sp].u.i;
+            VmVal *va = &vstack[sp - 1];
+            va->u.i = (va->u.i < b) ? -1L : 0L;
+            va->kind = '%';
+            break;
+        }
+        case OP_CMP_LE_I: {
+            long b = vstack[--sp].u.i;
+            VmVal *va = &vstack[sp - 1];
+            va->u.i = (va->u.i <= b) ? -1L : 0L;
+            va->kind = '%';
+            break;
+        }
+        case OP_CMP_GT_I: {
+            long b = vstack[--sp].u.i;
+            VmVal *va = &vstack[sp - 1];
+            va->u.i = (va->u.i > b) ? -1L : 0L;
+            va->kind = '%';
+            break;
+        }
+        case OP_CMP_GE_I: {
+            long b = vstack[--sp].u.i;
+            VmVal *va = &vstack[sp - 1];
+            va->u.i = (va->u.i >= b) ? -1L : 0L;
+            va->kind = '%';
+            break;
+        }
+
+        case OP_CMP_EQ_I_IMM: {
+            long b = (long)(short)code[pc++];
+            VmVal *va = &vstack[sp - 1];
+            va->u.i = (va->u.i == b) ? -1L : 0L;
+            va->kind = '%';
+            break;
+        }
+        case OP_CMP_NE_I_IMM: {
+            long b = (long)(short)code[pc++];
+            VmVal *va = &vstack[sp - 1];
+            va->u.i = (va->u.i != b) ? -1L : 0L;
+            va->kind = '%';
+            break;
+        }
+        case OP_CMP_LT_I_IMM: {
+            long b = (long)(short)code[pc++];
+            VmVal *va = &vstack[sp - 1];
+            va->u.i = (va->u.i < b) ? -1L : 0L;
+            va->kind = '%';
+            break;
+        }
+        case OP_CMP_LE_I_IMM: {
+            long b = (long)(short)code[pc++];
+            VmVal *va = &vstack[sp - 1];
+            va->u.i = (va->u.i <= b) ? -1L : 0L;
+            va->kind = '%';
+            break;
+        }
+        case OP_CMP_GT_I_IMM: {
+            long b = (long)(short)code[pc++];
+            VmVal *va = &vstack[sp - 1];
+            va->u.i = (va->u.i > b) ? -1L : 0L;
+            va->kind = '%';
+            break;
+        }
+        case OP_CMP_GE_I_IMM: {
+            long b = (long)(short)code[pc++];
+            VmVal *va = &vstack[sp - 1];
+            va->u.i = (va->u.i >= b) ? -1L : 0L;
+            va->kind = '%';
+            break;
+        }
+
+        case OP_JEQ_I: {
+            unsigned tgt = code[pc++];
+            long b = vstack[--sp].u.i;
+            if (vstack[--sp].u.i == b) pc = tgt;
+            break;
+        }
+        case OP_JNE_I: {
+            unsigned tgt = code[pc++];
+            long b = vstack[--sp].u.i;
+            if (vstack[--sp].u.i != b) pc = tgt;
+            break;
+        }
+        case OP_JLT_I: {
+            unsigned tgt = code[pc++];
+            long b = vstack[--sp].u.i;
+            if (vstack[--sp].u.i < b) pc = tgt;
+            break;
+        }
+        case OP_JLE_I: {
+            unsigned tgt = code[pc++];
+            long b = vstack[--sp].u.i;
+            if (vstack[--sp].u.i <= b) pc = tgt;
+            break;
+        }
+        case OP_JGT_I: {
+            unsigned tgt = code[pc++];
+            long b = vstack[--sp].u.i;
+            if (vstack[--sp].u.i > b) pc = tgt;
+            break;
+        }
+        case OP_JGE_I: {
+            unsigned tgt = code[pc++];
+            long b = vstack[--sp].u.i;
+            if (vstack[--sp].u.i >= b) pc = tgt;
+            break;
+        }
+
+        case OP_JEQ_I_IMM: {
+            long b = (long)(short)code[pc++];
+            unsigned tgt = code[pc++];
+            if (vstack[--sp].u.i == b) pc = tgt;
+            break;
+        }
+        case OP_JNE_I_IMM: {
+            long b = (long)(short)code[pc++];
+            unsigned tgt = code[pc++];
+            if (vstack[--sp].u.i != b) pc = tgt;
+            break;
+        }
+        case OP_JLT_I_IMM: {
+            long b = (long)(short)code[pc++];
+            unsigned tgt = code[pc++];
+            if (vstack[--sp].u.i < b) pc = tgt;
+            break;
+        }
+        case OP_JLE_I_IMM: {
+            long b = (long)(short)code[pc++];
+            unsigned tgt = code[pc++];
+            if (vstack[--sp].u.i <= b) pc = tgt;
+            break;
+        }
+        case OP_JGT_I_IMM: {
+            long b = (long)(short)code[pc++];
+            unsigned tgt = code[pc++];
+            if (vstack[--sp].u.i > b) pc = tgt;
+            break;
+        }
+        case OP_JGE_I_IMM: {
+            long b = (long)(short)code[pc++];
+            unsigned tgt = code[pc++];
+            if (vstack[--sp].u.i >= b) pc = tgt;
             break;
         }
 
@@ -1829,7 +2105,7 @@ int ckb_vm_execute(void)
             if (ff->fast_i16) {
                 Variable *fv = ff->fast_var;
                 long nxt = VAR_IVAL(fv) + ff->istep;
-                if (nxt < -32768L || nxt > 32767L) {
+                if (I16_OVERFLOW(nxt)) {
                     error_message = "Overflow";
                     break;
                 }

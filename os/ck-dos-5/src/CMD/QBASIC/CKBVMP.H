@@ -45,26 +45,32 @@ enum {
     /* Scalar Loads */
     OP_LOAD_GINT_I16,   /* w1: near ptr &variables[id] (%) */
     OP_LOAD_GINT_I32,   /* w1: near ptr &variables[id] (&) */
-    OP_LOAD_LINT,       /* w1: var_id */
+    OP_LOAD_LINT_I16,   /* w1: byte offset in activation->locals (%) */
+    OP_LOAD_LINT_I32,   /* w1: byte offset in activation->locals (&) */
     OP_LOAD_GFLT_SNG,   /* w1: near ptr &variables[id] (!) */
     OP_LOAD_GFLT_DBL,   /* w1: near ptr &variables[id] (#) */
-    OP_LOAD_LFLT,       /* w1: var_id */
+    OP_LOAD_LFLT_SNG,   /* w1: byte offset in activation->locals (!) */
+    OP_LOAD_LFLT_DBL,   /* w1: byte offset in activation->locals (#) */
     OP_LOAD_GSTR,       /* w1: near ptr &variables[id] ($) */
     OP_LOAD_LSTR,       /* w1: var_id */
 
     /* Scalar Stores */
     OP_STORE_GINT_I16,  /* w1: near ptr &variables[id] (%) */
     OP_STORE_GINT_I32,  /* w1: near ptr &variables[id] (&) */
-    OP_STORE_LINT,      /* w1: var_id */
+    OP_STORE_LINT_I16,  /* w1: byte offset in activation->locals (%) */
+    OP_STORE_LINT_I32,  /* w1: byte offset in activation->locals (&) */
     OP_STORE_GFLT_SNG,  /* w1: near ptr &variables[id] (!) */
     OP_STORE_GFLT_DBL,  /* w1: near ptr &variables[id] (#) */
-    OP_STORE_LFLT,      /* w1: var_id */
+    OP_STORE_LFLT_SNG,  /* w1: byte offset in activation->locals (!) */
+    OP_STORE_LFLT_DBL,  /* w1: byte offset in activation->locals (#) */
     OP_STORE_GSTR,      /* w1: near ptr &variables[id] ($) */
     OP_STORE_LSTR,      /* w1: var_id */
 
     /* 1D / 2D Array & Record Loads/Stores */
+    OP_LOAD_GARR1,      /* w1: near ptr &variables[id] (global 1D) */
     OP_LOAD_ARR1,       /* w1: var_id */
     OP_LOAD_ARR2,       /* w1: var_id */
+    OP_STORE_GARR1,     /* w1: near ptr &variables[id] (global 1D) */
     OP_STORE_ARR1,      /* w1: var_id */
     OP_STORE_ARR2,      /* w1: var_id */
     OP_LOAD_REC,        /* w1: var_id, w2: field_offset, w3: (width<<8)|kind */
@@ -99,7 +105,34 @@ enum {
     OP_XOR_I16,
     OP_EQV_I16,
     OP_IMP_I16,
-    OP_CMP_I,           /* w1: op ('=', '<', '>', T_LE, T_GE, T_NE) */
+    OP_ADD_I16_IMM,     /* w1: signed 16-bit imm */
+    OP_MUL_I16_IMM,     /* w1: signed 16-bit imm */
+    OP_AND_I16_IMM,     /* w1: signed 16-bit imm */
+    OP_OR_I16_IMM,      /* w1: signed 16-bit imm */
+    OP_CMP_EQ_I,
+    OP_CMP_NE_I,
+    OP_CMP_LT_I,
+    OP_CMP_LE_I,
+    OP_CMP_GT_I,
+    OP_CMP_GE_I,
+    OP_CMP_EQ_I_IMM,    /* w1: signed 16-bit imm */
+    OP_CMP_NE_I_IMM,    /* w1: signed 16-bit imm */
+    OP_CMP_LT_I_IMM,    /* w1: signed 16-bit imm */
+    OP_CMP_LE_I_IMM,    /* w1: signed 16-bit imm */
+    OP_CMP_GT_I_IMM,    /* w1: signed 16-bit imm */
+    OP_CMP_GE_I_IMM,    /* w1: signed 16-bit imm */
+    OP_JEQ_I,           /* w1: target_pc */
+    OP_JNE_I,           /* w1: target_pc */
+    OP_JLT_I,           /* w1: target_pc */
+    OP_JLE_I,           /* w1: target_pc */
+    OP_JGT_I,           /* w1: target_pc */
+    OP_JGE_I,           /* w1: target_pc */
+    OP_JEQ_I_IMM,       /* w1: signed 16-bit imm, w2: target_pc */
+    OP_JNE_I_IMM,       /* w1: signed 16-bit imm, w2: target_pc */
+    OP_JLT_I_IMM,       /* w1: signed 16-bit imm, w2: target_pc */
+    OP_JLE_I_IMM,       /* w1: signed 16-bit imm, w2: target_pc */
+    OP_JGT_I_IMM,       /* w1: signed 16-bit imm, w2: target_pc */
+    OP_JGE_I_IMM,       /* w1: signed 16-bit imm, w2: target_pc */
 
     /* Long 32-bit (&) Binary Operators */
     OP_ADD_I32,
@@ -208,6 +241,8 @@ typedef struct {
 #define VM_GVAR_ARG(id) ((unsigned)(id))
 #define VM_GVAR_PTR(w)  (&variables[w])
 #endif
+#define VM_LVAR_ARG(id) ((unsigned)((variables[id].frame_slot - 1U) * sizeof(Variable)))
+#define VM_LVAR_PTR(w)  ((Variable *)((char *)activation->locals + (w)))
 
 typedef struct {
     char kind;
