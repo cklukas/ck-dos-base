@@ -843,7 +843,7 @@ static int fp_bits_special(double v)
 static void fp_to_dec17(double mag, char *dig, int *out_exp10)
 {
     int bexp = 0, k, i;
-    double scaled, scaled8, rem;
+    double scaled8, rem;
     unsigned long hi9, lo8;
 
     if (mag == 0.0) {
@@ -855,17 +855,16 @@ static void fp_to_dec17(double mag, char *dig, int *out_exp10)
 
     frexp(mag, &bexp);
     k = (int)floor((double)(bexp - 1) * 0.30102999566398120);
-    scaled = scale_pow10(mag, -k);
-    while (scaled >= 10.0) {
-        scaled /= 10.0;
+    scaled8 = scale_pow10(mag, 8 - k);
+    while (scaled8 >= 1000000000.0) {
         ++k;
+        scaled8 = scale_pow10(mag, 8 - k);
     }
-    while (scaled > 0.0 && scaled < 1.0) {
-        scaled *= 10.0;
+    while (scaled8 > 0.0 && scaled8 < 100000000.0) {
         --k;
+        scaled8 = scale_pow10(mag, 8 - k);
     }
 
-    scaled8 = scaled * 100000000.0;
     hi9 = (unsigned long)scaled8;
     if (hi9 < 100000000UL) hi9 = 100000000UL;
     if (hi9 >= 1000000000UL) {
@@ -873,7 +872,18 @@ static void fp_to_dec17(double mag, char *dig, int *out_exp10)
         ++k;
         lo8 = 0UL;
     } else {
-        rem = (scaled8 - (double)hi9) * 100000000.0;
+        if (k >= 8 && k <= 24) {
+            double p = p10_small[k - 8];
+            double r_exact = (mag - (double)(hi9 & ~0x7fffUL) * p) - (double)(hi9 & 0x7fffUL) * p;
+            if (r_exact < 0.0 && hi9 > 100000000UL) {
+                --hi9;
+                r_exact = (mag - (double)(hi9 & ~0x7fffUL) * p) - (double)(hi9 & 0x7fffUL) * p;
+            }
+            if (r_exact < 0.0) r_exact = 0.0;
+            rem = scale_pow10(r_exact, 16 - k);
+        } else {
+            rem = (scaled8 - (double)hi9) * 100000000.0;
+        }
         lo8 = (unsigned long)(rem + 0.5);
         if (lo8 >= 100000000UL) {
             lo8 -= 100000000UL;

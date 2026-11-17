@@ -905,6 +905,25 @@ DOSBASE_TEST(cl_medium_model_far_interrupt_and_brace_init) {
         DOSBASE_TEST_EXPECT(contains_seq(code, {0x8C, 0xDA}));
         DOSBASE_TEST_EXPECT(contains_seq(code, {0xCB}));
     }
+
+    // 4. Cross-module extern __far array uses SEG EXTDEF (mov es, ax = 8E C0), never DGROUP DS
+    {
+        const char* ext_src =
+            "extern char __far g_source[];\n"
+            "const char __far *slice_at(unsigned off, int *first_ch) {\n"
+            "    *first_ch = (unsigned char)g_source[off];\n"
+            "    return g_source + off;\n"
+            "}\n";
+        CompileOptions opts;
+        opts.model = MemoryModel::medium_model;
+        opts.module_name = "ckbvm.c";
+        const auto obj = compile_c_to_omf(ext_src, opts);
+        const auto recs = parse_omf_records(obj, 0, true);
+        const auto code = extract_code_bytes(recs);
+        DOSBASE_TEST_EXPECT(has_record_type(recs, OmfType::extdef));
+        // Loads segment of external far array into ES (8E C0 or 8E C2) rather than indexing DS:
+        DOSBASE_TEST_EXPECT(contains_seq(code, {0x8E, 0xC0}) || contains_seq(code, {0x8E, 0xC2}));
+    }
 }
 
 DOSBASE_TEST(cl_ieee754_soft_float_and_math_runtime) {

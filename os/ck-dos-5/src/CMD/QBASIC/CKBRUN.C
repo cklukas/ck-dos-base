@@ -33,29 +33,8 @@
 #define LINE_CAPACITY LINE_MAX
 #endif
 
-enum { B_FOR, B_NEXT, B_DO, B_LOOP, B_WHILE, B_WEND, B_IF, B_ELSEIF, B_ELSE, B_ENDIF, B_SELECT, B_CASE, B_ENDSELECT };
-enum { C_ALWAYS, C_WHILE, C_UNTIL };
-
-typedef struct {
-    unsigned start, body, end, first_block;
-    const char __far *label;
-    unsigned label_length;
-} Line;
-
-typedef struct {
-    Position at, after;
-    unsigned peer, owner, finish;
-    int kind;
-} Block;
-
-typedef struct {
-    int variable;
-    unsigned block;
-    double last, step;
-} ForFrame;
-
-static char __far source[SOURCE_CAPACITY];
-static Line __far *lines;
+char __far source[SOURCE_CAPACITY];
+Line __far *lines;
 static char __far *var_names;
 static unsigned long __far *var_shared_scopes;
 Variable variables[VALUE_MAX];
@@ -63,21 +42,23 @@ RecordType records[RECORD_MAX];
 unsigned record_count;
 static unsigned max_record_end;
 static const int *debug_active_flag;
-static Block __far *blocks;
+Block __far *blocks;
 static unsigned block_stack[STACK_MAX];
-static ForFrame for_stack[STACK_MAX];
-static Position calls[STACK_MAX];
-static unsigned line_count, variable_count, block_count, block_depth, for_depth, call_depth;
+ForFrame for_stack[STACK_MAX];
+Position calls[STACK_MAX];
+unsigned line_count, variable_count, block_count, for_depth, call_depth;
+static unsigned block_depth;
 
 unsigned screen_column, printer_column;
 Channel channels[FILE_MAX];
 static Position __far *data_statements;
 static unsigned data_count, data_index;
-static Position next_position, first_error;
+Position next_position, first_error;
 static unsigned data_offset;
 const char *error_message;
-static int stopped, checking, jumped, indexing_constant, entering_elseif;
-static CkbRunPause pause_execution;
+int stopped, jumped, entering_elseif;
+static int checking, indexing_constant;
+CkbRunPause pause_execution;
 static CkbRunBreak break_execution;
 static void *pause_context;
 static int aborted;
@@ -85,61 +66,31 @@ static char restart_path[TEXT_INPUT_MAX + 1];
 static enum { RESTART_NONE, RESTART_RUN, RESTART_CHAIN } restart_kind;
 unsigned __far *common_ids;
 unsigned common_count;
-static char default_kind[26];
-static long option_base;
+char default_kind[26];
+long option_base;
 static int dynamic_arrays;
-static unsigned long random_state;
+unsigned long random_state;
 int mbf_mode;
+int any_field_bound;
 static unsigned def_seg_value;
 static int has_def_seg;
 #if defined(__WATCOMC__) || defined(_MSDOS)
 static int immediate_output, immediate_idle, immediate_active;
 #endif
 
-typedef struct {
-    char name[BASIC_NAME_MAX + 1];
-    char result_kind;
-    unsigned param_count;
-    char param_names[PARAM_MAX][16];
-    char param_kinds[PARAM_MAX];
-    int param_var_ids[PARAM_MAX];
-    Position expr_at;
-} DefFn;
+DefFn __far *def_fns;
+unsigned def_fn_count;
 
-static DefFn __far *def_fns;
-static unsigned def_fn_count;
-
-typedef struct {
-    char kind;
-    unsigned width;
-    int array;
-} ParameterType;
-
-typedef struct {
-    char name[BASIC_NAME_MAX + 1];
-    char result_kind;
-    unsigned line, end, count, locals, first_var, last_var;
-    int function, params[PARAM_MAX], result, persistent;
-    unsigned declared_count;
-    ParameterType declared_params[PARAM_MAX];
-    int declared;
-} Procedure;
-
-typedef struct {
-    Variable *locals;
-    unsigned for_base, call_base;
-} Activation;
-
-static Activation *activation;
-static Procedure __far *procedures;
+Activation *activation;
+Procedure __far *procedures;
 static unsigned char proc_first_upper[PROC_MAX];
-static unsigned procedure_count, procedure_depth;
-static int current_scope, returning;
-static unsigned error_handler[PROC_MAX + 1];
-static Position error_resume, error_resume_next;
-static int handling_error, resume_scope;
-static unsigned trapped_error_code, trapped_error_line;
-static int __far *line_scope;
+unsigned procedure_count, procedure_depth;
+int current_scope, returning;
+unsigned error_handler[PROC_MAX + 1];
+Position error_resume, error_resume_next;
+int handling_error, resume_scope;
+unsigned trapped_error_code, trapped_error_line;
+int __far *line_scope;
 
 static const struct { unsigned code; const char *text; } runtime_errors[] = {
         {3, "RETURN without GOSUB"}, {4, "Out of DATA"},
@@ -155,7 +106,7 @@ static const struct { unsigned code; const char *text; } runtime_errors[] = {
         {24, "Device timeout"}, {70, "Permission denied"}, {75, "Path/File access error"}, {76, "Path not found"},
 };
 
-static unsigned runtime_error_code(const char *message)
+unsigned runtime_error_code(const char *message)
 {
     unsigned i;
     for (i = 0; i < sizeof(runtime_errors) / sizeof(runtime_errors[0]); ++i)
@@ -171,7 +122,7 @@ static const char *runtime_error_text(unsigned code)
     return "Unprintable error";
 }
 
-static unsigned error_line_number(unsigned index)
+unsigned error_line_number(unsigned index)
 {
     int scope;
     if (index >= line_count) return 0;
@@ -563,9 +514,9 @@ static void clear_far_bytes(void __far *dst, unsigned count)
 
 #define VAR_HASH_BUCKETS 64U
 
-static short var_hash_head[VAR_HASH_BUCKETS];
-static short var_hash_tail[VAR_HASH_BUCKETS];
-static short var_hash_next[VALUE_MAX];
+static short __far var_hash_head[VAR_HASH_BUCKETS];
+static short __far var_hash_tail[VAR_HASH_BUCKETS];
+static short __far var_hash_next[VALUE_MAX];
 
 static unsigned var_bucket(const char *name)
 {
@@ -575,8 +526,8 @@ static unsigned var_bucket(const char *name)
 
 static void var_hash_reset(void)
 {
-    memset(var_hash_head, 0xFF, sizeof(var_hash_head));
-    memset(var_hash_tail, 0xFF, sizeof(var_hash_tail));
+    _fmemset(var_hash_head, 0xFF, sizeof(var_hash_head));
+    _fmemset(var_hash_tail, 0xFF, sizeof(var_hash_tail));
 }
 
 static void var_hash_link(unsigned slot, unsigned b)
@@ -775,7 +726,7 @@ static void default_type_statement(Parser *p, char kind)
     if (!checking) tok_cache_clear();
 }
 
-static double round_even(double n)
+double round_even(double n)
 {
     double low = floor(n);
     double fraction = n - low;
@@ -787,7 +738,7 @@ int finite_number(double n)
     return !ckb_num_is_special(n);
 }
 
-static int try_exact_int21(double value, long *out)
+int try_exact_int21(double value, long *out)
 {
     const unsigned short *w = (const unsigned short *)&value;
     unsigned int w3 = w[3];
@@ -842,7 +793,7 @@ void convert_number(Parser *p, Value *v, char kind, int run)
     v->number = n;
 }
 
-static Variable *variable_storage(int id)
+Variable *variable_storage(int id)
 {
     unsigned slot = variables[id].frame_slot;
     return slot ? &activation->locals[slot - 1] : &variables[id];
@@ -856,7 +807,7 @@ Variable *array_storage(int id)
 
 /* Store the ultimate owner, since a recursive call can bind the same symbol
  * in another activation. Whole-array aliases keep the cell from this access. */
-static Reference reference_at(int id, unsigned cell)
+Reference reference_at(int id, unsigned cell)
 {
     Variable *v = variable_storage(id);
     Reference ref;
@@ -911,7 +862,7 @@ char *field_data(const Variable *variable, unsigned *width)
 void unbind_field(const Variable *variable)
 {
     unsigned i;
-    if (variable->kind != '$' || variable->array || variable->fixed_width) return;
+    if (!any_field_bound || variable->kind != '$' || variable->array || variable->fixed_width) return;
     for (i = 0; i < FILE_MAX; ++i) {
         FieldBinding **link = find_field(&channels[i], variable);
         FieldBinding *binding = *link;
@@ -926,40 +877,78 @@ void unbind_field(const Variable *variable)
 static void fixed_string_store(char *item, unsigned width, const Value *value);
 static void fixed_string_fetch(Parser *p, Value *value, const char *item, unsigned width);
 
-static void variable_string_store(Parser *p, Variable *v, unsigned cell, const Value *value)
+void variable_string_store_raw(Parser *p, Variable *v, unsigned cell, const char __far *src, unsigned src_len)
 {
     char **slot = v->array ? (char **)v->elements + cell : &v->text;
-    char *copy = NULL;
-    unsigned length = v->fixed_width ? v->fixed_width : value->length;
-    unsigned header = v->fixed_width ? 0 : 2;
-    if (length) {
-        copy = malloc(length + header);
+    char *cur = *slot;
+    unsigned length = v->fixed_width ? v->fixed_width : src_len;
+    if (any_field_bound) unbind_field(v);
+    if (v->fixed_width) {
+        unsigned n = src_len > length ? length : src_len;
+        if (!cur) {
+            if (!length) return;
+            cur = malloc(length);
+            if (!cur) {
+                fail(p, "Out of memory");
+                return;
+            }
+            *slot = cur;
+        }
+        if (n) _fmemmove(cur, src, n);
+        if (n < length) memset(cur + n, ' ', length - n);
+        return;
+    }
+    if (cur) {
+        unsigned cap = (unsigned char)cur[2] | ((unsigned)(unsigned char)cur[3] << 8);
+        if (!length && cap > 64U) {
+            free(cur);
+            *slot = NULL;
+            return;
+        }
+        if (length <= cap && (cap <= 64U || length > 32U)) {
+            if (length) _fmemmove(cur + 4, src, length);
+            cur[0] = (char)length;
+            cur[1] = (char)(length >> 8);
+            return;
+        }
+    }
+    if (!length) {
+        free(cur);
+        *slot = NULL;
+        return;
+    }
+    {
+        unsigned cap = length < 32U ? 32U : length;
+        char *copy = malloc(cap + 4U);
         if (!copy) {
             fail(p, "Out of memory");
             return;
         }
-        if (v->fixed_width) fixed_string_store(copy, length, value);
-        else {
-            copy[0] = (char)length;
-            copy[1] = (char)(length >> 8);
-            memcpy(copy + header, ckb_string_bytes(value), length);
-        }
+        copy[0] = (char)length;
+        copy[1] = (char)(length >> 8);
+        copy[2] = (char)cap;
+        copy[3] = (char)(cap >> 8);
+        _fmemcpy(copy + 4U, src, length);
+        free(cur);
+        *slot = copy;
     }
-    unbind_field(v);
-    free(*slot);
-    *slot = copy;
+}
+
+static void variable_string_store(Parser *p, Variable *v, unsigned cell, const Value *value)
+{
+    variable_string_store_raw(p, v, cell, (const char __far *)ckb_string_bytes(value), value->length);
 }
 
 static void variable_string_fetch(Parser *p, const Variable *v, unsigned cell, Value *value)
 {
     const char *stored = v->array ? ((char *const *)v->elements)[cell] : v->text;
     unsigned width;
-    const char *field = field_data(v, &width);
+    const char *field = any_field_bound ? field_data(v, &width) : NULL;
     if (field) fixed_string_fetch(p, value, field, width);
     else if (v->fixed_width) fixed_string_fetch(p, value, stored, v->fixed_width);
     else {
         width = stored ? (unsigned char)stored[0] | ((unsigned)(unsigned char)stored[1] << 8) : 0;
-        fixed_string_fetch(p, value, stored ? stored + 2 : NULL, width);
+        fixed_string_fetch(p, value, stored ? stored + 4 : NULL, width);
     }
 }
 
@@ -1920,7 +1909,7 @@ static int label_equal(const char __far *a, unsigned an, const char __far *b, un
     return 1;
 }
 
-static unsigned target(Parser *p)
+unsigned target_label(Parser *p)
 {
     unsigned i;
     if (p->token == T_NUMBER || p->token == T_NAME) {
@@ -1935,6 +1924,8 @@ static unsigned target(Parser *p)
     } else fail(p, "Expected: label or line number");
     return line_count;
 }
+
+#define target target_label
 
 static Position next_line(unsigned line)
 {
@@ -1960,6 +1951,24 @@ static int pause_at(Parser *p, Position at, const char *message)
     aborted = stopped = 1;
     error_message = "Execution cancelled";
     return 0;
+}
+
+int pause_at_pos(Position at, const char *message)
+{
+    Parser p;
+    initialize_parser(&p, at);
+    while (p.token && p.token != ':' && !word(&p, "ELSE")) scan(&p);
+    return pause_at(&p, at, message);
+}
+
+unsigned block_at_pos(Position at)
+{
+    unsigned i;
+    for (i = lines[at.line].first_block;
+         i < block_count && blocks[i].at.line == at.line; ++i) {
+        if (blocks[i].at.offset == at.offset) return i;
+    }
+    return BLOCK_MAX;
 }
 
 int input_interrupted(Parser *p, Position at)
@@ -2215,7 +2224,7 @@ static int procedure_id(const char *name)
     return -1;
 }
 
-static int lookup_procedure(const Parser *p)
+int lookup_proc_token(const Parser *p)
 {
     Parser name_parser;
     char name[BASIC_NAME_MAX + 1], kind;
@@ -2232,6 +2241,8 @@ static int lookup_procedure(const Parser *p)
         if (proc_first_upper[i] == ch0 && proc_name_equals(i, name)) return (int)i;
     return -1;
 }
+
+#define lookup_procedure lookup_proc_token
 
 static int whole_array_argument(Parser *p, int run)
 {
@@ -2367,6 +2378,7 @@ static void call_procedure(Parser *p, int id, unsigned depth, int run, Value *re
                 frame.locals[v->frame_slot - 1] = *v;
         }
         activation = &frame;
+        frame.prev = caller;
         current_scope = id;
         for (i = 0; i < n_params && !error_message; ++i) {
             int param = proc->params[i];
@@ -2416,7 +2428,49 @@ static void call_procedure(Parser *p, int id, unsigned depth, int run, Value *re
 }
 
 
-static unsigned current_def_seg(void)
+int alloc_proc_locals(Parser *p, int proc_id, Variable **out_locals, int *out_pooled)
+{
+    Procedure __far *proc = &procedures[proc_id];
+    unsigned n_locals = proc->locals, fv = proc->first_var, lv = proc->last_var, i;
+    Variable *locs = NULL;
+    *out_locals = NULL;
+    *out_pooled = 0;
+    if (n_locals) {
+        if (local_pool_top + n_locals <= LOCAL_VAR_POOL_MAX) {
+            locs = &local_var_pool[local_pool_top];
+            local_pool_top += n_locals;
+            *out_pooled = 1;
+        } else {
+            locs = malloc(n_locals * sizeof(*locs));
+            if (!locs) {
+                fail(p, "Out of memory");
+                return 0;
+            }
+        }
+        for (i = fv; i < lv; ++i) {
+            const Variable *v = &variables[i];
+            if (v->scope == proc_id && v->frame_slot)
+                locs[v->frame_slot - 1] = *v;
+        }
+    }
+    *out_locals = locs;
+    return 1;
+}
+
+void free_proc_locals(Variable *locals, unsigned n_locals, int pooled)
+{
+    unsigned i;
+    if (!locals) return;
+    for (i = 0; i < n_locals; ++i) {
+        unbind_field(&locals[i]);
+        release_array(&locals[i]);
+        free(locals[i].text);
+    }
+    if (pooled) local_pool_top -= n_locals;
+    else free(locals);
+}
+
+unsigned current_def_seg(void)
 {
 #if defined(__WATCOMC__) || defined(_MSDOS)
     if (has_def_seg) return def_seg_value;
@@ -2496,7 +2550,7 @@ static void call_def_fn(Parser *p, int fn_id, Value *v, unsigned depth, int run)
     current_scope = saved_scope;
 }
 
-static int lookup_def_fn(const Parser *p)
+int lookup_deffn_token(const Parser *p)
 {
     Parser np = *p;
     char name[BASIC_NAME_MAX + 1], kind;
@@ -2514,6 +2568,8 @@ static int lookup_def_fn(const Parser *p)
     }
     return -1;
 }
+
+#define lookup_def_fn lookup_deffn_token
 
 static int expression_call(Parser *p, Value *v, unsigned depth, int run)
 {
@@ -3842,6 +3898,23 @@ static int load_source(const char *path)
     return 1;
 }
 
+void exec_fallback_stmt(Position at, Position *out_after)
+{
+    Parser p;
+    CkbStringTemp *mark;
+    initialize_parser(&p, at);
+    jumped = 0;
+    mark = ckb_string_mark();
+    if (ckb_serial_open_count) ckb_serial_poll();
+    if (p.token != ':') statement(&p, 1, 0);
+    ckb_string_release(mark);
+    if (!jumped && !error_message && !end_statement(&p))
+        fail(&p, "Expected: end of statement");
+    if (!jumped && !error_message && word(&p, "ELSE"))
+        fail(&p, "ELSE without IF");
+    *out_after = jumped ? next_position : after_statement(&p);
+}
+
 static void walk_at(Position at, int run)
 {
     Parser p;
@@ -3952,6 +4025,7 @@ static int execute_program(const char *path, int mbf, const char __far *text,
         option_base = 0;
         dynamic_arrays = 0;
         mbf_mode = mbf;
+        any_field_bound = 0;
         has_def_seg = 0;
         def_seg_value = 0;
         entering_elseif = 0;
@@ -3997,7 +4071,11 @@ static int execute_program(const char *path, int mbf, const char __far *text,
         saved_count = 0;
         restart_kind = RESTART_NONE;
         tok_cache_clear();
-        if (line_count && !error_message) walk_at(position(0, lines[0].body), 1);
+        if (line_count && !error_message) {
+            int dbg_on = break_execution && (!debug_active_flag || *debug_active_flag);
+            if (dbg_on || !ckb_vm_execute())
+                walk_at(position(0, lines[0].body), 1);
+        }
         if (!error_message && restart_kind == RESTART_CHAIN && common_count) {
             Parser save_parser;
             initialize_parser(&save_parser, position(0, lines[0].body));

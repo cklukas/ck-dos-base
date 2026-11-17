@@ -586,6 +586,7 @@ void field_statement(Parser *p, int run)
         unbind_field(ref.target);
         free(ref.target->text);
         ref.target->text = NULL;
+        any_field_bound = 1;
         binding->variable = ref.target;
         binding->common = 0;
         binding->width = (unsigned)width;
@@ -1747,6 +1748,7 @@ void restore_common(Parser *p, CommonValue *saved, const CommonType *types,
         return;
     }
     v->number = saved->number;
+    v->ival = (v->kind == '%' || v->kind == '&') ? (long)saved->number : 0L;
     v->text = saved->text;
     v->bounds = saved->bounds;
     v->elements = saved->elements;
@@ -1761,6 +1763,7 @@ void restore_common(Parser *p, CommonValue *saved, const CommonType *types,
 void carry_fields(int restore)
 {
     unsigned i;
+    if (restore) any_field_bound = 1;
     for (i = 0; i < FILE_MAX; ++i) {
         FieldBinding **link = &channels[i].fields;
         while (*link) {

@@ -2744,6 +2744,15 @@ public:
             }
         }
 
+        for (const auto& kv : parser_.global_syms) {
+            const VarSymbol& sym = kv.second;
+            if (sym.type && sym.type->kind != TypeKind::t_ptr &&
+                sym.type->kind != TypeKind::t_func && sym.type->is_far &&
+                global_locs_.count(sym.asm_name) == 0) {
+                far_global_syms_.insert(sym.asm_name);
+            }
+        }
+
         // 2. Emit functions into _TEXT
         for (const FuncDef& fn : parser_.funcs) {
             emit_function(fn);

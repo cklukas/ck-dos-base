@@ -19,6 +19,7 @@
 #ifndef __far
 #define __far
 #define _fmemcpy memcpy
+#define _fmemmove memmove
 #define _fmemchr memchr
 #define _fmalloc malloc
 #define _ffree free
@@ -123,6 +124,62 @@ struct Variable {
     unsigned frame_slot;
     Reference reference;
 };
+
+enum { B_FOR, B_NEXT, B_DO, B_LOOP, B_WHILE, B_WEND, B_IF, B_ELSEIF, B_ELSE, B_ENDIF, B_SELECT, B_CASE, B_ENDSELECT };
+enum { C_ALWAYS, C_WHILE, C_UNTIL };
+
+typedef struct {
+    unsigned start, body, end, first_block;
+    const char __far *label;
+    unsigned label_length;
+} Line;
+
+typedef struct {
+    Position at, after;
+    unsigned peer, owner, finish;
+    int kind;
+} Block;
+
+typedef struct {
+    int variable;
+    unsigned block;
+    double last, step;
+    long ilast, istep;
+    unsigned body_pc;
+    unsigned char fast_i16;
+} ForFrame;
+
+typedef struct {
+    char name[BASIC_NAME_MAX + 1];
+    char result_kind;
+    unsigned param_count;
+    char param_names[PARAM_MAX][16];
+    char param_kinds[PARAM_MAX];
+    int param_var_ids[PARAM_MAX];
+    Position expr_at;
+} DefFn;
+
+typedef struct {
+    char kind;
+    unsigned width;
+    int array;
+} ParameterType;
+
+typedef struct {
+    char name[BASIC_NAME_MAX + 1];
+    char result_kind;
+    unsigned line, end, count, locals, first_var, last_var;
+    int function, params[PARAM_MAX], result, persistent;
+    unsigned declared_count;
+    ParameterType declared_params[PARAM_MAX];
+    int declared;
+} Procedure;
+
+typedef struct Activation {
+    Variable *locals;
+    struct Activation *prev;
+    unsigned for_base, call_base;
+} Activation;
 
 typedef struct {
     unsigned line, pos, start, length, line_end;
@@ -281,6 +338,61 @@ typedef struct {
 #define peek_function ckbr_peek_function
 #define point_function ckbr_point_function
 
+#define source ckbr_source
+#define lines ckbr_lines
+#define line_scope ckbr_line_scope
+#define blocks ckbr_blocks
+#define procedures ckbr_procedures
+#define def_fns ckbr_def_fns
+#define for_stack ckbr_for_stack
+#define calls ckbr_calls
+#define error_handler ckbr_error_handler
+#define line_count ckbr_line_count
+#define variable_count ckbr_variable_count
+#define block_count ckbr_block_count
+#define for_depth ckbr_for_depth
+#define call_depth ckbr_call_depth
+#define procedure_count ckbr_procedure_count
+#define procedure_depth ckbr_procedure_depth
+#define def_fn_count ckbr_def_fn_count
+#define current_scope ckbr_current_scope
+#define activation ckbr_activation
+#define returning ckbr_returning
+#define stopped ckbr_stopped
+#define jumped ckbr_jumped
+#define entering_elseif ckbr_entering_elseif
+#define next_position ckbr_next_position
+#define first_error ckbr_first_error
+#define handling_error ckbr_handling_error
+#define resume_scope ckbr_resume_scope
+#define error_resume ckbr_error_resume
+#define error_resume_next ckbr_error_resume_next
+#define trapped_error_code ckbr_trapped_error_code
+#define trapped_error_line ckbr_trapped_error_line
+#define random_state ckbr_random_state
+#define option_base ckbr_option_base
+#define default_kind ckbr_default_kind
+#define any_field_bound ckbr_any_field_bound
+#define pause_execution ckbr_pause_execution
+
+#define variable_storage ckbr_variable_storage
+#define reference_at ckbr_reference_at
+#define try_exact_int21 ckbr_try_exact_int21
+#define round_even ckbr_round_even
+#define current_def_seg ckbr_current_def_seg
+#define target_label ckbr_target_label
+#define lookup_proc_token ckbr_lookup_proc_token
+#define lookup_deffn_token ckbr_lookup_deffn_token
+#define block_at_pos ckbr_block_at_pos
+#define exec_fallback_stmt ckbr_exec_fallback_stmt
+#define alloc_proc_locals ckbr_alloc_proc_locals
+#define free_proc_locals ckbr_free_proc_locals
+#define runtime_error_code ckbr_runtime_error_code
+#define error_line_number ckbr_error_line_number
+#define pause_at_pos ckbr_pause_at_pos
+#define variable_string_store_raw ckbr_variable_string_store_raw
+#define ckb_vm_execute ckbr_vm_execute
+
 extern Variable variables[VALUE_MAX];
 extern Channel channels[FILE_MAX];
 extern unsigned screen_column, printer_column;
@@ -290,6 +402,29 @@ extern RecordType records[RECORD_MAX];
 extern unsigned record_count;
 extern unsigned __far *common_ids;
 extern unsigned common_count;
+
+extern char __far source[];
+extern Line __far *lines;
+extern int __far *line_scope;
+extern Block __far *blocks;
+extern Procedure __far *procedures;
+extern DefFn __far *def_fns;
+extern ForFrame for_stack[STACK_MAX];
+extern Position calls[STACK_MAX];
+extern unsigned error_handler[PROC_MAX + 1];
+extern unsigned line_count, variable_count, block_count, for_depth, call_depth;
+extern unsigned procedure_count, procedure_depth, def_fn_count;
+extern int current_scope, returning, stopped, jumped, entering_elseif;
+extern Activation *activation;
+extern Position next_position, first_error;
+extern int handling_error, resume_scope;
+extern Position error_resume, error_resume_next;
+extern unsigned trapped_error_code, trapped_error_line;
+extern unsigned long random_state;
+extern long option_base;
+extern char default_kind[26];
+extern int any_field_bound;
+extern CkbRunPause pause_execution;
 
 /* Exported from CKBRUN.C */
 void fail(const Parser *p, const char *message);
@@ -327,6 +462,25 @@ void implicit_array(Parser *p, Variable *v, unsigned dimensions);
 unsigned array_cell(Parser *p, int id, int run);
 Reference lvalue(Parser *p, int run);
 void write_bytes(Parser *p, FILE *stream, unsigned *column, const char *s, size_t n);
+Variable *variable_storage(int id);
+Reference reference_at(int id, unsigned cell);
+int try_exact_int21(double value, long *out);
+double round_even(double n);
+unsigned current_def_seg(void);
+unsigned target_label(Parser *p);
+int lookup_proc_token(const Parser *p);
+int lookup_deffn_token(const Parser *p);
+unsigned block_at_pos(Position at);
+void exec_fallback_stmt(Position at, Position *out_after);
+int alloc_proc_locals(Parser *p, int proc_id, Variable **out_locals, int *out_pooled);
+void free_proc_locals(Variable *locals, unsigned n_locals, int pooled);
+unsigned runtime_error_code(const char *message);
+unsigned error_line_number(unsigned index);
+int pause_at_pos(Position at, const char *message);
+void variable_string_store_raw(Parser *p, Variable *v, unsigned cell, const char __far *src, unsigned src_len);
+
+/* Exported from CKBVM.C */
+int ckb_vm_execute(void);
 
 /* Exported from CKBIO.C */
 Channel *file_number(Parser *p, int run);

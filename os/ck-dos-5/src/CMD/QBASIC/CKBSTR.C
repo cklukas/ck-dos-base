@@ -17,7 +17,7 @@ struct CkbStringTemp {
 };
 
 static CkbStringTemp *temporaries;
-static char temp_arena[512];
+static char temp_arena[256];
 static unsigned temp_arena_used;
 
 CkbStringTemp *ckb_string_mark(void)

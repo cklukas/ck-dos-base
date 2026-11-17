@@ -875,7 +875,7 @@ void build_dos5_dosui_tools(const fs::path& repo_root,
     }
     const fs::path rt_inc = repo_root / "runtime" / "include";
     const std::vector<const char*> qb_c_stems = {
-        "QBASIC", "CKBIDE", "CKBRUN", "CKBIO", "CKBSTR", "CKBCON", "CKBFMT", "CKBNUM",
+        "QBASIC", "CKBIDE", "CKBRUN", "CKBCMP", "CKBVM", "CKBIO", "CKBSTR", "CKBCON", "CKBFMT", "CKBNUM",
         "CKENV", "CKBSER", "CKBINI", "CKBHELP", "CKBFIND", "CKBPROC"};
     std::string qb_objs;
     for (std::size_t i = 0; i < qb_c_stems.size(); ++i) {
