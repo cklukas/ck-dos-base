@@ -752,17 +752,25 @@ static void raw_hline(int x1, int x2, int y, int color)
             (void)latch;
             vram[row_off + b1] = c;
         } else {
-            unsigned b;
             outp(0x3ce, 0x08);
             outp(0x3cf, left_mask);
             latch = vram[row_off + b1];
             (void)latch;
             vram[row_off + b1] = c;
             if (b1 + 1 < b2) {
+                outp(0x3ce, 0x05);
+                outp(0x3cf, 0x00);
+                outp(0x3ce, 0x00);
+                outp(0x3cf, c);
+                outp(0x3ce, 0x01);
+                outp(0x3cf, 0x0f);
                 outp(0x3ce, 0x08);
                 outp(0x3cf, 0xff);
-                for (b = b1 + 1; b < b2; ++b)
-                    vram[row_off + b] = c;
+                _fmemset((void __far *)(vram + row_off + b1 + 1U), 0xff, b2 - b1 - 1U);
+                outp(0x3ce, 0x01);
+                outp(0x3cf, 0x00);
+                outp(0x3ce, 0x05);
+                outp(0x3cf, 0x02);
             }
             outp(0x3ce, 0x08);
             outp(0x3cf, right_mask);
@@ -775,40 +783,210 @@ static void raw_hline(int x1, int x2, int y, int color)
     }
     if (screen_mode == 13) {
         unsigned char __far *vram = (unsigned char __far *)MK_FP(0xa000, 0);
-        unsigned off = (unsigned)y * 320U + (unsigned)x1;
-        unsigned count = (unsigned)(x2 - x1 + 1);
-        unsigned char c = (unsigned char)(color & 255);
-        while (count--) vram[off++] = c;
+        _fmemset(vram + (unsigned)y * 320U + (unsigned)x1, color & 255,
+                 (unsigned)(x2 - x1 + 1));
         return;
     }
     for (x = x1; x <= x2; ++x) raw_put_pixel(x, y, color);
 }
 
-static void raw_line_segment(int x0, int y0, int x1, int y1, int color)
+static void raw_fill_rect(int x1, int y1, int x2, int y2, int color)
 {
-    long dx, dy, sx, sy, err, e2;
-    if (y0 == y1) {
-        raw_hline(x0, x1, y0, color);
+    int y;
+    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
+    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    if (x2 < 0 || x1 >= gfx_width || y2 < 0 || y1 >= gfx_height) return;
+    if (x1 < 0) x1 = 0;
+    if (x2 >= gfx_width) x2 = gfx_width - 1;
+    if (y1 < 0) y1 = 0;
+    if (y2 >= gfx_height) y2 = gfx_height - 1;
+
+    if (screen_mode == 7 || screen_mode == 8 || screen_mode == 9 || screen_mode == 12) {
+        volatile unsigned char __far *vram = (volatile unsigned char __far *)MK_FP(0xa000, 0);
+        unsigned stride = screen_mode == 7 ? 40U : 80U;
+        unsigned b1 = (unsigned)(x1 >> 3), b2 = (unsigned)(x2 >> 3);
+        unsigned char left_mask = (unsigned char)(0xffU >> (x1 & 7));
+        unsigned char right_mask = (unsigned char)(0xffU << (7 - (x2 & 7)));
+        unsigned char c = (unsigned char)(color & 15);
+        volatile unsigned char latch;
+        unsigned off;
+
+        outp(0x3ce, 0x05);
+        outp(0x3cf, 0x02);
+        if (b1 == b2) {
+            outp(0x3ce, 0x08);
+            outp(0x3cf, left_mask & right_mask);
+            off = (unsigned)y1 * stride + b1;
+            for (y = y1; y <= y2; ++y, off += stride) {
+                latch = vram[off];
+                (void)latch;
+                vram[off] = c;
+            }
+        } else {
+            unsigned fb1 = (left_mask == 0xffU) ? b1 : (b1 + 1U);
+            unsigned fb2 = (right_mask == 0xffU) ? b2 : (b2 - 1U);
+            if (left_mask != 0xffU) {
+                outp(0x3ce, 0x08);
+                outp(0x3cf, left_mask);
+                off = (unsigned)y1 * stride + b1;
+                for (y = y1; y <= y2; ++y, off += stride) {
+                    latch = vram[off];
+                    (void)latch;
+                    vram[off] = c;
+                }
+            }
+            if (fb1 <= fb2) {
+                unsigned fcount = fb2 - fb1 + 1U;
+                outp(0x3ce, 0x05);
+                outp(0x3cf, 0x00);
+                outp(0x3ce, 0x00);
+                outp(0x3cf, c);
+                outp(0x3ce, 0x01);
+                outp(0x3cf, 0x0f);
+                outp(0x3ce, 0x08);
+                outp(0x3cf, 0xff);
+                off = (unsigned)y1 * stride + fb1;
+                for (y = y1; y <= y2; ++y, off += stride)
+                    _fmemset((void __far *)(vram + off), 0xff, fcount);
+                outp(0x3ce, 0x01);
+                outp(0x3cf, 0x00);
+                outp(0x3ce, 0x05);
+                outp(0x3cf, 0x02);
+            }
+            if (right_mask != 0xffU) {
+                outp(0x3ce, 0x08);
+                outp(0x3cf, right_mask);
+                off = (unsigned)y1 * stride + b2;
+                for (y = y1; y <= y2; ++y, off += stride) {
+                    latch = vram[off];
+                    (void)latch;
+                    vram[off] = c;
+                }
+            }
+        }
+        reset_planar_gc();
         return;
     }
-    dx = x1 >= x0 ? (long)x1 - (long)x0 : (long)x0 - (long)x1;
-    dy = y1 >= y0 ? (long)y0 - (long)y1 : (long)y1 - (long)y0;
-    sx = x0 < x1 ? 1L : -1L;
-    sy = y0 < y1 ? 1L : -1L;
-    err = dx + dy;
-    for (;;) {
-        raw_put_pixel(x0, y0, color);
-        if (x0 == x1 && y0 == y1) break;
-        e2 = err * 2L;
-        if (e2 >= dy) {
-            err += dy;
-            x0 = (int)((long)x0 + sx);
+    if (screen_mode == 13) {
+        unsigned char __far *vram = (unsigned char __far *)MK_FP(0xa000, 0);
+        unsigned count = (unsigned)(x2 - x1 + 1);
+        for (y = y1; y <= y2; ++y)
+            _fmemset(vram + (unsigned)y * 320U + (unsigned)x1, color & 255, count);
+        return;
+    }
+    for (y = y1; y <= y2; ++y) raw_hline(x1, x2, y, color);
+}
+
+static void raw_vline(int x, int y1, int y2, int color)
+{
+    int y;
+    if (x < 0 || x >= gfx_width) return;
+    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    if (y2 < 0 || y1 >= gfx_height) return;
+    if (y1 < 0) y1 = 0;
+    if (y2 >= gfx_height) y2 = gfx_height - 1;
+    if (screen_mode == 7 || screen_mode == 8 || screen_mode == 9 || screen_mode == 12) {
+        volatile unsigned char __far *vram = (volatile unsigned char __far *)MK_FP(0xa000, 0);
+        unsigned stride = screen_mode == 7 ? 40U : 80U;
+        unsigned off = (unsigned)y1 * stride + (unsigned)(x >> 3);
+        unsigned char mask = (unsigned char)(0x80U >> (x & 7));
+        unsigned char c = (unsigned char)(color & 15);
+        volatile unsigned char latch;
+        outp(0x3ce, 0x05);
+        outp(0x3cf, 0x02);
+        outp(0x3ce, 0x08);
+        outp(0x3cf, mask);
+        for (y = y1; y <= y2; ++y, off += stride) {
+            latch = vram[off];
+            (void)latch;
+            vram[off] = c;
         }
-        if (e2 <= dx) {
-            err += dx;
-            y0 = (int)((long)y0 + sy);
+        reset_planar_gc();
+        return;
+    }
+    for (y = y1; y <= y2; ++y) raw_put_pixel(x, y, color);
+}
+
+/* Assumes planar GC mode 2 and GC index 0x08 are ALREADY selected when planar_ready != 0. */
+static void raw_line_segment_ex(int x0, int y0, int x1, int y1, int color, int planar_ready)
+{
+    int is_planar = (screen_mode == 7 || screen_mode == 8 || screen_mode == 9 || screen_mode == 12);
+    if (!planar_ready) {
+        if (y0 == y1) { raw_hline(x0, x1, y0, color); return; }
+        if (x0 == x1) { raw_vline(x0, y0, y1, color); return; }
+    }
+    if (is_planar && x0 >= -4096 && x0 <= 4096 && x1 >= -4096 && x1 <= 4096 &&
+        y0 >= -4096 && y0 <= 4096 && y1 >= -4096 && y1 <= 4096) {
+        volatile unsigned char __far *vram = (volatile unsigned char __far *)MK_FP(0xa000, 0);
+        unsigned stride = screen_mode == 7 ? 40U : 80U;
+        unsigned char c = (unsigned char)(color & 15);
+        int dx = x1 >= x0 ? x1 - x0 : x0 - x1;
+        int dy = y1 >= y0 ? y0 - y1 : y1 - y0;
+        int sx = x0 < x1 ? 1 : -1;
+        int sy = y0 < y1 ? 1 : -1;
+        int err = dx + dy, e2;
+        unsigned cur_off = 0xffffU;
+        unsigned char acc_mask = 0, last_out_mask = 0;
+        volatile unsigned char latch;
+
+        if (!planar_ready) {
+            outp(0x3ce, 0x05);
+            outp(0x3cf, 0x02);
+            outp(0x3ce, 0x08);
+        }
+        for (;;) {
+            if ((unsigned)x0 < (unsigned)gfx_width && (unsigned)y0 < (unsigned)gfx_height) {
+                unsigned off = (unsigned)y0 * stride + ((unsigned)x0 >> 3);
+                unsigned char bit = (unsigned char)(0x80U >> (x0 & 7));
+                if (off == cur_off) {
+                    acc_mask |= bit;
+                } else {
+                    if (acc_mask) {
+                        if (acc_mask != last_out_mask) {
+                            outp(0x3cf, acc_mask);
+                            last_out_mask = acc_mask;
+                        }
+                        latch = vram[cur_off];
+                        (void)latch;
+                        vram[cur_off] = c;
+                    }
+                    cur_off = off;
+                    acc_mask = bit;
+                }
+            }
+            if (x0 == x1 && y0 == y1) break;
+            e2 = err << 1;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+        }
+        if (acc_mask) {
+            if (acc_mask != last_out_mask) outp(0x3cf, acc_mask);
+            latch = vram[cur_off];
+            (void)latch;
+            vram[cur_off] = c;
+        }
+        if (!planar_ready) reset_planar_gc();
+        return;
+    }
+    {
+        long dx = x1 >= x0 ? (long)x1 - (long)x0 : (long)x0 - (long)x1;
+        long dy = y1 >= y0 ? (long)y0 - (long)y1 : (long)y1 - (long)y0;
+        long sx = x0 < x1 ? 1L : -1L;
+        long sy = y0 < y1 ? 1L : -1L;
+        long err = dx + dy, e2;
+        for (;;) {
+            raw_put_pixel(x0, y0, color);
+            if (x0 == x1 && y0 == y1) break;
+            e2 = err * 2L;
+            if (e2 >= dy) { err += dy; x0 = (int)((long)x0 + sx); }
+            if (e2 <= dx) { err += dx; y0 = (int)((long)y0 + sy); }
         }
     }
+}
+
+static void raw_line_segment(int x0, int y0, int x1, int y1, int color)
+{
+    raw_line_segment_ex(x0, y0, x1, y1, color, 0);
 }
 
 const char *ckb_pset(int x, int y, int color, int is_preset)
@@ -837,22 +1015,49 @@ const char *ckb_line(int has_first, int x1, int y1, int x2, int y2,
     }
     if (color < 0) color = fg_color;
     if (box_mode == 2) { /* BF */
-        int top = y1 < y2 ? y1 : y2;
-        int bottom = y1 < y2 ? y2 : y1;
-        int y;
-        for (y = top; y <= bottom; ++y)
-            raw_hline(x1, x2, y, color);
+        raw_fill_rect(x1, y1, x2, y2, color);
     } else if (box_mode == 1) { /* B */
         raw_hline(x1, x2, y1, color);
         raw_hline(x1, x2, y2, color);
-        raw_line_segment(x1, y1, x1, y2, color);
-        raw_line_segment(x2, y1, x2, y2, color);
+        raw_vline(x1, y1, y2, color);
+        raw_vline(x2, y1, y2, color);
     } else {
         raw_line_segment(x1, y1, x2, y2, color);
     }
     last_x = x2;
     last_y = y2;
     return NULL;
+}
+
+static const short qsin14[65] = {
+        0,   402,   804,  1205,  1606,  2006,  2404,  2801,
+     3196,  3590,  3981,  4370,  4756,  5139,  5520,  5897,
+     6270,  6639,  7005,  7366,  7723,  8076,  8423,  8765,
+     9102,  9434,  9760, 10080, 10394, 10702, 11003, 11297,
+    11585, 11866, 12140, 12406, 12665, 12916, 13160, 13395,
+    13623, 13842, 14053, 14256, 14449, 14635, 14811, 14978,
+    15137, 15286, 15426, 15557, 15679, 15791, 15893, 15986,
+    16069, 16143, 16207, 16261, 16305, 16340, 16364, 16379,
+    16384
+};
+
+static int fast_sin14(int a4096)
+{
+    int a = a4096 & 4095;
+    int q = (a >> 10) & 3;
+    int off = a & 1023;
+    int idx, frac, v;
+    if (q & 1) off = 1024 - off;
+    idx = off >> 4;
+    frac = off & 15;
+    v = (int)qsin14[idx] + ((((int)qsin14[idx + 1] - (int)qsin14[idx]) * frac + 8) >> 4);
+    return (q & 2) ? -v : v;
+}
+
+static int round_fp18(long v)
+{
+    if (v >= -131072L) return (int)((unsigned long)(v + 131072L) >> 18);
+    return -(int)(((unsigned long)(-v - 131073L) >> 18) + 1UL);
 }
 
 const char *ckb_circle(int x, int y, double radius, int color,
@@ -863,11 +1068,14 @@ const char *ckb_circle(int x, int y, double radius, int color,
     double asp, xr, yr, a0 = 0.0, a1 = TWO_PI;
     int ray_start = 0, ray_end = 0, full_circle = (!has_start && !has_end);
     int steps, i, prev_px = 0, prev_py = 0, first_px = 0, first_py = 0;
+    int is_planar = (screen_mode == 7 || screen_mode == 8 || screen_mode == 9 || screen_mode == 12);
+    long xr_fp4, yr_fp4;
+    int a0_4096, a1_4096;
 
     if (screen_mode == 0 || radius < 0.0) return "Illegal function call";
     if (color < 0) color = fg_color;
     if (has_aspect) asp = fabs(aspect);
-    else asp = 4.0 * ((double)gfx_height / (double)gfx_width) / 3.0;
+    else asp = (4.0 * (double)gfx_height) / (3.0 * (double)gfx_width);
 
     if (asp > 1.0) {
         xr = radius / asp;
@@ -896,43 +1104,52 @@ const char *ckb_circle(int x, int y, double radius, int color,
         if (a1 < 0.0) a1 += TWO_PI;
         if (a1 < a0 || (fabs(a1 - a0) < 1e-9 && fabs(raw1 - raw0) > 1e-9))
             a1 += TWO_PI;
+        a0_4096 = (int)(a0 * (4096.0 / TWO_PI) + 0.5);
+        a1_4096 = (int)(a1 * (4096.0 / TWO_PI) + 0.5);
+    } else {
+        a0_4096 = 0;
+        a1_4096 = 4096;
     }
 
+    xr_fp4 = (long)(xr * 16.0 + 0.5);
+    yr_fp4 = (long)(yr * 16.0 + 0.5);
     {
-        double max_r = xr > yr ? xr : yr;
-        double span = a1 - a0;
-        double est = max_r * span * 1.5 + 8.0;
-        steps = est > 720.0 ? 720 : (int)est;
-        if (steps < 8) steps = 8;
+        long max_r4 = xr_fp4 > yr_fp4 ? xr_fp4 : yr_fp4;
+        long span_ang = (long)(a1_4096 - a0_4096);
+        /* ~1.25 steps per pixel of arc length: max_r * span_rad = (max_r4/16)*(span_ang*2pi/4096) ~ max_r4*span_ang / 10430 */
+        int est = (int)((max_r4 * span_ang) / 8192L) + 8;
+        steps = est > 360 ? 360 : (est < 8 ? 8 : est);
     }
 
-    {
-        double step_ang = (a1 - a0) / (double)steps;
-        double cs = cos(step_ang), sn = sin(step_ang);
-        double ux = cos(a0), uy = sin(a0);
-        for (i = 0; i <= steps; ++i) {
-            double dx = xr * ux;
-            double dy = yr * uy;
-            int px = x + (int)floor(dx + 0.5);
-            int py = y - (int)floor(dy + 0.5);
-            double nux = ux * cs - uy * sn;
-            uy = ux * sn + uy * cs;
-            ux = nux;
-            if (i == 0) {
-                first_px = prev_px = px;
-                first_py = prev_py = py;
-                raw_put_pixel(px, py, color);
-            } else if (px != prev_px || py != prev_py) {
-                raw_line_segment(prev_px, prev_py, px, py, color);
-                prev_px = px;
-                prev_py = py;
-            }
+    if (is_planar) {
+        outp(0x3ce, 0x05);
+        outp(0x3cf, 0x02);
+        outp(0x3ce, 0x08);
+    }
+
+    for (i = 0; i <= steps; ++i) {
+        int ang = a0_4096 + (int)(((long)(a1_4096 - a0_4096) * (long)i) / (long)steps);
+        int cs = fast_sin14(ang + 1024);
+        int sn = fast_sin14(ang);
+        int px = x + round_fp18(xr_fp4 * (long)cs);
+        int py = y - round_fp18(yr_fp4 * (long)sn);
+        if (i == 0) {
+            first_px = prev_px = px;
+            first_py = prev_py = py;
+            if (is_planar) raw_line_segment_ex(px, py, px, py, color, 1);
+            else raw_put_pixel(px, py, color);
+        } else if (px != prev_px || py != prev_py) {
+            raw_line_segment_ex(prev_px, prev_py, px, py, color, is_planar);
+            prev_px = px;
+            prev_py = py;
         }
     }
     if (full_circle && (prev_px != first_px || prev_py != first_py))
-        raw_line_segment(prev_px, prev_py, first_px, first_py, color);
-    if (ray_start) raw_line_segment(x, y, first_px, first_py, color);
-    if (ray_end) raw_line_segment(x, y, prev_px, prev_py, color);
+        raw_line_segment_ex(prev_px, prev_py, first_px, first_py, color, is_planar);
+    if (ray_start) raw_line_segment_ex(x, y, first_px, first_py, color, is_planar);
+    if (ray_end) raw_line_segment_ex(x, y, prev_px, prev_py, color, is_planar);
+
+    if (is_planar) reset_planar_gc();
     return NULL;
 }
 
@@ -941,6 +1158,38 @@ typedef struct {
 } PaintSpan;
 
 #define PAINT_MAX_SPANS 768
+
+static void unpack_planar_row(int y, unsigned char __far *row_buf)
+{
+    const unsigned char __far *vram = (const unsigned char __far *)MK_FP(0xa000, 0);
+    unsigned stride = screen_mode == 7 ? 40U : 80U;
+    unsigned b_cnt = (unsigned)gfx_width >> 3;
+    unsigned row_off = (unsigned)y * stride;
+    unsigned b;
+    int p;
+    _fmemset(row_buf, 0, (unsigned)gfx_width);
+    for (p = 0; p < 4; ++p) {
+        unsigned char pbit = (unsigned char)(1U << p);
+        outp(0x3ce, 0x04);
+        outp(0x3cf, p);
+        for (b = 0; b < b_cnt; ++b) {
+            unsigned char vb = vram[row_off + b];
+            unsigned char __far *dst;
+            if (!vb) continue;
+            dst = row_buf + (b << 3);
+            if (vb & 0x80U) dst[0] |= pbit;
+            if (vb & 0x40U) dst[1] |= pbit;
+            if (vb & 0x20U) dst[2] |= pbit;
+            if (vb & 0x10U) dst[3] |= pbit;
+            if (vb & 0x08U) dst[4] |= pbit;
+            if (vb & 0x04U) dst[5] |= pbit;
+            if (vb & 0x02U) dst[6] |= pbit;
+            if (vb & 0x01U) dst[7] |= pbit;
+        }
+    }
+    outp(0x3ce, 0x04);
+    outp(0x3cf, 0x00);
+}
 
 static int paint_fillable(int x, int y, int fill_c, int border_c)
 {
@@ -951,6 +1200,9 @@ static int paint_fillable(int x, int y, int fill_c, int border_c)
 const char *ckb_paint(int x, int y, int fill_color, int border_color)
 {
     PaintSpan __far *stack;
+    unsigned char __far *row_buf = NULL;
+    int is_planar = (screen_mode == 7 || screen_mode == 8 || screen_mode == 9 || screen_mode == 12);
+    int cached_y = -1;
     unsigned sp = 0;
 
     if (screen_mode == 0) return "Illegal function call";
@@ -965,8 +1217,14 @@ const char *ckb_paint(int x, int y, int fill_color, int border_color)
     if (x < 0 || x >= gfx_width || y < 0 || y >= gfx_height) return NULL;
     if (!paint_fillable(x, y, fill_color, border_color)) return NULL;
 
-    stack = (PaintSpan __far *)_fmalloc(PAINT_MAX_SPANS * sizeof(PaintSpan));
+    stack = (PaintSpan __far *)_fmalloc(PAINT_MAX_SPANS * sizeof(PaintSpan) +
+                                        (is_planar ? (unsigned)gfx_width : 0U));
     if (!stack) return "Out of memory";
+    if (is_planar) row_buf = (unsigned char __far *)(stack + PAINT_MAX_SPANS);
+
+    #define P_FILLABLE(PX, PY) (is_planar \
+        ? ((int)row_buf[PX] != border_color && (int)row_buf[PX] != fill_color) \
+        : paint_fillable((PX), (PY), fill_color, border_color))
 
     #define PUSH_SPAN(XL, XR, YV, DYV) do { \
         int ny_ = (YV) + (DYV); \
@@ -989,28 +1247,34 @@ const char *ckb_paint(int x, int y, int fill_color, int border_color)
         x2 = stack[sp].x2;
         dy = stack[sp].dy;
         y = stack[sp].y + dy;
+        if (is_planar && y != cached_y) {
+            unpack_planar_row(y, row_buf);
+            cached_y = y;
+        }
         x = x1;
-        if (paint_fillable(x, y, fill_color, border_color)) {
-            while (x > 0 && paint_fillable(x - 1, y, fill_color, border_color))
+        if (P_FILLABLE(x, y)) {
+            while (x > 0 && P_FILLABLE(x - 1, y))
                 --x;
             if (x < x1) PUSH_SPAN(x, x1 - 1, y, -dy);
         }
         while (x1 <= x2) {
             l = x;
-            while (x < gfx_width && paint_fillable(x, y, fill_color, border_color))
+            while (x < gfx_width && P_FILLABLE(x, y))
                 ++x;
             if (x > l) {
                 raw_hline(l, x - 1, y, fill_color);
+                if (is_planar) _fmemset(row_buf + l, fill_color, (unsigned)(x - l));
                 PUSH_SPAN(l, x - 1, y, dy);
                 if (x > x2 + 1) PUSH_SPAN(x2 + 1, x - 1, y, -dy);
             }
             ++x;
-            while (x <= x2 && !paint_fillable(x, y, fill_color, border_color))
+            while (x <= x2 && !P_FILLABLE(x, y))
                 ++x;
             x1 = x;
         }
     }
 
+    #undef P_FILLABLE
     #undef PUSH_SPAN
     _ffree(stack);
     return NULL;
@@ -1082,20 +1346,28 @@ const char *ckb_gfx_get(int x1, int y1, int x2, int y2,
         unsigned pbytes = (width + 7U) >> 3;
         const unsigned char __far *vram = (const unsigned char __far *)MK_FP(0xa000, 0);
         unsigned stride = screen_mode == 7 ? 40U : 80U;
+        unsigned sh = (unsigned)left & 7U;
+        unsigned b0 = (unsigned)left >> 3;
+        unsigned char tail_mask = (unsigned char)(0xff00U >> ((width & 7U) ? (width & 7U) : 8U));
+        unsigned b;
         int p;
         for (p = 0; p < 4; ++p) {
             outp(0x3ce, 0x04);
             outp(0x3cf, p);
             for (ry = 0; ry < height; ++ry) {
                 unsigned char *pdst = buffer + 4U + ry * rbytes + (unsigned)p * pbytes;
-                unsigned row_off = (unsigned)(top + (int)ry) * stride;
-                for (rx = 0; rx < width; ++rx) {
-                    int sx = left + (int)rx;
-                    if ((vram[row_off + (unsigned)(sx >> 3)] >> (7 - (sx & 7))) & 1U)
-                        pdst[rx >> 3] |= (unsigned char)(0x80U >> (rx & 7));
+                const unsigned char __far *srow = vram + (unsigned)(top + (int)ry) * stride + b0;
+                if (sh == 0U) {
+                    for (b = 0; b < pbytes; ++b) pdst[b] = srow[b];
+                } else {
+                    for (b = 0; b < pbytes; ++b)
+                        pdst[b] = (unsigned char)((srow[b] << sh) | (srow[b + 1U] >> (8U - sh)));
                 }
+                pdst[pbytes - 1U] &= tail_mask;
             }
         }
+        outp(0x3ce, 0x04);
+        outp(0x3cf, 0x00);
     } else {
         for (ry = 0; ry < height; ++ry) {
             unsigned char *row_dst = buffer + 4U + ry * rbytes;
@@ -1137,34 +1409,61 @@ const char *ckb_gfx_put(int x, int y, const unsigned char *buffer,
         volatile unsigned char __far *vram = (volatile unsigned char __far *)MK_FP(0xa000, 0);
         unsigned stride = screen_mode == 7 ? 40U : 80U;
         unsigned pbytes = (width + 7U) >> 3;
+        unsigned b_start = (unsigned)x >> 3;
+        unsigned b_end = (unsigned)(x + (int)width - 1) >> 3;
+        unsigned nb = b_end - b_start + 1U;
+        unsigned sh = (unsigned)x & 7U;
+        unsigned char lmask = (unsigned char)(0xffU >> sh);
+        unsigned char rmask = (unsigned char)(0xff00U >> ((((unsigned)x + width - 1U) & 7U) + 1U));
+        unsigned char tail_mask = (unsigned char)(0xff00U >> ((width & 7U) ? (width & 7U) : 8U));
         int alu = action == CKB_PUT_AND ? 0x08 :
                   action == CKB_PUT_OR ? 0x10 :
                   (action == CKB_PUT_PSET || action == CKB_PUT_PRESET) ? 0x00 : 0x18;
+        unsigned char cur_bmask = 0;
+        int p;
+
         outp(0x3ce, 0x05);
-        outp(0x3cf, 0x02);
+        outp(0x3cf, 0x00);
+        outp(0x3ce, 0x01);
+        outp(0x3cf, 0x00);
         outp(0x3ce, 0x03);
         outp(0x3cf, alu);
         outp(0x3ce, 0x08);
-        for (ry = 0; ry < height; ++ry) {
-            const unsigned char *row_src = buffer + 4U + ry * rbytes;
-            unsigned row_off = (unsigned)(y + (int)ry) * stride;
-            for (rx = 0; rx < width; ++rx) {
-                int dx = x + (int)rx;
-                unsigned b_idx = rx >> 3, b_shift = 7U - (rx & 7U);
-                unsigned src = (((row_src[b_idx] >> b_shift) & 1U)) |
-                               (((row_src[pbytes + b_idx] >> b_shift) & 1U) << 1) |
-                               (((row_src[2U * pbytes + b_idx] >> b_shift) & 1U) << 2) |
-                               (((row_src[3U * pbytes + b_idx] >> b_shift) & 1U) << 3);
-                volatile unsigned char latch;
-                if ((action == CKB_PUT_XOR || action == CKB_PUT_OR) && src == 0U)
-                    continue;
-                if (action == CKB_PUT_PRESET) src = (~src) & 15U;
-                outp(0x3cf, (int)(0x80U >> (dx & 7)));
-                latch = vram[row_off + (unsigned)(dx >> 3)];
-                (void)latch;
-                vram[row_off + (unsigned)(dx >> 3)] = (unsigned char)src;
+        for (p = 0; p < 4; ++p) {
+            outp(0x3c4, 0x02);
+            outp(0x3c5, 1 << p);
+            for (ry = 0; ry < height; ++ry) {
+                const unsigned char *psrc = buffer + 4U + ry * rbytes + (unsigned)p * pbytes;
+                unsigned row_off = (unsigned)(y + (int)ry) * stride + b_start;
+                unsigned db;
+                for (db = 0; db < nb; ++db) {
+                    unsigned char s_cur = (db < pbytes)
+                        ? (db == pbytes - 1U ? (unsigned char)(psrc[db] & tail_mask) : psrc[db])
+                        : 0U;
+                    unsigned char s_prev = (db > 0U && db - 1U < pbytes)
+                        ? (db - 1U == pbytes - 1U ? (unsigned char)(psrc[db - 1U] & tail_mask) : psrc[db - 1U])
+                        : 0U;
+                    unsigned char val = (sh == 0U) ? s_cur
+                        : (unsigned char)((s_prev << (8U - sh)) | (s_cur >> sh));
+                    unsigned char bmask = (nb == 1U) ? (unsigned char)(lmask & rmask)
+                        : (db == 0U ? lmask : (db == nb - 1U ? rmask : 0xffU));
+                    volatile unsigned char latch;
+
+                    if (action == CKB_PUT_PRESET) val = (unsigned char)(~val);
+                    if ((action == CKB_PUT_XOR || action == CKB_PUT_OR) && (val & bmask) == 0U)
+                        continue;
+                    if (bmask != cur_bmask) {
+                        outp(0x3cf, bmask);
+                        cur_bmask = bmask;
+                    }
+                    latch = vram[row_off + db];
+                    (void)latch;
+                    vram[row_off + db] = val;
+                }
             }
         }
+        outp(0x3c4, 0x02);
+        outp(0x3c5, 0x0f);
         reset_planar_gc();
         return NULL;
     }

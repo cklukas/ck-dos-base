@@ -10,6 +10,31 @@ double ckb_single_precision(double n)
 {
     double magnitude, scaled, whole, fraction;
     int exponent, scale;
+#if defined(_MSDOS) || defined(__WATCOMC__) || defined(__LITTLE_ENDIAN__) || defined(__x86_64__) || defined(__aarch64__)
+    {
+        unsigned short *w = (unsigned short *)&n;
+        unsigned int w3 = w[3];
+        unsigned int bexp = (w3 >> 4) & 0x7FFU;
+        if ((w3 & 0x7FFFU) == 0 && w[2] == 0 && w[1] == 0 && w[0] == 0)
+            return n;
+        if (bexp >= 897U && bexp <= 1149U) {
+            unsigned int rem = w[1] & 0x1FFFU;
+            if (rem == 0 && w[0] == 0) return n;
+            if (rem > 0x1000U || (rem == 0x1000U && (w[0] != 0 || (w[1] & 0x2000U) != 0))) {
+                w[0] = 0;
+                w[1] = (unsigned short)((w[1] & 0xE000U) + 0x2000U);
+                if (w[1] == 0) {
+                    w[2] = (unsigned short)(w[2] + 1U);
+                    if (w[2] == 0) w[3] = (unsigned short)(w[3] + 1U);
+                }
+            } else {
+                w[0] = 0;
+                w[1] &= 0xE000U;
+            }
+            return n;
+        }
+    }
+#endif
     if (n == 0) return n;
     magnitude = fabs(n);
     frexp(magnitude, &exponent);
@@ -42,9 +67,13 @@ static int special_double(const char *bytes)
 
 int ckb_num_is_special(double value)
 {
+#if defined(_MSDOS) || defined(__WATCOMC__) || defined(__LITTLE_ENDIAN__) || defined(__x86_64__) || defined(__aarch64__)
+    return (((const unsigned short *)&value)[3] & 0x7FF0U) == 0x7FF0U;
+#else
     char bytes[8];
     ieee_bytes(bytes, &value, 8, 1);
     return special_double(bytes);
+#endif
 }
 
 /* Widen an IEEE single without a Watcom float cast, preserving denormals

@@ -102,6 +102,7 @@ typedef struct {
     unsigned param_count;
     char param_names[PARAM_MAX][16];
     char param_kinds[PARAM_MAX];
+    int param_var_ids[PARAM_MAX];
     Position expr_at;
 } DefFn;
 
@@ -521,6 +522,23 @@ unsigned array_element_size(const Variable *v)
     return v->kind == '$' ? sizeof(char *) : member_size(v->kind, 0);
 }
 
+#define TOK_CACHE_MAX 1024U
+
+typedef struct {
+    unsigned offset;
+    short scope;
+    short var_id;
+} TokenVarCache;
+
+static TokenVarCache __far *tok_cache;
+static unsigned long func_first_mask;
+static unsigned long func_len_mask;
+
+static void tok_cache_clear(void)
+{
+    if (tok_cache) _fmemset(tok_cache, 0xFF, TOK_CACHE_MAX * sizeof(*tok_cache));
+}
+
 static int ensure_runtime_tables(void)
 {
     if (!lines) lines = (Line __far *)_fmalloc(LINE_CAPACITY * sizeof(*lines));
@@ -532,8 +550,9 @@ static int ensure_runtime_tables(void)
     if (!var_shared_scopes) var_shared_scopes = (unsigned long __far *)_fmalloc((unsigned)VALUE_MAX * 2U * sizeof(unsigned long));
     if (!common_ids) common_ids = (unsigned __far *)_fmalloc((unsigned)VALUE_MAX * sizeof(unsigned));
     if (!def_fns) def_fns = (DefFn __far *)_fmalloc(DEF_FN_MAX * sizeof(*def_fns));
+    if (!tok_cache) tok_cache = (TokenVarCache __far *)_fmalloc(TOK_CACHE_MAX * sizeof(*tok_cache));
     return lines && line_scope && blocks && data_statements && procedures &&
-           var_names && var_shared_scopes && common_ids && def_fns;
+           var_names && var_shared_scopes && common_ids && def_fns && tok_cache;
 }
 
 static void clear_far_bytes(void __far *dst, unsigned count)
@@ -753,6 +772,7 @@ static void default_type_statement(Parser *p, char kind)
         if (!error_message)
             for (; first <= last; ++first) default_kind[first - 'A'] = kind;
     } while (!error_message && take(p, ','));
+    if (!checking) tok_cache_clear();
 }
 
 static double round_even(double n)
@@ -767,20 +787,46 @@ int finite_number(double n)
     return !ckb_num_is_special(n);
 }
 
+static int try_exact_int21(double value, long *out)
+{
+    const unsigned short *w = (const unsigned short *)&value;
+    unsigned int w3 = w[3];
+    unsigned int bexp;
+    if (w[0] != 0 || w[1] != 0) return 0;
+    if ((w3 & 0x7FFFU) == 0 && w[2] == 0) {
+        *out = 0;
+        return 1;
+    }
+    bexp = (w3 >> 4) & 0x7FFU;
+    if (bexp >= 1023U && bexp <= 1043U) {
+        unsigned int shift = 1043U - bexp;
+        unsigned long hi21 = (((unsigned long)(w3 & 0x000FU) << 16) | (unsigned long)w[2]) | 0x00100000UL;
+        unsigned long mag = hi21 >> shift;
+        if ((mag << shift) == hi21) {
+            *out = (w3 & 0x8000U) ? -(long)mag : (long)mag;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 void convert_number(Parser *p, Value *v, char kind, int run)
 {
     double n = v->number;
+    long lv;
     v->kind = kind;
     if (!run) return;
     if (kind == '%') {
-        if (n >= -32768.0 && n <= 32767.0) {
-            int iv = (int)n;
-            if ((double)iv == n) return;
+        if (try_exact_int21(n, &lv)) {
+            if (lv >= -32768L && lv <= 32767L) return;
+            fail(p, "Overflow");
+            return;
         }
         n = round_even(n);
     } else if (kind == '&') {
+        if (try_exact_int21(n, &lv)) return;
         if (n >= -2147483648.0 && n <= 2147483647.0) {
-            long lv = (long)n;
+            lv = (long)n;
             if ((double)lv == n) return;
         }
         n = round_even(n);
@@ -970,17 +1016,32 @@ void packed_number(char *item, char kind, double *number, int store)
     if (kind == '!' || kind == '#') {
         if (store) ckb_num_encode(item, *number, kind == '#', 0);
         else ckb_num_decode(number, item, kind == '#' ? 8 : 4, kind == '#', 0);
-    } else {
-        unsigned i, size = member_size(kind, 0);
-        unsigned long n = store ? (unsigned long)(long)*number : 0;
-        for (i = 0; i < size; ++i) {
-            if (store) item[i] = (char)(n >> (8 * i));
-            else n |= (unsigned long)(unsigned char)item[i] << (8 * i);
+    } else if (kind == '%') {
+        if (store) {
+            long lv;
+            unsigned u = (unsigned)(try_exact_int21(*number, &lv) ? lv : (long)*number);
+            item[0] = (char)u;
+            item[1] = (char)(u >> 8);
+        } else {
+            unsigned u = (unsigned char)item[0] | ((unsigned)(unsigned char)item[1] << 8);
+            long sv = (u & 0x8000U) ? ((long)u - 65536L) : (long)u;
+            *number = (double)sv;
         }
-        if (!store) {
-            *number = (double)n;
-            if ((unsigned char)item[size - 1] & 128)
-                *number -= size == 2 ? 65536.0 : 4294967296.0;
+    } else {
+        if (store) {
+            long lv;
+            unsigned long u = (unsigned long)(try_exact_int21(*number, &lv) ? lv : (long)*number);
+            item[0] = (char)u;
+            item[1] = (char)(u >> 8);
+            item[2] = (char)(u >> 16);
+            item[3] = (char)(u >> 24);
+        } else {
+            unsigned long u = (unsigned long)(unsigned char)item[0] |
+                              ((unsigned long)(unsigned char)item[1] << 8) |
+                              ((unsigned long)(unsigned char)item[2] << 16) |
+                              ((unsigned long)(unsigned char)item[3] << 24);
+            long lv = (u & 0x80000000UL) ? (-(long)(~u) - 1L) : (long)u;
+            *number = (double)lv;
         }
     }
 }
@@ -1066,24 +1127,30 @@ void string_value(Parser *p, Value *v)
  * comparison-before-NOT ordering. */
 static int precedence(const Parser *p)
 {
-    if (p->token == '^') return 10;
-    if (p->token == '*' || p->token == '/') return 8;
-    if (p->token == '\\') return 7;
-    if (word(p, "MOD")) return 6;
-    if (p->token == '+' || p->token == '-') return 5;
-    if (p->token == '=' || p->token == '<' || p->token == '>' ||
-        p->token == T_LE || p->token == T_GE || p->token == T_NE) return 4;
-    if (word(p, "AND")) return 2;
-    if (word(p, "OR")) return 1;
+    int t = p->token;
+    if (!t) return 0;
+    if (t == '+' || t == '-') return 5;
+    if (t == '*' || t == '/') return 8;
+    if (t == '=' || t == '<' || t == '>' ||
+        t == T_LE || t == T_GE || t == T_NE) return 4;
+    if (t == '\\') return 7;
+    if (t == '^') return 10;
+    if (t == T_NAME) {
+        if (p->first_upper == 'M' && word(p, "MOD")) return 6;
+        if (p->first_upper == 'A' && word(p, "AND")) return 2;
+        if (p->first_upper == 'O' && word(p, "OR")) return 1;
+    }
     return 0;
 }
 
 long integer_operand(Parser *p, double value, int run)
 {
     double n;
+    long lv;
     if (!run) return 0;
+    if (try_exact_int21(value, &lv)) return lv;
     if (value >= -2147483648.0 && value <= 2147483647.0) {
-        long lv = (long)value;
+        lv = (long)value;
         if ((double)lv == value) return lv;
     }
     n = round_even(value);
@@ -1133,7 +1200,9 @@ static void operate(Parser *p, Value *a, const Value *b, int op, int rank, int r
         return;
     }
     if (rank == 4) {
-        comparison = a->string ? ckb_string_compare(a, b) : (n > m) - (n < m);
+        if (a->string) comparison = ckb_string_compare(a, b);
+        else if (try_exact_int21(n, &x) && try_exact_int21(m, &y)) comparison = (x > y) - (x < y);
+        else comparison = (n > m) - (n < m);
         switch (op) {
         case '=': n = comparison == 0; break;
         case '<': n = comparison < 0; break;
@@ -1156,6 +1225,14 @@ static void operate(Parser *p, Value *a, const Value *b, int op, int rank, int r
                   result_rank == 2 ? '&' : '%';
     a->kind = result_kind;
     if (!run) return;
+    if (result_rank <= 2 && (op == '+' || op == '-' || (op == '*' && result_rank == 1)) &&
+        try_exact_int21(n, &x) && try_exact_int21(m, &y)) {
+        long lr = op == '+' ? (x + y) : op == '-' ? (x - y) : (x * y);
+        if (result_rank == 2 || (lr >= -32768L && lr <= 32767L)) {
+            a->number = (double)lr;
+            return;
+        }
+    }
     switch (op) {
     case '+': n += m; break;
     case '-': n -= m; break;
@@ -1212,29 +1289,46 @@ static void seed_random(double seed)
 static void random_value(Parser *p, Value *v, unsigned depth, int run)
 {
     double argument = 1;
+    int arg_kind = 1; /* 1: >0, 0: ==0, -1: <0 */
     scan(p);
     if (take(p, '(')) {
         Value parameter;
         expression(p, &parameter, 1, depth + 1, run);
         expect(p, ')', "Expected: )");
         if (parameter.string || record_size(parameter.kind)) fail(p, "Type mismatch");
-        else {
-            convert_number(p, &parameter, '!', run);
-            argument = parameter.number;
+        else if (run && !error_message) {
+            long arg_l;
+            if (try_exact_int21(parameter.number, &arg_l) && arg_l >= 0) {
+                arg_kind = arg_l > 0 ? 1 : 0;
+            } else {
+                convert_number(p, &parameter, '!', run);
+                argument = parameter.number;
+                arg_kind = argument < 0 ? -1 : (argument != 0 ? 1 : 0);
+            }
         }
     }
     v->kind = '!';
     if (!run || error_message) return;
-    if (argument < 0) {
+    if (arg_kind < 0) {
         unsigned char bytes[4];
         float single = (float)argument;
         record_float((char *)bytes, &single, 4, 1);
         random_state = ((unsigned long)bytes[0] + ((unsigned long)bytes[1] << 8) +
                         ((unsigned long)bytes[2] << 16) + bytes[3]) & 0xffffffUL;
     }
-    if (argument != 0)
+    if (arg_kind != 0)
         random_state = (random_state * 16598013UL + 12820163UL) & 0xffffffUL;
+#if defined(_MSDOS) || defined(__WATCOMC__) || defined(__LITTLE_ENDIAN__) || defined(__x86_64__) || defined(__aarch64__)
+    if (random_state == 0) {
+        v->number = 0.0;
+    } else {
+        double rn = (double)random_state;
+        ((unsigned short *)&rn)[3] -= (unsigned short)(24U << 4);
+        v->number = rn;
+    }
+#else
     v->number = (double)random_state / 16777216.0;
+#endif
 }
 
 /* Only an infix operator needs a right operand buffer. Atom evaluation
@@ -1257,8 +1351,34 @@ static void expression_reference(Parser *p, Value *v, int minimum, unsigned dept
         return;
     }
     /* Array subscripts can enter numeric parsing at a fresh expression depth. */
-    if (!stack_room(p, 2048)) return;
-    if (p->token == '+' || p->token == '-' || word(p, "NOT")) {
+    if (depth > 0 && !stack_room(p, 2048)) return;
+    if (run && !checking && !indexing_constant && p->token == T_NAME && p->line < line_count) {
+        TokenVarCache __far *slot = &tok_cache[(p->start ^ (p->start >> 6)) & (TOK_CACHE_MAX - 1U)];
+        if (slot->offset == p->start && slot->scope == (short)current_scope) {
+            int cid = slot->var_id;
+            Variable *sv = variable_storage(cid);
+            scan(p);
+            if (!sv->reference.target && variables[cid].kind != '$') {
+                v->kind = variables[cid].kind;
+                v->number = sv->number;
+                if (reference && !sv->constant) {
+                    reference->target = sv;
+                    reference->cell = 0;
+                    reference->offset = 0;
+                    reference->width = 0;
+                    reference->kind = v->kind;
+                }
+            } else {
+                Reference cref = reference_at(cid, 0);
+                fetch_reference(p, cref, 1, v);
+                if (reference && cref.target && !cref.target->constant)
+                    *reference = cref;
+            }
+            goto expr_infix;
+        }
+    }
+    if (p->token == '+' || p->token == '-' ||
+        (p->token == T_NAME && p->first_upper == 'N' && word(p, "NOT"))) {
         op = p->token;
         scan(p);
         expression(p, v, op == T_NAME ? 3 : 9, depth + 1, run);
@@ -1284,14 +1404,16 @@ static void expression_reference(Parser *p, Value *v, int minimum, unsigned dept
             fetch(p, id, 0, run, v);
             scan(p);
         }
-    } else if (take_word(p, "EOF")) {
+    } else if (p->token == T_NAME && p->first_upper == 'E' && take_word(p, "EOF")) {
         Channel *file;
         expect(p, '(', "Expected: (");
         file = file_number(p, run);
         expect(p, ')', "Expected: )");
         if (run && !error_message) v->number = file_eof(p, file) ? -1 : 0;
-    } else if (word(p, "SEEK") || word(p, "LOC") || word(p, "LOF")) {
-        int which = word(p, "SEEK") ? FILE_SEEK : word(p, "LOC") ? FILE_LOC : FILE_LOF;
+    } else if (p->token == T_NAME &&
+               ((p->first_upper == 'S' && word(p, "SEEK")) ||
+                (p->first_upper == 'L' && (word(p, "LOC") || word(p, "LOF"))))) {
+        int which = p->first_upper == 'S' ? FILE_SEEK : word(p, "LOC") ? FILE_LOC : FILE_LOF;
         Channel *file;
         scan(p);
         expect(p, '(', "Expected: (");
@@ -1299,7 +1421,9 @@ static void expression_reference(Parser *p, Value *v, int minimum, unsigned dept
         expect(p, ')', "Expected: )");
         v->kind = '&';
         if (run && !error_message) v->number = (double)file_position(p, file, which);
-    } else if (word(p, "LBOUND") || word(p, "UBOUND")) {
+    } else if (p->token == T_NAME &&
+               ((p->first_upper == 'L' && word(p, "LBOUND")) ||
+                (p->first_upper == 'U' && word(p, "UBOUND")))) {
         array_bound(p, v, run);
     } else if (p->token == T_NAME) {
         if (!expression_call(p, v, depth, run)) {
@@ -1313,6 +1437,7 @@ static void expression_reference(Parser *p, Value *v, int minimum, unsigned dept
     } else {
         fail(p, "Expected: expression");
     }
+expr_infix:
     while (!error_message && (rank = precedence(p)) >= minimum) {
         if (reference) reference->target = NULL;
         op = p->token;
@@ -1422,17 +1547,31 @@ static int field_path(Parser *p, Reference *ref, const char __far *path, unsigne
 Reference lvalue(Parser *p, int run)
 {
     Reference ref;
-    const char __far *name = source + p->start;
-    const char __far *dot = p->token == T_NAME ? _fmemchr(name, '.', p->length) : NULL;
-    unsigned length = p->length, cell;
-    int id = dot ? record_variable(name, (unsigned)(dot - name), 0) : -1;
+    const char __far *name;
+    const char __far *dot;
+    unsigned start_off, after_ident_pos, length, cell;
+    int id;
+    if (run && !checking && !indexing_constant && p->token == T_NAME && p->line < line_count) {
+        TokenVarCache __far *slot = &tok_cache[(p->start ^ (p->start >> 6)) & (TOK_CACHE_MAX - 1U)];
+        if (slot->offset == p->start && slot->scope == (short)current_scope) {
+            id = slot->var_id;
+            scan(p);
+            return reference_at(id, 0);
+        }
+    }
+    name = source + p->start;
+    dot = p->token == T_NAME ? _fmemchr(name, '.', p->length) : NULL;
+    length = p->length;
+    id = dot ? record_variable(name, (unsigned)(dot - name), 0) : -1;
     memset(&ref, 0, sizeof(ref));
     if (id >= 0) {
         ref = reference_at(id, 0);
         if (field_path(p, &ref, dot + 1, length - (unsigned)(dot - name) - 1)) scan(p);
         return ref;
     }
+    start_off = p->start;
     id = variable(p);
+    after_ident_pos = p->pos;
     cell = array_cell(p, id, run);
     if (id < 0 || error_message) return ref;
     ref = reference_at(id, cell);
@@ -1440,6 +1579,14 @@ Reference lvalue(Parser *p, int run)
         /* After a subscript the scanner sees a standalone separator. */
         if (p->token != T_NAME) fail(p, "Element not defined");
         else if (field_path(p, &ref, source + p->start, p->length)) scan(p);
+    }
+    if (!dot && run && !checking && !indexing_constant && !error_message &&
+        p->line < line_count && p->pos == after_ident_pos &&
+        !variables[id].array && !record_size(variables[id].kind)) {
+        TokenVarCache __far *slot = &tok_cache[(start_off ^ (start_off >> 6)) & (TOK_CACHE_MAX - 1U)];
+        slot->offset = start_off;
+        slot->scope = (short)current_scope;
+        slot->var_id = (short)id;
     }
     return ref;
 }
@@ -2278,19 +2425,19 @@ static unsigned current_def_seg(void)
 
 static void call_def_fn(Parser *p, int fn_id, Value *v, unsigned depth, int run)
 {
-    DefFn fn_copy;
-    DefFn *fn = &fn_copy;
+    DefFn __far *fn = &def_fns[fn_id];
+    unsigned pcount = fn->param_count;
+    char rkind = fn->result_kind;
     Value args[PARAM_MAX];
     double saved_nums[PARAM_MAX];
     char *saved_texts[PARAM_MAX];
     int param_ids[PARAM_MAX];
     unsigned i;
     int saved_scope = current_scope;
-    _fmemcpy(&fn_copy, &def_fns[fn_id], sizeof(fn_copy));
     scan(p);
-    if (fn->param_count) {
+    if (pcount) {
         if (!expect(p, '(', "Expected: (")) return;
-        for (i = 0; i < fn->param_count && !error_message; ++i) {
+        for (i = 0; i < pcount && !error_message; ++i) {
             if (i > 0 && !expect(p, ',', "Expected: ,")) return;
             expression(p, &args[i], 1, depth + 1, run);
             if (!error_message && args[i].string != (fn->param_kinds[i] == '$'))
@@ -2301,12 +2448,18 @@ static void call_def_fn(Parser *p, int fn_id, Value *v, unsigned depth, int run)
         expect(p, ')', "Expected: )");
     }
     INIT_VALUE(v);
-    v->kind = fn->result_kind;
-    v->string = fn->result_kind == '$';
+    v->kind = rkind;
+    v->string = rkind == '$';
     if (error_message) return;
     current_scope = -1;
-    for (i = 0; i < fn->param_count && !error_message; ++i) {
-        int pid = named_variable(p, fn->param_names[i], fn->param_kinds[i], 0, 0, 0, 0);
+    for (i = 0; i < pcount && !error_message; ++i) {
+        int pid = fn->param_var_ids[i];
+        if (pid < 0) {
+            char pname[16];
+            _fmemcpy(pname, fn->param_names[i], 16);
+            pid = named_variable(p, pname, fn->param_kinds[i], 0, 0, 0, 0);
+            fn->param_var_ids[i] = pid;
+        }
         param_ids[i] = pid;
         if (pid >= 0 && run) {
             saved_nums[i] = variables[pid].number;
@@ -2320,12 +2473,12 @@ static void call_def_fn(Parser *p, int fn_id, Value *v, unsigned depth, int run)
         initialize_parser(&fn_p, fn->expr_at);
         expression(&fn_p, v, 1, depth + 1, run);
         if (!error_message) {
-            if (v->string != (fn->result_kind == '$')) fail(p, "Type mismatch");
-            else if (!v->string) convert_number(p, v, fn->result_kind, run);
+            if (v->string != (rkind == '$')) fail(p, "Type mismatch");
+            else if (!v->string) convert_number(p, v, rkind, run);
         }
     }
     if (run) {
-        for (i = 0; i < fn->param_count; ++i) {
+        for (i = 0; i < pcount; ++i) {
             int pid = param_ids[i];
             if (pid >= 0) {
                 free(variables[pid].text);
@@ -2367,56 +2520,72 @@ static int expression_call(Parser *p, Value *v, unsigned depth, int run)
     unsigned i;
     char name[BASIC_NAME_MAX + 1];
     int id;
-    if (error_value(p, v, run)) return 1;
-    if (take_word(p, "INPUT$")) {
-        input_string(p, v, depth, run);
-        return 1;
-    }
-    if (take_word(p, "ENVIRON$")) {
-        environment_function(p, v, depth, run);
-        return 1;
-    }
-    if (take_word(p, "FREEFILE")) {
-        v->kind = '%';
-        if (run) {
-            for (i = 0; i < FILE_MAX && file_open(&channels[i]); ++i) {}
-            if (i == FILE_MAX) fail(p, "Too many files");
-            else v->number = i + 1;
-        }
-        return 1;
-    }
-    if (take_word(p, "TIMER")) {
-        v->kind = '!';
-        if (run) v->number = ckb_timer();
-        return 1;
-    }
-    if (take_word(p, "INKEY$")) {
-        v->kind = '$';
-        v->string = 1;
-        if (run) {
-            v->length = (unsigned)ckb_inkey(v->text);
-            v->text[v->length] = 0;
-        }
-        return 1;
-    }
-    if (take_word(p, "PEEK")) {
-        peek_function(p, v, run, current_def_seg());
-        return 1;
-    }
-    if (take_word(p, "POINT")) {
-        point_function(p, v, run);
-        return 1;
-    }
-    if (word(p, "RND")) {
-        random_value(p, v, depth, run);
-        return 1;
-    }
-    if (def_fn_count) {
-        id = lookup_def_fn(p);
-        if (id >= 0) {
-            call_def_fn(p, id, v, depth, run);
+    switch (p->first_upper) {
+    case 'E':
+        if (error_value(p, v, run)) return 1;
+        if (take_word(p, "ENVIRON$")) {
+            environment_function(p, v, depth, run);
             return 1;
         }
+        break;
+    case 'I':
+        if (take_word(p, "INPUT$")) {
+            input_string(p, v, depth, run);
+            return 1;
+        }
+        if (take_word(p, "INKEY$")) {
+            v->kind = '$';
+            v->string = 1;
+            if (run) {
+                v->length = (unsigned)ckb_inkey(v->text);
+                v->text[v->length] = 0;
+            }
+            return 1;
+        }
+        break;
+    case 'F':
+        if (take_word(p, "FREEFILE")) {
+            v->kind = '%';
+            if (run) {
+                for (i = 0; i < FILE_MAX && file_open(&channels[i]); ++i) {}
+                if (i == FILE_MAX) fail(p, "Too many files");
+                else v->number = i + 1;
+            }
+            return 1;
+        }
+        if (def_fn_count) {
+            id = lookup_def_fn(p);
+            if (id >= 0) {
+                call_def_fn(p, id, v, depth, run);
+                return 1;
+            }
+        }
+        break;
+    case 'T':
+        if (take_word(p, "TIMER")) {
+            v->kind = '!';
+            if (run) v->number = ckb_timer();
+            return 1;
+        }
+        break;
+    case 'P':
+        if (take_word(p, "PEEK")) {
+            peek_function(p, v, run, current_def_seg());
+            return 1;
+        }
+        if (take_word(p, "POINT")) {
+            point_function(p, v, run);
+            return 1;
+        }
+        break;
+    case 'R':
+        if (word(p, "RND")) {
+            random_value(p, v, depth, run);
+            return 1;
+        }
+        break;
+    default:
+        break;
     }
     if (p->length <= BASIC_NAME_MAX) {
         /* All 44 string and numeric intrinsics here require '(' after the name;
@@ -2443,7 +2612,9 @@ static int expression_call(Parser *p, Value *v, unsigned depth, int run)
             }
         }
     }
-    if (!procedure_count) return 0;
+    if (!func_first_mask || p->token != T_NAME || p->length > BASIC_NAME_MAX) return 0;
+    if (!(func_first_mask & (1UL << (p->first_upper - 'A')))) return 0;
+    if (!(func_len_mask & (1UL << (p->length < 31U ? p->length : 31U)))) return 0;
     id = lookup_procedure(p);
     if (id < 0 || !procedures[id].function) return 0;
     if (current_scope == id) {
@@ -2606,6 +2777,10 @@ static void index_def_fn(Parser *p, unsigned line)
         return;
     }
     memset(fn, 0, sizeof(*fn));
+    {
+        unsigned pi;
+        for (pi = 0; pi < PARAM_MAX; ++pi) fn->param_var_ids[pi] = -1;
+    }
     strcpy(fn->name, name);
     fn->result_kind = kind;
     if (take(p, '(')) {
@@ -2677,6 +2852,12 @@ static void index_procedures(void)
                 procedures[id].result_kind = kind;
                 procedures[id].function = function;
                 procedures[id].line = procedures[id].end = LINE_MAX;
+                if (function) {
+                    unsigned nlen = (unsigned)strlen(name);
+                    func_first_mask |= 1UL << ((unsigned char)name[0] - 'A');
+                    func_len_mask |= 1UL << (nlen < 31U ? nlen : 31U);
+                    func_len_mask |= 1UL << ((nlen + 1U) < 31U ? (nlen + 1U) : 31U);
+                }
             }
             if (procedures[id].function != function) fail(&p, "Procedure type mismatch");
             if (function && procedures[id].result_kind != kind) fail(&p, "Duplicate definition");
@@ -2881,6 +3062,27 @@ static void next_statement(Parser *p, Position at, int run, unsigned inline_dept
             fail(p, "NEXT without matching FOR");
         } else {
             frame = &for_stack[for_depth - 1];
+            if (variables[frame->variable].kind == '%') {
+                Variable *fv = variable_storage(frame->variable);
+                unsigned fw;
+                long cur, stp, lst;
+                if (!fv->reference.target && !field_data(fv, &fw) &&
+                    try_exact_int21(fv->number, &cur) &&
+                    try_exact_int21(frame->step, &stp)) {
+                    long nxt = cur + stp;
+                    if (nxt >= -32768L && nxt <= 32767L) {
+                        int keep_going;
+                        fv->number = (double)nxt;
+                        if (try_exact_int21(frame->last, &lst))
+                            keep_going = stp >= 0 ? (nxt <= lst) : (nxt >= lst);
+                        else
+                            keep_going = stp >= 0 ? (fv->number <= frame->last) : (fv->number >= frame->last);
+                        if (keep_going) go(blocks[peer].after);
+                        else --for_depth;
+                        return;
+                    }
+                }
+            }
             fetch(p, frame->variable, 0, 1, &v);
             if (error_message) return;
             v.number += frame->step;
@@ -3739,6 +3941,7 @@ static int execute_program(const char *path, int mbf, const char __far *text,
         trapped_error_code = trapped_error_line = 0;
         for (i = 0; i <= PROC_MAX; ++i) error_handler[i] = LINE_MAX;
         procedure_count = procedure_depth = 0;
+        func_first_mask = func_len_mask = 0;
         def_fn_count = 0;
         option_base = 0;
         dynamic_arrays = 0;
@@ -3787,6 +3990,7 @@ static int execute_program(const char *path, int mbf, const char __far *text,
         saved = NULL;
         saved_count = 0;
         restart_kind = RESTART_NONE;
+        tok_cache_clear();
         if (line_count && !error_message) walk_at(position(0, lines[0].body), 1);
         if (!error_message && restart_kind == RESTART_CHAIN && common_count) {
             Parser save_parser;

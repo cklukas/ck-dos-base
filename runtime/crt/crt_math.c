@@ -131,22 +131,53 @@ double modf(double x, double *iptr)
 double floor(double x)
 {
     math_u64 b = m_get_bits(x);
-    double ip, fp;
-    if (b.hi >= (math_u32)0x7FF00000UL && m_isnan_bits(b)) return x;
-    if (m_isinf_bits(b) || m_iszero_bits(b)) return x;
-    fp = modf(x, &ip);
-    if ((b.hi >> 31) && fp != 0.0) return ip - 1.0;
-    return ip;
+    int sign = (b.hi >> 31) ? 1 : 0;
+    int exp = (int)((b.hi >> 20) & (math_u32)0x7FFUL) - 1023;
+    math_u32 ihi, ilo;
+
+    if (exp == 1024 || m_iszero_bits(b)) return x;
+    if (exp < 0) return sign ? m_from_bits((math_u32)0xBFF00000UL, 0) : m_zero(0);
+    if (exp >= 52) return x;
+    if (exp < 20) {
+        math_u32 mask = ((math_u32)1 << (20 - exp)) - (math_u32)1;
+        ihi = b.hi & ~mask;
+        ilo = 0;
+    } else if (exp == 20) {
+        ihi = b.hi;
+        ilo = 0;
+    } else {
+        math_u32 mask = ((math_u32)1 << (52 - exp)) - (math_u32)1;
+        ihi = b.hi;
+        ilo = b.lo & ~mask;
+    }
+    if (ihi == b.hi && ilo == b.lo) return x;
+    return sign ? (m_from_bits(ihi, ilo) - 1.0) : m_from_bits(ihi, ilo);
 }
 
 double ceil(double x)
 {
     math_u64 b = m_get_bits(x);
-    double ip, fp;
-    if (m_isnan_bits(b) || m_isinf_bits(b) || m_iszero_bits(b)) return x;
-    fp = modf(x, &ip);
-    if (!(b.hi >> 31) && fp != 0.0) return ip + 1.0;
-    return ip;
+    int sign = (b.hi >> 31) ? 1 : 0;
+    int exp = (int)((b.hi >> 20) & (math_u32)0x7FFUL) - 1023;
+    math_u32 ihi, ilo;
+
+    if (exp == 1024 || m_iszero_bits(b)) return x;
+    if (exp < 0) return sign ? m_zero(1) : m_from_bits((math_u32)0x3FF00000UL, 0);
+    if (exp >= 52) return x;
+    if (exp < 20) {
+        math_u32 mask = ((math_u32)1 << (20 - exp)) - (math_u32)1;
+        ihi = b.hi & ~mask;
+        ilo = 0;
+    } else if (exp == 20) {
+        ihi = b.hi;
+        ilo = 0;
+    } else {
+        math_u32 mask = ((math_u32)1 << (52 - exp)) - (math_u32)1;
+        ihi = b.hi;
+        ilo = b.lo & ~mask;
+    }
+    if (ihi == b.hi && ilo == b.lo) return x;
+    return sign ? m_from_bits(ihi, ilo) : (m_from_bits(ihi, ilo) + 1.0);
 }
 
 double frexp(double x, int *eptr)

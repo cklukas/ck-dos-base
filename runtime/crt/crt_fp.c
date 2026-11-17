@@ -234,14 +234,25 @@ static fp_u64 fp_pack_round(int sign, int exp, fp_u64 sig)
         sig = u64_shr_sticky(sig, 1);
         ++exp;
     }
-    while (sig.hi < (fp_u32)0x00800000UL) {
-        if (sig.hi == 0 && sig.lo != 0 && exp > -1200) {
-            if ((sig.lo & (fp_u32)0xFFFF0000UL) == 0) {
-                sig = u64_shl(sig, 16);
-                exp -= 16;
-                continue;
+    if (exp > -1200) {
+        if (sig.hi == 0) {
+            if ((sig.lo & (fp_u32)0xFF000000UL) == 0) {
+                sig.hi = sig.lo;
+                sig.lo = 0;
+                exp -= 32;
+            } else {
+                sig = u64_shl(sig, 24);
+                exp -= 24;
             }
         }
+        if (sig.hi < (fp_u32)0x00000080UL) { sig = u64_shl(sig, 16); exp -= 16; }
+        if (sig.hi < (fp_u32)0x00008000UL) { sig = u64_shl(sig, 8);  exp -= 8;  }
+        if (sig.hi < (fp_u32)0x00080000UL) { sig = u64_shl(sig, 4);  exp -= 4;  }
+        if (sig.hi < (fp_u32)0x00200000UL) { sig = u64_shl(sig, 2);  exp -= 2;  }
+        if (sig.hi < (fp_u32)0x00400000UL) { sig = u64_shl1(sig);    --exp;     }
+        if (sig.hi < (fp_u32)0x00800000UL) { sig = u64_shl1(sig);    --exp;     }
+    }
+    while (sig.hi < (fp_u32)0x00800000UL) {
         sig = u64_shl1(sig);
         --exp;
     }
