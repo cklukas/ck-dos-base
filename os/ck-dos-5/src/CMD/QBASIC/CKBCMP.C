@@ -1737,6 +1737,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
             sel_blocks[*sel_top] = bidx;
             sel_slots[*sel_top] = slot;
             ++(*sel_top);
+            if (*sel_top > c->select_next_slot) c->select_next_slot = *sel_top;
             peer_idx = blocks[bidx].peer;
             finish_idx = blocks[bidx].finish;
             emit2(c, OP_SEL_PUSH, slot);
@@ -1837,9 +1838,9 @@ unsigned resolve_pos_pc(Position pos)
         else
             hi = mid;
     }
-    if (lo < vm.stmt_len && vm.stmts[lo].line == pos.line && vm.stmts[lo].offset == pos.offset)
+    if (lo < vm.stmt_len && vm.stmts[lo].line == pos.line)
         return vm.stmts[lo].start_pc;
-    return vm.line_pc[pos.line];
+    return vm.line_pc[pos.line + 1U];
 }
 
 static void record_stmt_span(VmCompiler *c, unsigned pc, unsigned line, unsigned offset)

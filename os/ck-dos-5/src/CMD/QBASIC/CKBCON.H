@@ -59,6 +59,7 @@ unsigned ckb_con_width(void);
 void ckb_con_write(const char *text, unsigned length);
 void ckb_con_newline(void);
 void ckb_con_reset_run(void);
+void ckb_con_end_run(void);
 void ckb_con_reset_text(void);
 void ckb_con_acknowledge_graphics(void);
 void ckb_con_sync_cursor_hw(void);

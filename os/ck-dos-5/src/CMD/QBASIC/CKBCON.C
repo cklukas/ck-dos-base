@@ -1864,9 +1864,12 @@ double ckb_timer(void)
     return (dbda + (double)sub) * 8.380953445225638e-7;
 }
 
+static int sleep_pending_key = 0;
+
 int ckb_inkey(char *out_two_bytes)
 {
     unsigned k = input_key();
+    sleep_pending_key = 0;
     if (k == 0xffffU) return 0;
     if ((k & 0xffU) == 0) {
         out_two_bytes[0] = 0;
@@ -1901,11 +1904,19 @@ void ckb_sleep(long seconds, volatile int *break_flag)
     for (;;) {
         if (break_flag && *break_flag) break;
         if (bios_key_waiting()) {
-            (void)input_key();
+            sleep_pending_key = 1;
             break;
         }
         if (seconds > 0 && pit_elapsed(start, read_pit_total_ticks()) >= limit)
             break;
+    }
+}
+
+void ckb_con_end_run(void)
+{
+    if (sleep_pending_key) {
+        sleep_pending_key = 0;
+        if (bios_key_waiting()) (void)input_key();
     }
 }
 
@@ -2533,5 +2544,6 @@ const char *ckb_play(const char *mml, unsigned len, volatile int *break_flag,
 }
 int ckb_play_queued(void) { return 0; }
 void ckb_speaker_off(void) {}
+void ckb_con_end_run(void) {}
 
 #endif

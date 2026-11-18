@@ -4449,6 +4449,7 @@ static int execute_program(const char *path, int mbf, const char __far *text,
     release_exec_tables();
     if (!text) release_base_tables();
     ckb_speaker_off();
+    ckb_con_end_run();
     if (!text) ckb_con_reset_text();
     pause_execution = NULL;
     break_execution = NULL;
