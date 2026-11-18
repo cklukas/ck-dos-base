@@ -78,6 +78,7 @@ int mbf_mode;
 int any_field_bound;
 static unsigned def_seg_value;
 static int has_def_seg;
+static int stopped_by_system;
 #if defined(__WATCOMC__) || defined(_MSDOS)
 static int immediate_output, immediate_idle, immediate_active;
 #endif
@@ -104,6 +105,7 @@ static const struct { unsigned code; const char *text; } runtime_errors[] = {
         {20, "RESUME without error"}, {28, "Out of stack space"}, {52, "Bad file number"},
         {53, "File not found"}, {54, "Bad file mode"}, {55, "File already open"},
         {57, "Read error"}, {57, "Write error"}, {58, "File already exists"},
+        {59, "Bad record length"},
         {62, "Input past end of file"}, {63, "Bad record number"},
         {50, "FIELD overflow"}, {64, "Bad file name"}, {67, "Too many files"},
         {68, "Device unavailable"}, {69, "Communications buffer overflow"},
@@ -447,34 +449,6 @@ unsigned identifier(Parser *p, char *name, char *kind)
     name[length] = 0;
     scan(p);
     return length;
-}
-
-RecordType *record_type(char kind)
-{
-    unsigned id = (unsigned char)kind;
-    return id && id <= record_count ? &records[id - 1] : NULL;
-}
-
-unsigned record_size(char kind)
-{
-    const RecordType *type = record_type(kind);
-    return type ? type->size : 0;
-}
-
-unsigned member_size(char kind, unsigned width)
-{
-    switch (kind) {
-    case '$': return width;
-    case '%': return 2;
-    case '&': case '!': return 4;
-    case '#': return 8;
-    default: return record_size(kind);
-    }
-}
-
-unsigned array_element_size(const Variable *v)
-{
-    return v->kind == '$' ? sizeof(char __far *) : member_size(v->kind, 0);
 }
 
 #define TOK_CACHE_MAX 64U
@@ -831,113 +805,6 @@ static void default_type_statement(Parser *p, char kind)
     if (!checking) tok_cache_clear();
 }
 
-double round_even(double n)
-{
-    double low = floor(n);
-    double fraction = n - low;
-    return fraction > .5 || (fraction == .5 && fmod(low, 2) != 0) ? low + 1 : low;
-}
-
-int finite_number(double n)
-{
-    return !ckb_num_is_special(n);
-}
-
-int try_exact_int21(double value, long *out)
-{
-    const unsigned short *w = (const unsigned short *)&value;
-    unsigned int w3 = w[3];
-    unsigned int bexp;
-    if (w[0] != 0 || w[1] != 0) return 0;
-    if ((w3 & 0x7FFFU) == 0 && w[2] == 0) {
-        *out = 0;
-        return 1;
-    }
-    bexp = (w3 >> 4) & 0x7FFU;
-    if (bexp >= 1023U && bexp <= 1043U) {
-        unsigned int shift = 1043U - bexp;
-        unsigned long hi21 = (((unsigned long)(w3 & 0x000FU) << 16) | (unsigned long)w[2]) | 0x00100000UL;
-        unsigned long mag = hi21 >> shift;
-        if ((mag << shift) == hi21) {
-            *out = (w3 & 0x8000U) ? -(long)mag : (long)mag;
-            return 1;
-        }
-    }
-    return 0;
-}
-
-void convert_number(Parser *p, Value *v, char kind, int run)
-{
-    double n = v->number;
-    long lv;
-    v->kind = kind;
-    if (!run) return;
-    if (kind == '%') {
-        if (try_exact_int21(n, &lv)) {
-            if (lv >= -32768L && lv <= 32767L) return;
-            fail(p, "Overflow");
-            return;
-        }
-        n = round_even(n);
-    } else if (kind == '&') {
-        if (try_exact_int21(n, &lv)) return;
-        if (n >= -2147483648.0 && n <= 2147483647.0) {
-            lv = (long)n;
-            if ((double)lv == n) return;
-        }
-        n = round_even(n);
-    }
-    if (!finite_number(n) ||
-        (kind == '%' && (n < -32768.0 || n > 32767.0)) ||
-        (kind == '&' && (n < -2147483648.0 || n > 2147483647.0)) ||
-        (kind == '!' && (n < -3.4028234663852886e38 || n > 3.4028234663852886e38))) {
-        fail(p, "Overflow");
-        return;
-    }
-    if (kind == '!') n = ckb_single_precision(n);
-    v->number = n;
-}
-
-Variable *variable_storage(int id)
-{
-    unsigned slot = variables[id].frame_slot;
-    return slot ? &activation->locals[slot - 1] : &variables[id];
-}
-
-Variable *array_storage(int id)
-{
-    Variable *v = variable_storage(id);
-    return v->reference.target ? v->reference.target : v;
-}
-
-/* Store the ultimate owner, since a recursive call can bind the same symbol
- * in another activation. Whole-array aliases keep the cell from this access. */
-Reference reference_at(int id, unsigned cell)
-{
-    Variable *v = variable_storage(id);
-    Reference ref;
-    if (v->reference.target) {
-        ref = v->reference;
-        if (v->array) ref.cell = cell;
-        return ref;
-    }
-    ref.target = v;
-    ref.cell = cell;
-    ref.offset = 0;
-    ref.width = v->fixed_width;
-    ref.kind = v->kind;
-    return ref;
-}
-
-int valid_cell(Parser *p, const Variable *v, unsigned cell)
-{
-    if (v->array && (!v->elements || cell >= v->cells)) {
-        fail(p, "Subscript out of range");
-        return 0;
-    }
-    return 1;
-}
-
 /* Bind resolved storage, so aliases to scalar FIELD variables see the
  * same record bytes and recursion can keep independent local bindings. */
 static FieldBinding **find_field(Channel *file, const Variable *variable)
@@ -1058,12 +925,12 @@ static void variable_string_fetch(Parser *p, const Variable *v, unsigned cell, V
 }
 
 /* Fixed strings store exactly their declared width, with space padding. */
-static void fixed_string_store(char *item, unsigned width, const Value *value)
+static void fixed_string_store(char __far *item, unsigned width, const Value *value)
 {
     unsigned n = value->length;
     if (n > width) n = width;
-    memcpy(item, ckb_string_bytes(value), n);
-    memset(item + n, ' ', width - n);
+    if (n) _fmemcpy(item, (const char __far *)ckb_string_bytes(value), n);
+    if (width > n) _fmemset(item + n, ' ', width - n);
 }
 
 static void fixed_string_fetch(Parser *p, Value *value, const char __far *item, unsigned width)
@@ -1078,18 +945,19 @@ static void fixed_string_fetch(Parser *p, Value *value, const char __far *item, 
     bytes[width] = 0;
 }
 
-char *record_data(Parser *p, Reference ref)
+char __far *record_data(Parser *p, Reference ref)
 {
     Variable *v = ref.target;
     unsigned size = record_size(v->kind);
     if (!v->elements) {
-        v->elements = (void __far *)calloc(1, size);
+        v->elements = _fmalloc(size);
         if (!v->elements) {
             fail(p, "Out of memory");
             return NULL;
         }
+        _fmemset(v->elements, 0, size);
     }
-    return (char *)(void *)v->elements + ref.cell * size + ref.offset;
+    return (char __far *)v->elements + ref.cell * size + ref.offset;
 }
 
 static void record_float(char *bytes, void *value, unsigned size, int store)
@@ -1144,7 +1012,7 @@ void assign_reference(Parser *p, Reference ref, Value *value, int run)
 {
     Variable *v = ref.target;
     unsigned size = record_size(ref.kind);
-    char *item;
+    char __far *item;
     if (!v) return;
     if ((ref.kind == '$') != value->string ||
         ((size || record_size(value->kind)) && ref.kind != value->kind)) {
@@ -1164,9 +1032,9 @@ void assign_reference(Parser *p, Reference ref, Value *value, int run)
     if (record_size(v->kind)) {
         item = record_data(p, ref);
         if (!item) return;
-        if (size) memmove(item, value->record, size);
+        if (size) _fmemmove(item, value->record, size);
         else if (value->string) fixed_string_store(item, ref.width, value);
-        else packed_number(item, ref.kind, &value->number, 1);
+        else packed_number_far(item, ref.kind, &value->number, 1);
     } else if (value->string) variable_string_store(p, v, ref.cell, value);
     else if (v->array) {
         packed_number_far((char __far *)v->elements + ref.cell * array_element_size(v),
@@ -1178,7 +1046,7 @@ void assign_reference(Parser *p, Reference ref, Value *value, int run)
 void fetch_reference(Parser *p, Reference ref, int run, Value *value)
 {
     const Variable *v = ref.target;
-    char *item;
+    char __far *item;
     INIT_VALUE(value);
     if (!v) return;
     value->string = ref.kind == '$';
@@ -1188,8 +1056,8 @@ void fetch_reference(Parser *p, Reference ref, int run, Value *value)
         item = record_data(p, ref);
         if (!item) return;
         if (record_size(ref.kind)) value->record = item;
-        else if (value->string) fixed_string_fetch(p, value, (const char __far *)item, ref.width);
-        else packed_number(item, ref.kind, &value->number, 0);
+        else if (value->string) fixed_string_fetch(p, value, item, ref.width);
+        else packed_number_far(item, ref.kind, &value->number, 0);
     } else if (value->string) variable_string_fetch(p, v, ref.cell, value);
     else if (v->array) {
         packed_number_far((char __far *)v->elements + ref.cell * array_element_size(v),
@@ -2444,7 +2312,7 @@ static void call_procedure(Parser *p, int id, unsigned depth, int run, Value *re
         fail(p, "Out of stack space");
         return;
     }
-    if (!stack_room(p, 3584)) return;
+    if (!stack_room(p, 2048)) return;
     memset(has_copy, 0, sizeof(has_copy));
     if (n_params) {
         if (copy_pool_top + n_params <= COPY_VAL_POOL_MAX) {
@@ -2500,7 +2368,7 @@ static void call_procedure(Parser *p, int id, unsigned depth, int run, Value *re
     if (pooled_copies) copy_pool_top -= n_params;
     else free(copy_slots);
     /* The next statement needs stack space before reaching expression checks. */
-    if (!error_message && stack_room(p, 3584)) {
+    if (!error_message && stack_room(p, 2048)) {
         ++procedure_depth;
         walk_at(next_line(proc->line), 1);
         --procedure_depth;
@@ -2692,6 +2560,40 @@ static int expression_call(Parser *p, Value *v, unsigned depth, int run)
     char name[BASIC_NAME_MAX + 1];
     int id;
     switch (p->first_upper) {
+    case 'C':
+        if (take_word(p, "CSRLIN")) {
+            v->kind = '%';
+            if (run) v->number = ckb_csrlin();
+            return 1;
+        }
+        if (take_word(p, "COMMAND$")) {
+            v->kind = '$';
+            v->string = 1;
+            v->length = 0;
+            v->text[0] = '\0';
+            return 1;
+        }
+        break;
+    case 'D':
+        if (take_word(p, "DATE$")) {
+            v->kind = '$';
+            v->string = 1;
+            if (run) {
+#if defined(__WATCOMC__) || defined(_MSDOS)
+                union REGS regs = {0};
+                regs.h.ah = 0x2a;
+                intdos(&regs, &regs);
+                sprintf(v->text, "%02u-%02u-%04u",
+                        (unsigned)regs.h.dh, (unsigned)regs.h.dl, (unsigned)regs.x.cx);
+                v->length = 10U;
+#else
+                strcpy(v->text, "01-01-1991");
+                v->length = 10U;
+#endif
+            }
+            return 1;
+        }
+        break;
     case 'E':
         if (error_value(p, v, run)) return 1;
         if (take_word(p, "ENVIRON$")) {
@@ -2711,6 +2613,10 @@ static int expression_call(Parser *p, Value *v, unsigned depth, int run)
                 v->length = (unsigned)ckb_inkey(v->text);
                 v->text[v->length] = 0;
             }
+            return 1;
+        }
+        if (take_word(p, "INP")) {
+            inp_function(p, v, run);
             return 1;
         }
         break;
@@ -2752,6 +2658,24 @@ static int expression_call(Parser *p, Value *v, unsigned depth, int run)
             if (run) v->number = ckb_timer();
             return 1;
         }
+        if (take_word(p, "TIME$")) {
+            v->kind = '$';
+            v->string = 1;
+            if (run) {
+#if defined(__WATCOMC__) || defined(_MSDOS)
+                union REGS regs = {0};
+                regs.h.ah = 0x2c;
+                intdos(&regs, &regs);
+                sprintf(v->text, "%02u:%02u:%02u",
+                        (unsigned)regs.h.ch, (unsigned)regs.h.cl, (unsigned)regs.h.dh);
+                v->length = 8U;
+#else
+                strcpy(v->text, "00:00:00");
+                v->length = 8U;
+#endif
+            }
+            return 1;
+        }
         break;
     case 'P':
         if (take_word(p, "PEEK")) {
@@ -2762,10 +2686,54 @@ static int expression_call(Parser *p, Value *v, unsigned depth, int run)
             point_function(p, v, run);
             return 1;
         }
+        if (take_word(p, "PMAP")) {
+            pmap_function(p, v, run);
+            return 1;
+        }
+        if (take_word(p, "POS")) {
+            expect(p, '(', "Expected: (");
+            (void)numeric(p, run);
+            expect(p, ')', "Expected: )");
+            v->kind = '%';
+            if (run && !error_message) v->number = ckb_pos_col();
+            return 1;
+        }
+        if (take_word(p, "PLAY")) {
+            expect(p, '(', "Expected: (");
+            (void)numeric(p, run);
+            expect(p, ')', "Expected: )");
+            v->kind = '%';
+            if (run && !error_message) v->number = ckb_play_queued();
+            return 1;
+        }
         break;
     case 'R':
         if (word(p, "RND")) {
             random_value(p, v, depth, run);
+            return 1;
+        }
+        break;
+    case 'S':
+        if (take_word(p, "SCREEN")) {
+            screen_function(p, v, run);
+            return 1;
+        }
+        if (take_word(p, "SADD")) {
+            sadd_function(p, v, run, depth);
+            return 1;
+        }
+        break;
+    case 'V':
+        if (take_word(p, "VARPTR$")) {
+            varptr_str_function(p, v, run);
+            return 1;
+        }
+        if (take_word(p, "VARPTR")) {
+            varptr_function(p, v, run);
+            return 1;
+        }
+        if (take_word(p, "VARSEG")) {
+            varseg_function(p, v, run);
             return 1;
         }
         break;
@@ -3178,6 +3146,19 @@ static void select_statement(Parser *p, Position at, int run, unsigned inline_de
     if (!error_message) go(blocks[blocks[index].finish].after);
 }
 
+static int is_legacy_cmd(Parser *p, const char *kw)
+{
+    unsigned pos;
+    if (!word(p, kw)) return 0;
+    pos = p->pos;
+    while (pos < p->line_end && (source[pos] == ' ' || source[pos] == '\t')) ++pos;
+    if (pos < p->line_end && (source[pos] == '=' || source[pos] == '(' || source[pos] == '.'))
+        return 0;
+    if (procedure_count && lookup_procedure(p) >= 0) return 0;
+    fail(p, "Syntax error");
+    return 1;
+}
+
 static void statement(Parser *p, int run, unsigned inline_depth);
 
 static void inline_statement_list(Parser *p, int run, unsigned inline_depth)
@@ -3307,6 +3288,10 @@ static int sub_call_statement(Parser *p, int run)
 {
     int explicit_call = (p->token == T_NAME && p->first_upper == 'C') ? take_word(p, "CALL") : 0;
     int id;
+    if (explicit_call && take_word(p, "ABSOLUTE")) {
+        call_absolute_statement(p, run);
+        return 1;
+    }
     if (!explicit_call) {
         unsigned pos;
         if (!procedure_count || p->token != T_NAME) return 0;
@@ -3456,6 +3441,37 @@ void ckb_immediate(const char *command, unsigned output_column, CkbImmediateResu
 }
 #endif
 
+static void clear_statement(Parser *p, int run)
+{
+    unsigned extra, i;
+    for (extra = 0; extra < 3 && take(p, ','); ++extra) {
+        if (p->token != ',' && !end_statement(p))
+            (void)integer_operand(p, numeric(p, run), run);
+    }
+    if (!run || error_message) return;
+    close_channels();
+    reset_varptr_shadows();
+    ckb_speaker_off();
+    for (i = 0; i < variable_count; ++i) {
+        Variable *v = &variables[i];
+        if (v->array) {
+            if (v->dynamic == ARRAY_DYNAMIC) release_array(v);
+            else clear_array(v);
+        } else {
+            v->number = 0.0;
+            v->ival = 0L;
+            if (v->text) {
+                if (v->fixed_width) _fmemset(v->text + 2, ' ', v->fixed_width);
+                else { ckb_sfree(v->text); v->text = NULL; }
+            }
+        }
+    }
+    data_index = data_offset = 0;
+    for_depth = call_depth = 0;
+    has_def_seg = 0;
+    def_seg_value = 0;
+}
+
 static void run_or_chain_statement(Parser *p, int run, int chain)
 {
     Value path;
@@ -3502,9 +3518,18 @@ static void statement(Parser *p, int run, unsigned inline_depth)
         print_statement(p, run, 0);
         handled = 1;
         break;
+    case 'A':
+        if (is_legacy_cmd(p, "AUTO")) handled = 1;
+        break;
     case 'B':
         if (take_word(p, "BEEP")) {
             if (run) ckb_beep();
+            handled = 1;
+        } else if (take_word(p, "BSAVE")) {
+            bsave_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "BLOAD")) {
+            bload_statement(p, run);
             handled = 1;
         }
         break;
@@ -3536,6 +3561,11 @@ static void statement(Parser *p, int run, unsigned inline_depth)
         } else if (word(p, "CHAIN")) {
             run_or_chain_statement(p, run, 1);
             handled = 1;
+        } else if (take_word(p, "CLEAR")) {
+            clear_statement(p, run);
+            handled = 1;
+        } else if (is_legacy_cmd(p, "CONT")) {
+            handled = 1;
         }
         break;
     case 'D':
@@ -3549,6 +3579,11 @@ static void statement(Parser *p, int run, unsigned inline_depth)
             handled = 1;
         } else if (take_word(p, "DATA")) {
             data_statement(p);
+            handled = 1;
+        } else if (take_word(p, "DRAW")) {
+            draw_statement(p, run);
+            handled = 1;
+        } else if (is_legacy_cmd(p, "DELETE")) {
             handled = 1;
         } else if (take_word(p, "DEFINT")) {
             default_type_statement(p, '%');
@@ -3574,6 +3609,11 @@ static void statement(Parser *p, int run, unsigned inline_depth)
                         has_def_seg = 1;
                     }
                 } else if (run) has_def_seg = 0;
+            } else if (p->token == T_NAME && p->length >= 3 &&
+                       same(source + p->start, 3, "USR") &&
+                       (p->length == 3 ||
+                        (p->length == 4 && isdigit((unsigned char)source[p->start + 3])))) {
+                fail(p, "Syntax error");
             } else {
                 p->token = 0;
                 p->pos = lines[p->line].end;
@@ -3640,6 +3680,8 @@ static void statement(Parser *p, int run, unsigned inline_depth)
             handled = 1;
         } else if (take_word(p, "ENVIRON")) {
             environment_statement(p, run);
+            handled = 1;
+        } else if (is_legacy_cmd(p, "EDIT")) {
             handled = 1;
         }
         break;
@@ -3709,6 +3751,9 @@ static void statement(Parser *p, int run, unsigned inline_depth)
         if (take_word(p, "KILL")) {
             path_statement(p, run, DELETE_FILE);
             handled = 1;
+        } else if (take_word(p, "KEY")) {
+            ckbr_key_statement(p, run);
+            handled = 1;
         }
         break;
     case 'L':
@@ -3737,6 +3782,11 @@ static void statement(Parser *p, int run, unsigned inline_depth)
         } else if (take_word(p, "LSET")) {
             justify_assign(p, run, 0);
             handled = 1;
+        } else if (word(p, "LIST")) {
+            fail(p, "Syntax error");
+            handled = 1;
+        } else if (is_legacy_cmd(p, "LLIST") || is_legacy_cmd(p, "LOAD")) {
+            handled = 1;
         }
         break;
     case 'M':
@@ -3745,6 +3795,8 @@ static void statement(Parser *p, int run, unsigned inline_depth)
             handled = 1;
         } else if (take_word(p, "MKDIR")) {
             path_statement(p, run, CREATE_DIRECTORY);
+            handled = 1;
+        } else if (is_legacy_cmd(p, "MERGE") || is_legacy_cmd(p, "MOTOR")) {
             handled = 1;
         }
         break;
@@ -3755,17 +3807,16 @@ static void statement(Parser *p, int run, unsigned inline_depth)
         } else if (take_word(p, "NAME")) {
             rename_statement(p, run);
             handled = 1;
+        } else if (is_legacy_cmd(p, "NEW")) {
+            handled = 1;
         }
         break;
     case 'O':
         if (take_word(p, "ON")) {
-            expect_word(p, "ERROR", "Expected: ERROR");
-            expect_word(p, "GOTO", "Expected: GOTO");
-            if (p->token == T_NUMBER && p->number == 0) {
-                scan(p);
-                line = LINE_MAX;
-            } else line = target(p);
-            if (run && !error_message) error_handler[current_scope + 1] = line;
+            ckbr_on_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "OUT")) {
+            out_statement(p, run);
             handled = 1;
         } else if (take_word(p, "OPEN")) {
             open_statement(p, run);
@@ -3799,8 +3850,11 @@ static void statement(Parser *p, int run, unsigned inline_depth)
         } else if (take_word(p, "PALETTE")) {
             palette_statement(p, run);
             handled = 1;
+        } else if (take_word(p, "PCOPY")) {
+            pcopy_statement(p, run);
+            handled = 1;
         } else if (take_word(p, "PLAY")) {
-            play_statement(p, run);
+            if (!ckbr_play_ctrl(p, run)) play_statement(p, run);
             handled = 1;
         } else if (take_word(p, "POKE")) {
             poke_statement(p, run, current_def_seg());
@@ -3815,10 +3869,13 @@ static void statement(Parser *p, int run, unsigned inline_depth)
                     fail(p, "RETURN without GOSUB");
                 else {
                     --call_depth;
+                    ckbr_on_return_pop();
                     if (line == line_count) go(calls[call_depth]);
                     else go_line(line);
                 }
             }
+            handled = 1;
+        } else if (is_legacy_cmd(p, "RENUM")) {
             handled = 1;
         } else if (take_word(p, "READ")) {
             do {
@@ -3894,8 +3951,13 @@ static void statement(Parser *p, int run, unsigned inline_depth)
         } else if (take_word(p, "SHELL")) {
             shell_statement(p, run);
             handled = 1;
+        } else if (is_legacy_cmd(p, "SAVE")) {
+            handled = 1;
         } else if (take_word(p, "SYSTEM")) {
-            if (run) stopped = 1;
+            if (run) {
+                stopped = 1;
+                stopped_by_system = 1;
+            }
             handled = 1;
         } else if (take_word(p, "STOP")) {
             if (run && pause_execution) pause_at(p, at, NULL);
@@ -3906,9 +3968,19 @@ static void statement(Parser *p, int run, unsigned inline_depth)
             handled = 1;
         }
         break;
+    case 'T':
+        if (take_word(p, "TIMER")) {
+            ckbr_timer_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "TRON") || take_word(p, "TROFF")) {
+            handled = 1;
+        }
+        break;
     case 'U':
         if (take_word(p, "UNLOCK")) {
             file_lock_statement(p, run, 1);
+            handled = 1;
+        } else if (is_legacy_cmd(p, "USR")) {
             handled = 1;
         }
         break;
@@ -3930,6 +4002,12 @@ static void statement(Parser *p, int run, unsigned inline_depth)
             handled = 1;
         } else if (take_word(p, "WIDTH")) {
             width_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "WINDOW")) {
+            window_statement(p, run);
+            handled = 1;
+        } else if (take_word(p, "WAIT")) {
+            wait_statement(p, run);
             handled = 1;
         } else if (take_word(p, "WRITE")) {
             write_statement(p, run);
@@ -4030,6 +4108,11 @@ static int load_source(const char *path)
     }
     source = owned_source;
     while ((c = fgetc(in)) != EOF && c != 26) {
+        if (size == 0 && (c == 0xff || c == 0xfe)) {
+            fprintf(stderr, "%s: Bad file mode\n", path);
+            fclose(in);
+            return 0;
+        }
         if (size == SOURCE_MAX || size + 1U >= cap || c == 0) {
             fprintf(stderr, "%s: %s\n", path, c == 0 ? "Expected DOS text" : "Source too large");
             fclose(in);
@@ -4122,6 +4205,8 @@ static void walk_at(Position at, int run)
         }
         if (jumped) at = next_position;
         else at = after_statement(&p);
+        if (run && ckbr_has_events && !error_message && !stopped && !returning)
+            ckbr_check_events(&at);
     }
     if (!run && !error_message && block_depth) {
         first_error = blocks[block_stack[block_depth - 1]].at;
@@ -4183,6 +4268,9 @@ static int execute_program(const char *path, int mbf, const char __far *text,
         any_field_bound = 0;
         has_def_seg = 0;
         def_seg_value = 0;
+        stopped_by_system = 0;
+        ckbr_reset_events();
+        reset_varptr_shadows();
         entering_elseif = 0;
         random_state = 0x50000UL;
         returning = 0;
@@ -4230,8 +4318,13 @@ static int execute_program(const char *path, int mbf, const char __far *text,
         } else if (!load_source(current_path)) { result = 1; break; }
         checking = 1;
         memset(default_kind, '!', sizeof(default_kind));
+        if (length > 0 && text &&
+            ((unsigned char)source[0] == 0xffU || (unsigned char)source[0] == 0xfeU)) {
+            first_error = position(0, 0);
+            error_message = "Bad file mode";
+        }
         if (line_count && !error_message) index_procedures();
-        if (line_count) walk_at(position(0, lines[0].body), 0);
+        if (line_count && !error_message) walk_at(position(0, lines[0].body), 0);
         assign_frame_slots();
         checking = 0;
         shrink_program_tables();
@@ -4250,7 +4343,7 @@ static int execute_program(const char *path, int mbf, const char __far *text,
         tok_cache_clear();
         if (line_count && !error_message) {
             int dbg_on = break_execution && (!debug_active_flag || *debug_active_flag);
-            if (dbg_on || !ckb_vm_execute())
+            if (dbg_on || ckbr_has_events || !ckb_vm_execute())
                 walk_at(position(0, lines[0].body), 1);
         }
         if (!error_message && restart_kind == RESTART_CHAIN && common_count) {
@@ -4302,7 +4395,10 @@ static int execute_program(const char *path, int mbf, const char __far *text,
     pause_execution = NULL;
     break_execution = NULL;
     pause_context = NULL;
-    if (report) report->aborted = aborted;
+    if (report) {
+        report->aborted = aborted;
+        report->system_exit = stopped_by_system;
+    }
     return result;
 }
 
@@ -4325,6 +4421,13 @@ void ckb_set_editor_source(char __far *buf, unsigned len)
         source = buf;
         imm_offset = buf ? (len + 2U) : 0U;
     }
+}
+
+int ckb_run_source_ex(const char *path, int mbf, const char __far *text, unsigned length,
+                      CkbRunResult *report, CkbRunPause pause, CkbRunBreak should_break,
+                      void *context)
+{
+    return execute_program(path, mbf, text, length, report, pause, should_break, context);
 }
 
 int ckb_run_source(const char *path, const char __far *text, unsigned length,

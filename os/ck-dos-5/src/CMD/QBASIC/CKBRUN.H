@@ -12,6 +12,7 @@ typedef struct {
     unsigned line, column;
     int editor_source;
     int aborted;
+    int system_exit;
 } CkbRunResult;
 
 /* The hook runs on the live interpreter stack. Return zero to unwind
@@ -36,6 +37,9 @@ typedef struct {
 int ckb_run_source(const char *path, const char __far *text, unsigned length,
                    CkbRunResult *report, CkbRunPause pause, CkbRunBreak should_break,
                    void *context);
+int ckb_run_source_ex(const char *path, int mbf, const char __far *text, unsigned length,
+                      CkbRunResult *report, CkbRunPause pause, CkbRunBreak should_break,
+                      void *context);
 void ckb_set_debug_active(const int *flag);
 void ckb_set_editor_source(char __far *buf, unsigned len);
 void ckb_immediate(const char *command, unsigned output_column, CkbImmediateResult *result);

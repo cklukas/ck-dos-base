@@ -32,6 +32,7 @@ extern void __far ui_cursor(unsigned);
 extern unsigned long __far ui_event(void);
 extern void __far ui_begin_frame(void);
 extern void __far ui_end_frame(void);
+extern unsigned __far ui_setup_mode(unsigned);
 #ifdef __WATCOMC__
 #pragma aux ui_init "CKBIDE_INIT" parm [ax] modify exact []
 #pragma aux ui_done "CKBIDE_DONE" modify exact []
@@ -42,6 +43,7 @@ extern void __far ui_end_frame(void);
 #pragma aux ui_event "CKBIDE_EVENT" value [dx ax] modify exact [dx ax]
 #pragma aux ui_begin_frame "CKBIDE_BEGIN_FRAME" modify exact []
 #pragma aux ui_end_frame "CKBIDE_END_FRAME" modify exact []
+#pragma aux ui_setup_mode "CKBIDE_SETUP_MODE" parm [ax] value [ax] modify exact [ax]
 #endif
 
 #define SOURCE_LIMIT 60000U
@@ -146,6 +148,8 @@ struct workspace {
     unsigned find_flags;
     unsigned text_gen, cached_last_gen, cached_last, drawn_thumb_row;
     int cached_last_proc, syntax_checking, next_menu;
+    unsigned ui_rows, disp_flags;
+    int mbf_mode;
 };
 
 static void fill(unsigned row, unsigned col, unsigned ch, unsigned attr, unsigned count)
@@ -241,9 +245,21 @@ static void select_view(struct workspace *w, int procedure)
     w->anchor = NO_MARK;
 }
 
+static unsigned ui_screen_rows(const struct workspace *w)
+{
+    return w->ui_rows >= 25U ? w->ui_rows : 25U;
+}
+
+static unsigned split_bottom_header(const struct workspace *w)
+{
+    unsigned rows = ui_screen_rows(w);
+    return 3U + (rows - 9U) / 2U;
+}
+
 static unsigned view_height(const struct workspace *w)
 {
-    return w->split ? SPLIT_HEIGHT : VIEW_HEIGHT;
+    unsigned rows = ui_screen_rows(w);
+    return w->split ? ((rows - 9U) / 2U) : (rows - 7U);
 }
 
 static struct source_view snapshot_view(const struct workspace *w)
@@ -325,7 +341,8 @@ static void locate(struct workspace *w)
 
 static unsigned caret_row(const struct workspace *w)
 {
-    unsigned at = w->top, row = w->source_focus == BOTTOM_VIEW ? 12 : 2;
+    unsigned at = w->top;
+    unsigned row = w->source_focus == BOTTOM_VIEW ? (split_bottom_header(w) + 1U) : 2U;
     unsigned line = start_of(w, w->caret);
     while (at < line) {
         at = view_next(w, at);
@@ -337,7 +354,8 @@ static unsigned caret_row(const struct workspace *w)
 static void position(const struct workspace *w)
 {
     if (w->focus == IMMEDIATE_VIEW)
-        ui_cursor(POS(22 + w->immediate_row, 1 + w->immediate_col % VIEW_WIDTH));
+        ui_cursor(POS(ui_screen_rows(w) - 3U + w->immediate_row,
+                      1 + w->immediate_col % VIEW_WIDTH));
     else ui_cursor(POS(caret_row(w), 1 + w->column - w->left));
 }
 
@@ -490,20 +508,21 @@ static void center(unsigned row, unsigned left, unsigned width, unsigned attr, c
 static void workspace_status(const struct workspace *w, const char *menu)
 {
     char coordinates[12];
-    fill(24, 0, ' ', STATUS, 62);
-    if (menu) put(24, 1, STATUS, menu);
-    else if (w->error[0]) put(24, 1, STATUS, w->error);
+    unsigned srow = ui_screen_rows(w) - 1U;
+    fill(srow, 0, ' ', STATUS, 62);
+    if (menu) put(srow, 1, STATUS, menu);
+    else if (w->error[0]) put(srow, 1, STATUS, w->error);
     else if (w->focus == IMMEDIATE_VIEW)
-        put(24, 1, STATUS, "<Shift+F1=Help> <F6=Window> <Enter=Execute Line>");
+        put(srow, 1, STATUS, "<Shift+F1=Help> <F6=Window> <Enter=Execute Line>");
     else if (w->break_width)
-        put(24, 1, STATUS, "<Shift+F1=Help> <F5=Continue> <F9=Toggle Bkpt> <F8=Step>");
-    else put(24, 1, STATUS, "<Shift+F1=Help> <F6=Window> <F2=Subs> <F5=Run> <F8=Step>");
-    fill(24, 62, ' ', GUTTER, 18);
-    fill(24, 62, VERTICAL, GUTTER, 1);
+        put(srow, 1, STATUS, "<Shift+F1=Help> <F5=Continue> <F9=Toggle Bkpt> <F8=Step>");
+    else put(srow, 1, STATUS, "<Shift+F1=Help> <F6=Window> <F2=Subs> <F5=Run> <F8=Step>");
+    fill(srow, 62, ' ', GUTTER, 18);
+    fill(srow, 62, VERTICAL, GUTTER, 1);
     if (w->focus == IMMEDIATE_VIEW)
         sprintf(coordinates, "%05u:%03u", w->immediate_line + 1, w->immediate_col + 1);
     else sprintf(coordinates, "%05u:%03u", w->line + 1, (unsigned)((w->column + 1) % 1000));
-    put(24, 70, GUTTER, coordinates);
+    put(srow, 70, GUTTER, coordinates);
 }
 
 static void pane_gutter(unsigned row, unsigned attr)
@@ -586,6 +605,7 @@ static void draw_source(struct workspace *w, unsigned header,
 static void draw_workspace(struct workspace *w)
 {
     unsigned attr = w->display.text_attribute;
+    unsigned imm_hdr = ui_screen_rows(w) - 4U;
     unsigned i;
     ui_begin_frame();
     fill(0, 0, ' ', GRAY, 80);
@@ -593,26 +613,28 @@ static void draw_workspace(struct workspace *w)
     put(0, 74, GRAY, "Help");
     fill(0, 2, 'F', 0x7f, 1);
     if (w->split) {
+        unsigned b_hdr = split_bottom_header(w);
+        unsigned s_h = view_height(w);
         struct source_view active = snapshot_view(w);
-        draw_source(w, w->source_focus == TOP_VIEW ? 1 : 11, SPLIT_HEIGHT,
+        draw_source(w, w->source_focus == TOP_VIEW ? 1 : b_hdr, s_h,
                     w->focus == w->source_focus);
         restore_view(w, &w->other_view);
-        draw_source(w, w->source_focus == TOP_VIEW ? 11 : 1, SPLIT_HEIGHT, 0);
+        draw_source(w, w->source_focus == TOP_VIEW ? b_hdr : 1, s_h, 0);
         restore_view(w, &active);
-    } else draw_source(w, 1, VIEW_HEIGHT, w->focus == TOP_VIEW);
-    fill(21, 0, HORIZONTAL, attr, 80);
-    fill(21, 0, 0xc3, attr, 1);
-    fill(21, 79, 0xb4, attr, 1);
-    center(21, 0, 79, w->focus == IMMEDIATE_VIEW ? TITLE : attr, " Immediate ");
+    } else draw_source(w, 1, view_height(w), w->focus == TOP_VIEW);
+    fill(imm_hdr, 0, HORIZONTAL, attr, 80);
+    fill(imm_hdr, 0, 0xc3, attr, 1);
+    fill(imm_hdr, 79, 0xb4, attr, 1);
+    center(imm_hdr, 0, 79, w->focus == IMMEDIATE_VIEW ? TITLE : attr, " Immediate ");
     for (i = 0; i < 2; ++i) {
         char line[VIEW_WIDTH + 1];
         unsigned left = w->immediate_col / VIEW_WIDTH * VIEW_WIDTH;
         unsigned length = strlen(w->immediate[i]);
         if (i != w->immediate_row || w->focus != IMMEDIATE_VIEW) left = 0;
         if (left > length) left = length;
-        pane_gutter(22 + i, attr);
+        pane_gutter(imm_hdr + 1U + i, attr);
         sprintf(line, "%.78s", w->immediate[i] + left);
-        put(22 + i, 1, attr, line);
+        put(imm_hdr + 1U + i, 1, attr, line);
     }
     workspace_status(w, NULL);
 }
@@ -696,6 +718,13 @@ static int load_source(struct workspace *w, const char *path)
         }
     }
     while ((ch = fgetc(file)) != EOF && ch != 26) {
+        if (length == 0 && (ch == 0xff || ch == 0xfe)) {
+            fclose(file);
+            if (!inplace) _ffree(text);
+            else { w->length = 0; w->text[0] = '\0'; ckb_set_editor_source(w->text, 0); }
+            set_error(w, "Bad file mode");
+            return 0;
+        }
         if (ch == '\n' && cr) {
             cr = 0;
             continue;
@@ -2530,11 +2559,11 @@ static void subs_dialog(struct workspace *w)
  * cells while the editor is visible; the DOS console writes to the live page. */
 static void restore_output(const struct workspace *w)
 {
-    unsigned row;
+    unsigned row, rows = ui_screen_rows(w);
     ui_end_frame();
     if (w->output)
-        _fmemcpy(MK_FP(0xb800, 0), w->output, 4000);
-    else for (row = 0; row < 25; ++row) fill(row, 0, ' ', SELECTED, 80);
+        _fmemcpy(MK_FP(0xb800, 0), w->output, rows * 160U);
+    else for (row = 0; row < rows; ++row) fill(row, 0, ' ', SELECTED, 80);
     ui_cursor(w->output_cursor);
 }
 
@@ -2556,10 +2585,15 @@ static void output_screen(const struct workspace *w)
 
 static void ide_ensure_text_mode(struct workspace *w)
 {
-    if ((*(const unsigned char __far *)MK_FP(0x40, 0x49) & 0x7f) != 3) {
+    unsigned rows = ui_screen_rows(w);
+    unsigned bda_rows = (unsigned)(*(const unsigned char __far *)MK_FP(0x40, 0x84)) + 1U;
+    if ((*(const unsigned char __far *)MK_FP(0x40, 0x49) & 0x7f) != 3 ||
+        *(const unsigned char __far *)MK_FP(0x40, 0x62) != 0 ||
+        bda_rows != rows) {
         union REGS regs = {0};
         unsigned i;
         ckb_con_reset_text();
+        if (w->disp_flags) w->ui_rows = ui_setup_mode(w->disp_flags);
         regs.x.ax = 0x0100;
         regs.x.cx = 0x0607;
         int86(0x10, &regs, &regs);
@@ -2571,41 +2605,46 @@ static void ide_ensure_text_mode(struct workspace *w)
         }
         w->output_cursor = 0;
         if (w->output)
-            for (i = 0; i < 2000; ++i) w->output[i] = 0x0720;
+            for (i = 0; i < 4000U; ++i) w->output[i] = 0x0720;
     }
 }
 
 static void capture_output(struct workspace *w)
 {
     union REGS regs = {0};
-    if ((*(const unsigned char __far *)MK_FP(0x40, 0x49) & 0x7f) != 3) {
+    unsigned rows = ui_screen_rows(w);
+    unsigned bda_rows = (unsigned)(*(const unsigned char __far *)MK_FP(0x40, 0x84)) + 1U;
+    if ((*(const unsigned char __far *)MK_FP(0x40, 0x49) & 0x7f) != 3 ||
+        *(const unsigned char __far *)MK_FP(0x40, 0x62) != 0 ||
+        bda_rows != rows) {
         ide_ensure_text_mode(w);
         return;
     }
     regs.x.ax = 0x0300;
     int86(0x10, &regs, &regs);
     w->output_cursor = regs.x.dx;
-    _fmemcpy(w->output, MK_FP(0xb800, 0), 4000);
+    _fmemcpy(w->output, MK_FP(0xb800, 0), rows * 160U);
 }
 
 static int prepare_output(struct workspace *w)
 {
     unsigned i;
     if (w->output) return 1;
-    w->output = _fmalloc(4000);
+    w->output = _fmalloc(8000U);
     if (!w->output) {
         set_error(w, "Not enough memory for program output");
         return 0;
     }
-    for (i = 0; i < 2000; ++i) w->output[i] = 0x0720;
+    for (i = 0; i < 4000U; ++i) w->output[i] = 0x0720;
     return 1;
 }
 
-static void acknowledge_output(void)
+static void acknowledge_output(const struct workspace *w)
 {
-    fill(24, 0, ' ', SELECTED, 80);
-    put(24, 0, SELECTED, "Press any key to continue");
-    hide_output_cursor(POS(24, 25));
+    unsigned srow = ui_screen_rows(w) - 1U;
+    fill(srow, 0, ' ', SELECTED, 80);
+    put(srow, 0, SELECTED, "Press any key to continue");
+    hide_output_cursor(POS(srow, 25));
     ui_event();
 }
 
@@ -2684,7 +2723,7 @@ static void execute_immediate(struct workspace *w)
         run_error_dialog(w, result.error);
         if (!result.runtime_error) next_immediate_line(w);
     } else {
-        if (result.wrote_output) acknowledge_output();
+        if (result.wrote_output) acknowledge_output(w);
         next_immediate_line(w);
     }
 }
@@ -2869,7 +2908,7 @@ static int should_break(void *context, unsigned line_start, int first_statement,
     return first_statement && breakpoint_index(w, line_start) < w->breakpoint_count;
 }
 
-static void run_workspace(struct workspace *w, enum run_mode mode)
+static void run_workspace_ex(struct workspace *w, enum run_mode mode, int from_slash_run)
 {
     CkbRunResult result;
     if (!prepare_output(w)) return;
@@ -2880,13 +2919,18 @@ static void run_workspace(struct workspace *w, enum run_mode mode)
         w->debug_hooks_active = (w->run_mode != RUN_NORMAL || w->breakpoint_count != 0);
         ckb_set_debug_active(&w->debug_hooks_active);
         restore_output(w);
-        ckb_run_source(w->path[0] ? w->path : "Untitled", w->text, w->length,
-                       &result, pause_workspace, should_break, w);
+        ckb_run_source_ex(w->path[0] ? w->path : "Untitled", w->mbf_mode, w->text, w->length,
+                          &result, pause_workspace, should_break, w);
         ckb_set_debug_active(NULL);
         mode = RUN_NORMAL;
     } while (w->restart_requested);
     if (result.aborted) {
         ide_ensure_text_mode(w);
+        return;
+    }
+    if (from_slash_run && result.system_exit && !result.error) {
+        ide_ensure_text_mode(w);
+        w->exit_requested = 1;
         return;
     }
     if (!result.error && (*(const unsigned char __far *)MK_FP(0x40, 0x49) & 0x7f) != 3) {
@@ -2905,7 +2949,12 @@ static void run_workspace(struct workspace *w, enum run_mode mode)
         run_error_dialog(w, result.error);
         return;
     }
-    acknowledge_output();
+    acknowledge_output(w);
+}
+
+static void run_workspace(struct workspace *w, enum run_mode mode)
+{
+    run_workspace_ex(w, mode, 0);
 }
 
 static void dispatch_debug(struct workspace *w)
@@ -3872,18 +3921,75 @@ static int is_plain_cursor_key(unsigned key)
            key == KEY_RIGHT || key == KEY_HOME || key == KEY_END;
 }
 
-static int ckb_ide_session(struct workspace *wp, const char *path)
+static int menu_bar_focus(struct workspace *w)
+{
+    static const unsigned cols[] = {1, 7, 13, 19, 27, 32, 39, 73};
+    static const char *const titles[] = {
+        " File ", " Edit ", " View ", " Search ",
+        " Run ", " Debug ", " Options ", " Help "
+    };
+    static const unsigned all_accels[] = {2, 8, 14, 20, 28, 33, 40, 74};
+    static const char all_chars[] = "FEVSRDOH";
+    int selected = MENU_ID_FILE;
+    for (;;) {
+        unsigned long event;
+        unsigned key, i;
+        unsigned char ch;
+        draw_workspace(w);
+        for (i = 0; i < MENU_ID_COUNT; ++i)
+            fill(0, all_accels[i], all_chars[i], 0x7f, 1);
+        put(0, cols[selected], SELECTED, titles[selected]);
+        fill(0, cols[selected] + 1U, titles[selected][1], 0x0f, 1);
+        workspace_status(w, "Enter=Display Menu   Esc=Cancel   Arrow=Next Item");
+        ui_cursor(0xffff);
+        event = ui_event();
+        key = (unsigned)event;
+        ch = (unsigned char)tolower((unsigned char)key);
+        if (event & MOUSE_EVENT) {
+            unsigned row = (key >> 8) & 255, col = key & 255;
+            if (row == 0) {
+                int hit = menu_bar_hit(col);
+                if (hit != MENU_NONE) return open_menus(w, hit);
+            }
+            return 0;
+        }
+        if (key == KEY_LEFT) selected = (selected + MENU_ID_COUNT - 1) % MENU_ID_COUNT;
+        else if (key == KEY_RIGHT || (unsigned char)key == '\t')
+            selected = (selected + 1) % MENU_ID_COUNT;
+        else if ((unsigned char)key == '\r' || key == KEY_DOWN || key == KEY_UP)
+            return open_menus(w, selected);
+        else if ((unsigned char)key == 27 || key == KEY_ALT)
+            return 0;
+        else if (ch == 'f' || key == KEY_ALT_F) return open_menus(w, MENU_ID_FILE);
+        else if (ch == 'e' || key == KEY_ALT_E) return open_menus(w, MENU_ID_EDIT);
+        else if (ch == 'v' || key == KEY_ALT_V) return open_menus(w, MENU_ID_VIEW);
+        else if (ch == 's' || key == KEY_ALT_S) return open_menus(w, MENU_ID_SEARCH);
+        else if (ch == 'r' || key == KEY_ALT_R) return open_menus(w, MENU_ID_RUN);
+        else if (ch == 'd' || key == KEY_ALT_D) return open_menus(w, MENU_ID_DEBUG);
+        else if (ch == 'o' || key == KEY_ALT_O) return open_menus(w, MENU_ID_OPTIONS);
+        else if (ch == 'h' || key == 0x2300) return open_menus(w, MENU_ID_HELP);
+        else if (key == 0x3b00) show_help(w, CKB_HELP_USING, 0);
+    }
+}
+
+static int ckb_ide_session(struct workspace *wp, const char *path,
+                           int mbf, int slash_run, unsigned disp_flags)
 {
 #define w (*wp)
     unsigned segment, row, col;
     unsigned long event;
     int done = 0, workspace_clean = 0;
+    char load_err[64];
+    load_err[0] = '\0';
     ckb_ini_load_display(&w.display);
     w.anchor = NO_MARK;
     w.procedure = -1;
     w.cached_last_proc = -2;
     w.syntax_checking = 1;
     w.next_menu = MENU_NONE;
+    w.ui_rows = 25U;
+    w.disp_flags = disp_flags;
+    w.mbf_mode = mbf;
     if (_dos_allocmem(SCREEN_SAVE_PARAGRAPHS, &segment)) {
         fputs("Not enough memory to save the DOS screen\n", stderr);
         return 1;
@@ -3895,16 +4001,46 @@ static int ckb_ide_session(struct workspace *wp, const char *path)
         return 1;
     }
     if (path && *path) {
+        if (slash_run) {
+            FILE *probe = fopen(path, "rb");
+            if (!probe) {
+                ui_init(segment);
+                w.ui_rows = ui_setup_mode(disp_flags);
+                ui_end_frame();
+                for (row = 0; row < ui_screen_rows(&w); ++row)
+                    fill(row, 0, ' ', SELECTED, 80);
+                put(0, 0, SELECTED, "File not found");
+                acknowledge_output(&w);
+                ui_done();
+                _dos_freemem(segment);
+                if (w.output) _ffree(w.output);
+                ckb_set_editor_source(NULL, 0);
+                _ffree(w.text);
+                return 0;
+            }
+            fclose(probe);
+        }
         if (!load_source(&w, path)) {
-            fprintf(stderr, "%s: %s\n", path, w.error);
-            ckb_set_editor_source(NULL, 0);
-            _ffree(w.text);
-            if (w.output) _ffree(w.output);
-            _dos_freemem(segment);
-            return 1;
+            if (slash_run || strcmp(w.error, "Bad file mode") == 0) {
+                strcpy(load_err, w.error);
+                w.error[0] = '\0';
+            } else {
+                fprintf(stderr, "%s: %s\n", path, w.error);
+                ckb_set_editor_source(NULL, 0);
+                _ffree(w.text);
+                if (w.output) _ffree(w.output);
+                _dos_freemem(segment);
+                return 1;
+            }
         }
     }
     ui_init(segment);
+    w.ui_rows = ui_setup_mode(disp_flags);
+    if (load_err[0]) {
+        run_error_dialog(&w, load_err);
+    } else if (slash_run) {
+        run_workspace_ex(&w, RUN_NORMAL, 1);
+    }
     while (!done && !w.exit_requested) {
         if (!workspace_clean) {
             draw_workspace(&w);
@@ -3917,6 +4053,9 @@ static int ckb_ide_session(struct workspace *wp, const char *path)
             workspace_clean = 0;
         }
         if (event & MOUSE_EVENT) {
+            unsigned imm_row1 = ui_screen_rows(&w) - 3U;
+            unsigned src_bot = ui_screen_rows(&w) - 6U;
+            unsigned b_hdr = split_bottom_header(&w);
             workspace_clean = 0;
             row = (event >> 8) & 255;
             col = event & 255;
@@ -3924,9 +4063,10 @@ static int ckb_ide_session(struct workspace *wp, const char *path)
                 int hit = menu_bar_hit(col);
                 if (hit != MENU_NONE) done = open_menus(&w, hit);
             } else if (col > 0 && col < 79) {
-                if (row == 22) focus_view(&w, IMMEDIATE_VIEW);
-                else if (row >= 2 && row <= 19 && (!w.split || row <= 9 || row >= 12)) {
-                    focus_view(&w, w.split && row >= 12 ? BOTTOM_VIEW : TOP_VIEW);
+                if (row == imm_row1 || row == imm_row1 + 1U) focus_view(&w, IMMEDIATE_VIEW);
+                else if (row >= 2 && row <= src_bot &&
+                         (!w.split || row < b_hdr - 1U || row > b_hdr)) {
+                    focus_view(&w, w.split && row > b_hdr ? BOTTOM_VIEW : TOP_VIEW);
                     move_mouse(&w, row, col);
                 }
             }
@@ -3940,7 +4080,10 @@ static int ckb_ide_session(struct workspace *wp, const char *path)
         } else if ((unsigned)event == 0x2300) {
             workspace_clean = 0;
             done = open_menus(&w, MENU_ID_HELP);
-        } else if ((unsigned)event == KEY_ALT_F || (unsigned)event == KEY_ALT) {
+        } else if ((unsigned)event == KEY_ALT) {
+            workspace_clean = 0;
+            done = menu_bar_focus(&w);
+        } else if ((unsigned)event == KEY_ALT_F) {
             workspace_clean = 0;
             done = open_menus(&w, MENU_ID_FILE);
         } else if ((unsigned)event == KEY_ALT_E) {
@@ -4009,8 +4152,8 @@ static int ckb_ide_session(struct workspace *wp, const char *path)
                 if (w.top == old_top && w.left == old_left &&
                     w.procedure == old_proc && !w.error[0]) {
                     if (w.display.scroll_bars && w.focus == w.source_focus) {
-                        unsigned header = w.source_focus == BOTTOM_VIEW ? 11 : 1;
-                        unsigned height = w.split ? SPLIT_HEIGHT : VIEW_HEIGHT;
+                        unsigned header = w.source_focus == BOTTOM_VIEW ? split_bottom_header(&w) : 1U;
+                        unsigned height = view_height(&w);
                         unsigned thumb = compute_thumb_row(&w, header, height);
                         if (thumb != w.drawn_thumb_row) {
                             fill(w.drawn_thumb_row, 79, 0xb0, GRAY, 1);
@@ -4041,7 +4184,7 @@ static int ckb_ide_session(struct workspace *wp, const char *path)
 #undef w
 }
 
-int ckb_ide(const char *path)
+int ckb_ide_run(const char *path, int mbf, int slash_run, unsigned display_flags)
 {
     struct workspace *wp = calloc(1, sizeof(*wp));
     int rc;
@@ -4049,7 +4192,12 @@ int ckb_ide(const char *path)
         fputs("Not enough memory for workspace\n", stderr);
         return 1;
     }
-    rc = ckb_ide_session(wp, path);
+    rc = ckb_ide_session(wp, path, mbf, slash_run, display_flags);
     free(wp);
     return rc;
+}
+
+int ckb_ide(const char *path)
+{
+    return ckb_ide_run(path, 0, 0, 0);
 }

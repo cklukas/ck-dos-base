@@ -198,8 +198,297 @@ CKB_INPUT_SCAN ENDP
 ; ---------------------------------------------------------------------------
 PUBLIC _dosui_smoke
 PUBLIC _ui_init, _ui_done, _ui_fill, _ui_write, _ui_menu, _ui_cursor, _ui_event
-PUBLIC _ui_begin_frame, _ui_end_frame
+PUBLIC _ui_begin_frame, _ui_end_frame, _ui_setup_mode
 PUBLIC _input_scan, _input_scan_init, _input_scan_pending, _input_key, _input_idle
+PUBLIC _ckb_snd_push, _ckb_snd_queued, _ckb_snd_active, _ckb_snd_stop
+PUBLIC _ckb_call_absolute
+PUBLIC CKB_SND_PUSH, CKB_SND_QUEUED, CKB_SND_ACTIVE, CKB_SND_STOP
+PUBLIC CKB_CALL_ABSOLUTE, CKBIDE_SETUP_MODE
+
+; ---------------------------------------------------------------------------
+; Display switch attribute maps (/B = 1, /G = 2, /H = 4, /NOHI = 8)
+; ---------------------------------------------------------------------------
+CKB_MODE_MAP    DB 256 DUP (0)
+CKB_MONO_PAIRS  DB 08H,07H, 0AH,7FH, 17H,07H, 30H,70H, 3FH,70H, 71H,70H, 78H,70H
+                DB 1FH,0FH, 4FH,70H, 47H,70H, 2FH,70H, 27H,70H, 0,0
+CKB_NOHI_PAIRS  DB 0AH,02H, 0FH,02H, 3FH,30H, 78H,76H, 7FH,74H
+                DB 1FH,17H, 4FH,47H, 2FH,27H, 0,0
+CKB_MNOHI_PAIRS DB 08H,07H, 0AH,07H, 0FH,70H, 17H,07H, 30H,70H, 3FH,70H, 71H,70H
+                DB 78H,70H, 7FH,07H, 1FH,70H, 4FH,70H, 47H,70H, 2FH,70H, 27H,70H, 0,0
+
+; AX = switch mask (1=/B, 2=/G, 4=/H, 8=/NOHI)
+CKBIDE_SETUP_MODE PROC FAR
+    PUSH BX
+    PUSH CX
+    PUSH SI
+    PUSH DI
+    PUSH DS
+    PUSH ES
+    MOV CX,AX
+    PUSH CS
+    POP DS
+    PUSH CS
+    POP ES
+    MOV WORD PTR CS:DOSUI_ATTR_MAP,0
+    MOV BYTE PTR CS:DOSUI_SHADOW_ATTR,08H
+    AND AX,9
+    JZ SHORT CKBIDE_SETUP_ROWS
+    MOV DI,OFFSET CKB_MODE_MAP
+    XOR AX,AX
+CKBIDE_MAP_ID:
+    STOSB
+    INC AL
+    JNZ SHORT CKBIDE_MAP_ID
+    MOV AX,CX
+    AND AX,9
+    MOV SI,OFFSET CKB_MONO_PAIRS
+    CMP AX,1
+    JE SHORT CKBIDE_MAP_APPLY
+    MOV SI,OFFSET CKB_NOHI_PAIRS
+    CMP AX,8
+    JE SHORT CKBIDE_MAP_APPLY
+    MOV SI,OFFSET CKB_MNOHI_PAIRS
+CKBIDE_MAP_APPLY:
+    LODSW
+    OR AX,AX
+    JZ SHORT CKBIDE_MAP_SET
+    XOR BX,BX
+    MOV BL,AL
+    MOV CKB_MODE_MAP[BX],AH
+    JMP SHORT CKBIDE_MAP_APPLY
+CKBIDE_MAP_SET:
+    MOV WORD PTR CS:DOSUI_ATTR_MAP,OFFSET CKB_MODE_MAP
+    TEST CX,1
+    JZ SHORT CKBIDE_SETUP_ROWS
+    MOV BYTE PTR CS:DOSUI_SHADOW_ATTR,07H
+CKBIDE_SETUP_ROWS:
+    MOV BYTE PTR CS:DOSUI_ROWS,25
+    TEST CX,4
+    JZ SHORT CKBIDE_SETUP_OUT
+    MOV AX,1112H
+    XOR BL,BL
+    INT 10H
+    MOV AX,40H
+    MOV ES,AX
+    MOV AL,ES:[84H]
+    INC AL
+    CMP AL,43
+    JB SHORT CKBIDE_SETUP_OUT
+    MOV CS:DOSUI_ROWS,AL
+CKBIDE_SETUP_OUT:
+    XOR AH,AH
+    MOV AL,CS:DOSUI_ROWS
+    POP ES
+    POP DS
+    POP DI
+    POP SI
+    POP CX
+    POP BX
+    RET
+CKBIDE_SETUP_MODE ENDP
+
+; ---------------------------------------------------------------------------
+; Timer-driven PC speaker & MML queue (INT 1Ch, 32 entries in CS)
+; divisor = 0 selects PIT Ch2 Mode 0 (silent DC without clearing port 61h)
+; ---------------------------------------------------------------------------
+CKB_SND_CAP     EQU 32
+CKB_OLD_1C      DD 0
+CKB_SND_HOOKED  DB 0
+CKB_SND_HEAD    DW 0
+CKB_SND_TAIL    DW 0
+CKB_SND_COUNT   DW 0
+CKB_SND_TICKS   DW 0
+CKB_SND_DIV     DW 32 DUP (0)
+CKB_SND_DUR     DW 32 DUP (0)
+
+; Near helper: AX = divisor (0 = silent rest, >0 = PIT Mode 3 divisor)
+CKB_SND_PROGRAM PROC NEAR
+    OR AX,AX
+    JZ SHORT CKB_SND_PROG_REST
+    PUSH AX
+    MOV AL,0B6H
+    OUT 43H,AL
+    POP AX
+    OUT 42H,AL
+    MOV AL,AH
+    OUT 42H,AL
+    JMP SHORT CKB_SND_PROG_GATE
+CKB_SND_PROG_REST:
+    MOV AL,0B0H
+    OUT 43H,AL
+    MOV AL,01H
+    OUT 42H,AL
+    XOR AL,AL
+    OUT 42H,AL
+CKB_SND_PROG_GATE:
+    IN AL,61H
+    OR AL,03H
+    OUT 61H,AL
+    RET
+CKB_SND_PROGRAM ENDP
+
+CKB_SND_ISR PROC FAR
+    PUSH AX
+    PUSH BX
+    CMP WORD PTR CS:CKB_SND_TICKS,0
+    JE SHORT CKB_SND_ISR_CHAIN
+    DEC WORD PTR CS:CKB_SND_TICKS
+    JNZ SHORT CKB_SND_ISR_CHAIN
+    CMP WORD PTR CS:CKB_SND_COUNT,0
+    JE SHORT CKB_SND_ISR_OFF
+    MOV BX,CS:CKB_SND_HEAD
+    SHL BX,1
+    MOV AX,CS:CKB_SND_DIV[BX]
+    MOV BX,CS:CKB_SND_DUR[BX]
+    MOV CS:CKB_SND_TICKS,BX
+    INC WORD PTR CS:CKB_SND_HEAD
+    AND WORD PTR CS:CKB_SND_HEAD,31
+    DEC WORD PTR CS:CKB_SND_COUNT
+    CALL CKB_SND_PROGRAM
+    JMP SHORT CKB_SND_ISR_CHAIN
+CKB_SND_ISR_OFF:
+    IN AL,61H
+    AND AL,0FCH
+    OUT 61H,AL
+CKB_SND_ISR_CHAIN:
+    POP BX
+    POP AX
+    JMP DWORD PTR CS:CKB_OLD_1C
+CKB_SND_ISR ENDP
+
+; AX = divisor, DX = ticks (>0). Returns AX = 1 if accepted, 0 if queue full.
+CKB_SND_PUSH PROC FAR
+    PUSH BX
+    PUSH ES
+    OR DX,DX
+    JZ SHORT CKB_SND_PUSH_OK
+    CLI
+    CMP BYTE PTR CS:CKB_SND_HOOKED,0
+    JNE SHORT CKB_SND_HOOK_READY
+    XOR BX,BX
+    MOV ES,BX
+    MOV BX,ES:[1CH*4]
+    MOV WORD PTR CS:CKB_OLD_1C,BX
+    MOV BX,ES:[1CH*4+2]
+    MOV WORD PTR CS:CKB_OLD_1C+2,BX
+    MOV WORD PTR ES:[1CH*4],OFFSET CKB_SND_ISR
+    MOV ES:[1CH*4+2],CS
+    MOV BYTE PTR CS:CKB_SND_HOOKED,1
+CKB_SND_HOOK_READY:
+    CMP WORD PTR CS:CKB_SND_TICKS,0
+    JNE SHORT CKB_SND_ENQUEUE
+    MOV CS:CKB_SND_TICKS,DX
+    CALL CKB_SND_PROGRAM
+    STI
+    JMP SHORT CKB_SND_PUSH_OK
+CKB_SND_ENQUEUE:
+    CMP WORD PTR CS:CKB_SND_COUNT,CKB_SND_CAP
+    JAE SHORT CKB_SND_PUSH_FULL
+    MOV BX,CS:CKB_SND_TAIL
+    SHL BX,1
+    MOV CS:CKB_SND_DIV[BX],AX
+    MOV CS:CKB_SND_DUR[BX],DX
+    INC WORD PTR CS:CKB_SND_TAIL
+    AND WORD PTR CS:CKB_SND_TAIL,31
+    INC WORD PTR CS:CKB_SND_COUNT
+    STI
+CKB_SND_PUSH_OK:
+    MOV AX,1
+    POP ES
+    POP BX
+    RET
+CKB_SND_PUSH_FULL:
+    STI
+    XOR AX,AX
+    POP ES
+    POP BX
+    RET
+CKB_SND_PUSH ENDP
+
+CKB_SND_QUEUED PROC FAR
+    MOV AX,CS:CKB_SND_COUNT
+    RET
+CKB_SND_QUEUED ENDP
+
+CKB_SND_ACTIVE PROC FAR
+    XOR AX,AX
+    CMP WORD PTR CS:CKB_SND_TICKS,0
+    JNE SHORT CKB_SND_IS_ACT
+    CMP WORD PTR CS:CKB_SND_COUNT,0
+    JE SHORT CKB_SND_ACT_OUT
+CKB_SND_IS_ACT:
+    INC AX
+CKB_SND_ACT_OUT:
+    RET
+CKB_SND_ACTIVE ENDP
+
+CKB_SND_STOP PROC FAR
+    PUSH AX
+    PUSH BX
+    PUSH ES
+    CLI
+    MOV WORD PTR CS:CKB_SND_TICKS,0
+    MOV WORD PTR CS:CKB_SND_COUNT,0
+    MOV WORD PTR CS:CKB_SND_HEAD,0
+    MOV WORD PTR CS:CKB_SND_TAIL,0
+    IN AL,61H
+    AND AL,0FCH
+    OUT 61H,AL
+    CMP BYTE PTR CS:CKB_SND_HOOKED,0
+    JE SHORT CKB_SND_STOP_DONE
+    XOR BX,BX
+    MOV ES,BX
+    MOV AX,WORD PTR CS:CKB_OLD_1C
+    MOV ES:[1CH*4],AX
+    MOV AX,WORD PTR CS:CKB_OLD_1C+2
+    MOV ES:[1CH*4+2],AX
+    MOV BYTE PTR CS:CKB_SND_HOOKED,0
+CKB_SND_STOP_DONE:
+    STI
+    POP ES
+    POP BX
+    POP AX
+    RET
+CKB_SND_STOP ENDP
+
+; ---------------------------------------------------------------------------
+; CALL ABSOLUTE machine-code bridge
+; AX = target_seg, DX = target_off, CX = argc, BX = near ptr to arg offsets
+; Pushes arg_offsets[0..argc-1] left-to-right (Pascal order), calls FAR
+; target_seg:target_off, and restores SP/DS/ES/BP cleanly.
+; ---------------------------------------------------------------------------
+CKB_CALL_ABSOLUTE PROC FAR
+    PUSH BP
+    MOV BP,SP
+    SUB SP,8
+    PUSH SI
+    PUSH DI
+    PUSH DS
+    PUSH ES
+    MOV [BP-2],SP
+    MOV [BP-4],SS
+    MOV [BP-6],AX
+    MOV [BP-8],DX
+    JCXZ SHORT CKB_ABS_DO_CALL
+    MOV SI,BX
+CKB_ABS_PUSH_ARG:
+    LODSW
+    PUSH AX
+    LOOP CKB_ABS_PUSH_ARG
+CKB_ABS_DO_CALL:
+    CALL DWORD PTR [BP-8]
+    CLI
+    MOV SS,[BP-4]
+    MOV SP,[BP-2]
+    STI
+    POP ES
+    POP DS
+    POP DI
+    POP SI
+    MOV SP,BP
+    POP BP
+    RET
+CKB_CALL_ABSOLUTE ENDP
 
 _dosui_smoke PROC FAR
     PUSH BP
@@ -342,6 +631,49 @@ _input_idle PROC FAR
     HLT
     RET
 _input_idle ENDP
+
+_ui_setup_mode PROC FAR
+    PUSH BP
+    MOV BP,SP
+    MOV AX,[BP+6]
+    CALL FAR PTR CKBIDE_SETUP_MODE
+    POP BP
+    RET
+_ui_setup_mode ENDP
+
+_ckb_snd_push PROC FAR
+    PUSH BP
+    MOV BP,SP
+    MOV AX,[BP+6]
+    MOV DX,[BP+8]
+    CALL FAR PTR CKB_SND_PUSH
+    POP BP
+    RET
+_ckb_snd_push ENDP
+
+_ckb_snd_queued PROC FAR
+    JMP SHORT CKB_SND_QUEUED
+_ckb_snd_queued ENDP
+
+_ckb_snd_active PROC FAR
+    JMP SHORT CKB_SND_ACTIVE
+_ckb_snd_active ENDP
+
+_ckb_snd_stop PROC FAR
+    JMP SHORT CKB_SND_STOP
+_ckb_snd_stop ENDP
+
+_ckb_call_absolute PROC FAR
+    PUSH BP
+    MOV BP,SP
+    MOV AX,[BP+6]
+    MOV DX,[BP+8]
+    MOV CX,[BP+10]
+    MOV BX,[BP+12]
+    CALL FAR PTR CKB_CALL_ABSOLUTE
+    POP BP
+    RET
+_ckb_call_absolute ENDP
 
 DOSUI_TEXT ENDS
 END

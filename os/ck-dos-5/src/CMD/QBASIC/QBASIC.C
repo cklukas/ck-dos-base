@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "CKBCON.H"
 #include "CKBIDE.H"
 #include "CKBRUN.H"
 
@@ -226,25 +227,59 @@ static int exit_status(const char *value)
     return *value ? -1 : (int)result;
 }
 
+static int dos_is_console_in(void)
+{
+    union REGS regs = {0};
+    regs.x.ax = 0x4400;
+    regs.x.bx = 0;
+    intdos(&regs, &regs);
+    return !regs.x.cflag && (regs.x.dx & 0x81U) == 0x81U;
+}
+
+static int dos_is_console_out(void)
+{
+    union REGS regs = {0};
+    regs.x.ax = 0x4400;
+    regs.x.bx = 1;
+    intdos(&regs, &regs);
+    return !regs.x.cflag && (regs.x.dx & 0x82U) == 0x82U;
+}
+
+static int show_usage(int interactive)
+{
+    static const char usage_text[] =
+        "Starts CK Basic (QBASIC.EXE), the CK-DOS BASIC programming environment.\r\n"
+        "Copyright (c) 2026 C. Klukas. All rights reserved. Clean-room MIT implementation.\r\n\r\n"
+        "QBASIC [/B] [/EDITOR] [/G] [/H] [/MBF] [/NOHI] [[/RUN] [drive:][path]filename]\r\n";
+    if (interactive) {
+        write_text(DOS_STDOUT, usage_text);
+        return 0;
+    }
+    return error_message(usage_text, 1);
+}
+
 /* /EDITOR is serviced by the standalone DOS editor. Prefer the installed
  * copy so the child can locate its own settings and help beside it. */
-static int editor_command(char *cursor)
+static int editor_command_args(unsigned disp_flags, const char *file_arg)
 {
     static const char installed[] = "C:\\DOS\\EDIT.COM";
+    static const char root_copy[] = "C:\\EDIT.COM";
     static const char local[] = "EDIT.COM";
-    const char *argv[PSP_TAIL_MAX / 2 + 2];
+    const char *argv[8];
     unsigned count = 1;
     int status;
-    for (;;) {
-        const char *token = run_argument(&cursor);
-        if (!token || count >= sizeof(argv) / sizeof(*argv))
-            return error_message("Usage: QBASIC /EDITOR [file] [/B] [/G] [/H] [/NOHI]\r\n", 1);
-        if (!*token) break;
-        argv[count++] = token;
-    }
+    if (disp_flags & CKB_DISP_MONO) argv[count++] = "/B";
+    if (disp_flags & CKB_DISP_CGA_FAST) argv[count++] = "/G";
+    if (disp_flags & CKB_DISP_HIGH_ROWS) argv[count++] = "/H";
+    if (disp_flags & CKB_DISP_NOHI) argv[count++] = "/NOHI";
+    if (file_arg && *file_arg) argv[count++] = file_arg;
     argv[count] = NULL;
     argv[0] = installed;
     status = spawnv(P_WAIT, installed, argv);
+    if (status == -1) {
+        argv[0] = root_copy;
+        status = spawnv(P_WAIT, root_copy, argv);
+    }
     if (status == -1) {
         argv[0] = local;
         status = spawnvp(P_WAIT, local, argv);
@@ -255,58 +290,97 @@ static int editor_command(char *cursor)
 int main(void)
 {
     char *cursor = tail;
-    char *mode, *first, *second;
-    int status, mbf;
+    char *first, *second;
+    int status;
+    int interactive = dos_is_console_in() && dos_is_console_out();
     unsigned available, i;
     static char memory[] = "FREE PARAGRAPHS: 0000\r\n";
     if (read_tail()) {
-        while (is_space(*cursor)) ++cursor;
-        if (*cursor != '/') {
-            first = run_argument(&cursor);
-            if (first && !*argument(&cursor)) return ckb_ide(first);
-            return error_message("Usage: QBASIC [source.bas]\r\n", 1);
-        }
-        mode = argument(&cursor);
-        if (strcmp(mode, "/?") == 0) {
-            write_text(DOS_STDOUT,
-                "Starts CK Basic (QBASIC.EXE), the CK-DOS BASIC programming environment.\r\n"
-                "Copyright (c) 2026 C. Klukas. All rights reserved. Clean-room MIT implementation.\r\n\r\n"
-                "QBASIC [/B] [/EDITOR] [/G] [/H] [/MBF] [/NOHI] [[/RUN] [drive:][path]filename]\r\n");
-            return 0;
-        }
-        mbf = stricmp(mode, "/MBF") == 0;
-        if (mbf) mode = argument(&cursor);
-        if (stricmp(mode, "/RUN") == 0) {
-            first = run_argument(&cursor);
-            if (first && *first && !*argument(&cursor))
-                return ckb_run(first, mbf);
-            return error_message("Usage: QBASIC /RUN source.bas\r\n", 1);
-        }
-        if (mbf)
-            return error_message("Usage: QBASIC /MBF /RUN source.bas\r\n", 1);
-        if (stricmp(mode, "/EDITOR") == 0)
-            return editor_command(cursor);
-        first = argument(&cursor);
-        second = argument(&cursor);
-        if (stricmp(mode, "/EXIT") == 0 && !*second) {
-            status = exit_status(first);
-            if (status >= 0) return status;
-        }
-        if (stricmp(mode, "/PROBE") == 0 && *first && *second &&
-            !*argument(&cursor)) {
-            if (!check_environment())
-                return error_message("CKBASIC: expected CKBASIC_WP02=ready\r\n", 2);
-            if (!copy_file(first, second))
-                return error_message("CKBASIC: file I/O failed\r\n", 3);
-            if (!probe_ui(&available))
-                return error_message("CKBASIC: DOSUI or memory check failed\r\n", 4);
-            for (i = 0; i < 4U; ++i) {
-                memory[20U - i] = "0123456789ABCDEF"[available & 0xfU];
-                available >>= 4;
+        char *probe_cur = cursor;
+        while (is_space(*probe_cur)) ++probe_cur;
+        if (*probe_cur == '/') {
+            /* Check WP02 qualification switches (/EXIT, /PROBE, /?) first */
+            char saved_tail[PSP_TAIL_MAX + 1U];
+            char *sc, *mode;
+            strcpy(saved_tail, probe_cur);
+            sc = saved_tail;
+            mode = argument(&sc);
+            if (strcmp(mode, "/?") == 0 && !*argument(&sc))
+                return show_usage(1);
+            if (stricmp(mode, "/EXIT") == 0) {
+                first = argument(&sc);
+                second = argument(&sc);
+                if (!*second) {
+                    status = exit_status(first);
+                    if (status >= 0) return status;
+                }
             }
-            if (!write_text(DOS_STDOUT, "CKBASIC WP02 OK\r\n") ||
-                !write_text(DOS_STDOUT, memory)) return 5;
-            return 0;
+            if (stricmp(mode, "/PROBE") == 0) {
+                first = argument(&sc);
+                second = argument(&sc);
+                if (*first && *second && !*argument(&sc)) {
+                    if (!check_environment())
+                        return error_message("CKBASIC: expected CKBASIC_WP02=ready\r\n", 2);
+                    if (!copy_file(first, second))
+                        return error_message("CKBASIC: file I/O failed\r\n", 3);
+                    if (!probe_ui(&available))
+                        return error_message("CKBASIC: DOSUI or memory check failed\r\n", 4);
+                    for (i = 0; i < 4U; ++i) {
+                        memory[20U - i] = "0123456789ABCDEF"[available & 0xfU];
+                        available >>= 4;
+                    }
+                    if (!write_text(DOS_STDOUT, "CKBASIC WP02 OK\r\n") ||
+                        !write_text(DOS_STDOUT, memory)) return 5;
+                    return 0;
+                }
+            }
+        }
+
+        {
+            unsigned disp_flags = 0;
+            int mbf = 0, slash_run = 0, editor_mode = 0;
+            const char *file_arg = NULL;
+            for (;;) {
+                while (is_space(*cursor)) ++cursor;
+                if (!*cursor) break;
+                if (*cursor == '/') {
+                    /* Separate concatenated switches like /B/H if any */
+                    char sw[16];
+                    unsigned slen = 0;
+                    sw[slen++] = *cursor++;
+                    while (*cursor && !is_space(*cursor) && *cursor != '/' && slen + 1U < sizeof(sw))
+                        sw[slen++] = *cursor++;
+                    sw[slen] = '\0';
+                    if (strcmp(sw, "/?") == 0) return show_usage(1);
+                    else if (stricmp(sw, "/B") == 0) disp_flags |= CKB_DISP_MONO;
+                    else if (stricmp(sw, "/G") == 0) disp_flags |= CKB_DISP_CGA_FAST;
+                    else if (stricmp(sw, "/H") == 0) disp_flags |= CKB_DISP_HIGH_ROWS;
+                    else if (stricmp(sw, "/NOHI") == 0) disp_flags |= CKB_DISP_NOHI;
+                    else if (stricmp(sw, "/MBF") == 0) mbf = 1;
+                    else if (stricmp(sw, "/RUN") == 0) slash_run = 1;
+                    else if (stricmp(sw, "/EDITOR") == 0) editor_mode = 1;
+                    else return show_usage(interactive);
+                } else {
+                    char *tok = run_argument(&cursor);
+                    if (!tok || !*tok || file_arg)
+                        return slash_run ? error_message("Usage: QBASIC /RUN source.bas\r\n", 1)
+                                         : show_usage(interactive);
+                    file_arg = tok;
+                }
+            }
+            if (editor_mode) {
+                if (slash_run || mbf) return show_usage(interactive);
+                return editor_command_args(disp_flags, file_arg);
+            }
+            ckb_set_display_flags(disp_flags);
+            if (slash_run) {
+                if (!file_arg || !*file_arg)
+                    return error_message("Usage: QBASIC /RUN source.bas\r\n", 1);
+                if (!interactive)
+                    return ckb_run(file_arg, mbf);
+                return ckb_ide_run(file_arg, mbf, 1, disp_flags);
+            }
+            return ckb_ide_run(file_arg ? file_arg : "", mbf, 0, disp_flags);
         }
     }
     return error_message("Usage: QBASIC [source.bas] | /RUN source.bas | /EDITOR [file]\r\n", 1);

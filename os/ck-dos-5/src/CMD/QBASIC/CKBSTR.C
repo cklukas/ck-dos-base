@@ -598,3 +598,386 @@ long ckb_fre(int is_str, long arg)
         return slab_free < target ? slab_free : target;
     }
 }
+
+/* =========================================================================
+ * Type, numeric conversion, storage helpers & event traps (shared segment)
+ * ========================================================================= */
+
+RecordType *record_type(char kind)
+{
+    unsigned id = (unsigned char)kind;
+    return id && id <= record_count ? &records[id - 1] : NULL;
+}
+
+unsigned record_size(char kind)
+{
+    const RecordType *type = record_type(kind);
+    return type ? type->size : 0;
+}
+
+unsigned member_size(char kind, unsigned width)
+{
+    switch (kind) {
+    case '$': return width;
+    case '%': return 2;
+    case '&': case '!': return 4;
+    case '#': return 8;
+    default: return record_size(kind);
+    }
+}
+
+unsigned array_element_size(const Variable *v)
+{
+    return v->kind == '$' ? sizeof(char __far *) : member_size(v->kind, 0);
+}
+
+double round_even(double n)
+{
+    double low = floor(n);
+    double fraction = n - low;
+    return fraction > .5 || (fraction == .5 && fmod(low, 2) != 0) ? low + 1 : low;
+}
+
+int finite_number(double n)
+{
+    return !ckb_num_is_special(n);
+}
+
+int try_exact_int21(double value, long *out)
+{
+    const unsigned short *w = (const unsigned short *)&value;
+    unsigned int w3 = w[3];
+    unsigned int bexp;
+    if (w[0] != 0 || w[1] != 0) return 0;
+    if ((w3 & 0x7FFFU) == 0 && w[2] == 0) {
+        *out = 0;
+        return 1;
+    }
+    bexp = (w3 >> 4) & 0x7FFU;
+    if (bexp >= 1023U && bexp <= 1043U) {
+        unsigned int shift = 1043U - bexp;
+        unsigned long hi21 = (((unsigned long)(w3 & 0x000FU) << 16) | (unsigned long)w[2]) | 0x00100000UL;
+        unsigned long mag = hi21 >> shift;
+        if ((mag << shift) == hi21) {
+            *out = (w3 & 0x8000U) ? -(long)mag : (long)mag;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void convert_number(Parser *p, Value *v, char kind, int run)
+{
+    double n = v->number;
+    long lv;
+    v->kind = kind;
+    if (!run) return;
+    if (kind == '%') {
+        if (try_exact_int21(n, &lv)) {
+            if (lv >= -32768L && lv <= 32767L) return;
+            fail(p, "Overflow");
+            return;
+        }
+        n = round_even(n);
+    } else if (kind == '&') {
+        if (try_exact_int21(n, &lv)) return;
+        if (n >= -2147483648.0 && n <= 2147483647.0) {
+            lv = (long)n;
+            if ((double)lv == n) return;
+        }
+        n = round_even(n);
+    }
+    if (!finite_number(n) ||
+        (kind == '%' && (n < -32768.0 || n > 32767.0)) ||
+        (kind == '&' && (n < -2147483648.0 || n > 2147483647.0)) ||
+        (kind == '!' && (n < -3.4028234663852886e38 || n > 3.4028234663852886e38))) {
+        fail(p, "Overflow");
+        return;
+    }
+    if (kind == '!') n = ckb_single_precision(n);
+    v->number = n;
+}
+
+Variable *variable_storage(int id)
+{
+    unsigned slot = variables[id].frame_slot;
+    return slot ? &activation->locals[slot - 1] : &variables[id];
+}
+
+Variable *array_storage(int id)
+{
+    Variable *v = variable_storage(id);
+    return v->reference.target ? v->reference.target : v;
+}
+
+Reference reference_at(int id, unsigned cell)
+{
+    Variable *v = variable_storage(id);
+    Reference ref;
+    if (v->reference.target) {
+        ref = v->reference;
+        if (v->array) ref.cell = cell;
+        return ref;
+    }
+    ref.target = v;
+    ref.cell = cell;
+    ref.offset = 0;
+    ref.width = v->fixed_width;
+    ref.kind = v->kind;
+    return ref;
+}
+
+int valid_cell(Parser *p, const Variable *v, unsigned cell)
+{
+    if (v->array && (!v->elements || cell >= v->cells)) {
+        fail(p, "Subscript out of range");
+        return 0;
+    }
+    return 1;
+}
+
+int ckbr_has_events;
+static unsigned timer_trap_line;
+static unsigned char timer_trap_state;
+static unsigned char timer_trap_pending;
+static double timer_trap_period;
+static double timer_trap_last;
+static unsigned play_trap_line;
+static unsigned char play_trap_state;
+static unsigned char play_trap_thresh;
+static unsigned key_trap_line[26];
+static unsigned char key_trap_state[26];
+static unsigned char in_event_trap;
+static unsigned event_return_depth;
+
+void ckbr_reset_events(void)
+{
+    unsigned i;
+    ckbr_has_events = 0;
+    timer_trap_line = LINE_MAX;
+    timer_trap_state = 0;
+    timer_trap_pending = 0;
+    timer_trap_period = 0.0;
+    timer_trap_last = 0.0;
+    play_trap_line = LINE_MAX;
+    play_trap_state = 0;
+    play_trap_thresh = 1;
+    for (i = 0; i < 26U; ++i) {
+        key_trap_line[i] = LINE_MAX;
+        key_trap_state[i] = 0;
+    }
+    in_event_trap = 0;
+    event_return_depth = 0;
+}
+
+void ckbr_on_return_pop(void)
+{
+    if (in_event_trap && call_depth == event_return_depth)
+        in_event_trap = 0;
+}
+
+void ckbr_timer_statement(Parser *p, int run)
+{
+    if (take_word(p, "ON")) {
+        if (run) {
+            timer_trap_state = 1;
+            timer_trap_last = ckb_timer();
+        }
+    } else if (take_word(p, "OFF")) {
+        if (run) { timer_trap_state = 0; timer_trap_pending = 0; }
+    } else if (take_word(p, "STOP")) {
+        if (run) timer_trap_state = 2;
+    } else {
+        fail(p, "Expected: ON, OFF, or STOP");
+    }
+}
+
+int ckbr_play_ctrl(Parser *p, int run)
+{
+    if (take_word(p, "ON")) { if (run) play_trap_state = 1; return 1; }
+    if (take_word(p, "OFF")) { if (run) play_trap_state = 0; return 1; }
+    if (take_word(p, "STOP")) { if (run) play_trap_state = 2; return 1; }
+    return 0;
+}
+
+void ckbr_key_statement(Parser *p, int run)
+{
+    if (take(p, '(')) {
+        long n = integer_operand(p, numeric(p, run), run);
+        int st = -1;
+        expect(p, ')', "Expected: )");
+        if (take_word(p, "ON")) st = 1;
+        else if (take_word(p, "OFF")) st = 0;
+        else if (take_word(p, "STOP")) st = 2;
+        else { fail(p, "Expected: ON, OFF, or STOP"); return; }
+        if (run && !error_message) {
+            if (n < 1 || n > 25) fail(p, "Illegal function call");
+            else key_trap_state[n] = (unsigned char)st;
+        }
+        return;
+    }
+    if (take_word(p, "OFF") || take_word(p, "ON") || take_word(p, "LIST"))
+        return;
+    {
+        long n = integer_operand(p, numeric(p, run), run);
+        Value def;
+        expect(p, ',', "Expected: ,");
+        expression(p, &def, 1, 0, run);
+        if (!def.string) fail(p, "Type mismatch");
+        else if (run && !error_message && (n < 1 || n > 25))
+            fail(p, "Illegal function call");
+    }
+}
+
+void ckbr_on_statement(Parser *p, int run)
+{
+    unsigned line;
+    if (take_word(p, "ERROR")) {
+        expect_word(p, "GOTO", "Expected: GOTO");
+        if (p->token == T_NUMBER && p->number == 0) {
+            scan(p);
+            line = LINE_MAX;
+        } else line = target_label(p);
+        if (run && !error_message) error_handler[current_scope + 1] = line;
+        return;
+    }
+    if (take_word(p, "TIMER")) {
+        double secs;
+        ckbr_has_events = 1;
+        expect(p, '(', "Expected: (");
+        secs = numeric(p, run);
+        expect(p, ')', "Expected: )");
+        expect_word(p, "GOSUB", "Expected: GOSUB");
+        if (p->token == T_NUMBER && p->number == 0) {
+            scan(p);
+            line = LINE_MAX;
+        } else line = target_label(p);
+        if (run && !error_message) {
+            if (secs <= 0.0 || secs > 86400.0) fail(p, "Illegal function call");
+            else {
+                timer_trap_period = secs;
+                timer_trap_line = line;
+                timer_trap_last = ckb_timer();
+                timer_trap_pending = 0;
+            }
+        }
+        return;
+    }
+    if (take_word(p, "PLAY")) {
+        long qlim;
+        ckbr_has_events = 1;
+        expect(p, '(', "Expected: (");
+        qlim = integer_operand(p, numeric(p, run), run);
+        expect(p, ')', "Expected: )");
+        expect_word(p, "GOSUB", "Expected: GOSUB");
+        if (p->token == T_NUMBER && p->number == 0) {
+            scan(p);
+            line = LINE_MAX;
+        } else line = target_label(p);
+        if (run && !error_message) {
+            if (qlim < 1 || qlim > 32) fail(p, "Illegal function call");
+            else {
+                play_trap_thresh = (unsigned char)qlim;
+                play_trap_line = line;
+            }
+        }
+        return;
+    }
+    if (take_word(p, "KEY")) {
+        long kn;
+        ckbr_has_events = 1;
+        expect(p, '(', "Expected: (");
+        kn = integer_operand(p, numeric(p, run), run);
+        expect(p, ')', "Expected: )");
+        expect_word(p, "GOSUB", "Expected: GOSUB");
+        if (p->token == T_NUMBER && p->number == 0) {
+            scan(p);
+            line = LINE_MAX;
+        } else line = target_label(p);
+        if (run && !error_message) {
+            if (kn < 1 || kn > 25) fail(p, "Illegal function call");
+            else key_trap_line[kn] = line;
+        }
+        return;
+    }
+    {
+        long choice = integer_operand(p, numeric(p, run), run);
+        int is_gosub = 0;
+        unsigned idx = 1, chosen = LINE_MAX;
+        if (take_word(p, "GOSUB")) is_gosub = 1;
+        else if (!expect_word(p, "GOTO", "Expected: GOTO or GOSUB")) return;
+        do {
+            unsigned tgt = target_label(p);
+            if (idx == (unsigned)choice) chosen = tgt;
+            ++idx;
+        } while (!error_message && take(p, ','));
+        if (run && !error_message) {
+            if (choice < 0 || choice > 255) fail(p, "Illegal function call");
+            else if (choice >= 1 && chosen < LINE_MAX) {
+                if (is_gosub) {
+                    if (call_depth == STACK_MAX) fail(p, "Too many nested GOSUBs");
+                    else {
+                        Position aft;
+                        if (p->token == ':') { aft.line = p->line; aft.offset = p->pos; }
+                        else {
+                            aft.line = p->line + 1U;
+                            aft.offset = aft.line < line_count ? lines[aft.line].body : 0U;
+                        }
+                        calls[call_depth++] = aft;
+                        jumped = 1;
+                        next_position.line = chosen;
+                        next_position.offset = lines[chosen].body;
+                    }
+                } else {
+                    jumped = 1;
+                    next_position.line = chosen;
+                    next_position.offset = lines[chosen].body;
+                }
+            }
+        }
+    }
+}
+
+void ckbr_check_events(Position *at_io)
+{
+    if (in_event_trap || handling_error || current_scope >= 0 || call_depth >= STACK_MAX)
+        return;
+    if (timer_trap_line < line_count && (timer_trap_state == 1 || timer_trap_state == 2)) {
+        double now = ckb_timer();
+        double dt = now - timer_trap_last;
+        if (dt < 0.0) dt += 86400.0;
+        if (dt >= timer_trap_period) {
+            timer_trap_last = now;
+            if (timer_trap_state == 2) timer_trap_pending = 1;
+            else {
+                timer_trap_pending = 0;
+                in_event_trap = 1;
+                event_return_depth = call_depth;
+                calls[call_depth++] = *at_io;
+                at_io->line = timer_trap_line;
+                at_io->offset = lines[timer_trap_line].body;
+                return;
+            }
+        } else if (timer_trap_state == 1 && timer_trap_pending) {
+            timer_trap_pending = 0;
+            in_event_trap = 1;
+            event_return_depth = call_depth;
+            calls[call_depth++] = *at_io;
+            at_io->line = timer_trap_line;
+            at_io->offset = lines[timer_trap_line].body;
+            return;
+        }
+    }
+    if (play_trap_line < line_count && play_trap_state == 1) {
+        int q = ckb_play_queued();
+        if (q < (int)play_trap_thresh) {
+            play_trap_state = 0;
+            in_event_trap = 1;
+            event_return_depth = call_depth;
+            calls[call_depth++] = *at_io;
+            at_io->line = play_trap_line;
+            at_io->offset = lines[play_trap_line].body;
+            return;
+        }
+    }
+}

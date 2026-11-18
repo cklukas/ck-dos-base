@@ -77,6 +77,8 @@ enum {
     OP_STORE_REC,       /* w1: var_id, w2: field_offset, w3: (width<<8)|kind */
     OP_LOAD_RECARR1,    /* w1: var_id, w2: field_offset, w3: (width<<8)|kind */
     OP_STORE_RECARR1,   /* w1: var_id, w2: field_offset, w3: (width<<8)|kind */
+    OP_LOAD_RECARR2,    /* w1: var_id, w2: field_offset, w3: (width<<8)|kind */
+    OP_STORE_RECARR2,   /* w1: var_id, w2: field_offset, w3: (width<<8)|kind */
 
     /* Type Conversions */
     OP_I2F,             /* convert top-of-stack int -> double */

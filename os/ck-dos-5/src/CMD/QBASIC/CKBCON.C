@@ -19,13 +19,25 @@
 #endif
 
 extern unsigned __far input_key(void);
+extern int __far ckb_snd_push(unsigned divisor, unsigned ticks);
+extern unsigned __far ckb_snd_queued(void);
+extern int __far ckb_snd_active(void);
+extern void __far ckb_snd_stop(void);
 #ifdef __WATCOMC__
 #pragma aux input_key "_input_key" value [ax] modify exact [ax]
+#pragma aux ckb_snd_push "CKB_SND_PUSH" parm [ax] [dx] value [ax] modify exact [ax]
+#pragma aux ckb_snd_queued "CKB_SND_QUEUED" value [ax] modify exact [ax]
+#pragma aux ckb_snd_active "CKB_SND_ACTIVE" value [ax] modify exact [ax]
+#pragma aux ckb_snd_stop "CKB_SND_STOP" modify exact []
 #endif
 
+static unsigned display_flags = 0;
 static int screen_mode = 0;
 static int screen_cols = 80;
 static int screen_rows = 25;
+static int active_page = 0;
+static int visual_page = 0;
+static unsigned vram_page_seg_off = 0;
 static int gfx_width = 0;
 static int gfx_height = 0;
 static int max_color = 15;
@@ -44,16 +56,32 @@ static int direct_console = 0;
 static int last_x = 0;
 static int last_y = 0;
 
+/* Graphics VIEW and WINDOW state */
+static int vp_active = 0;
+static int vp_screen = 0;
+static int vp_x1 = 0, vp_y1 = 0, vp_x2 = 0, vp_y2 = 0;
+static int win_active = 0;
+static int win_screen = 0;
+static double win_x1 = 0.0, win_y1 = 0.0, win_x2 = 0.0, win_y2 = 0.0;
+
+/* Persistent DRAW state (reset on run / SCREEN change) */
+static int draw_scale = 4;
+static int draw_angle = 0;
+
 /* Persistent MML PLAY state (reset at start of each program run). */
 static int play_octave = 4;
 static int play_length = 4;
 static int play_tempo = 120;
 static int play_style = 0; /* 0 = MN (7/8), 1 = ML (8/8), 2 = MS (3/4) */
 static int play_bg = 0;
+static unsigned long play_frac_rem = 0;
 
 /* Timer pacing state so tight TIMER loops calibrate consistently across CPUs. */
 static int timer_has_prev = 0;
 static unsigned long timer_prev_total = 0;
+
+void ckb_set_display_flags(unsigned flags) { display_flags = flags; }
+unsigned ckb_get_display_flags(void) { return display_flags; }
 
 #define TWO_PI 6.28318530717958647692
 
@@ -134,18 +162,47 @@ static void reset_planar_gc(void)
     outp(0x3cf, 0x00);
 }
 
+static unsigned text_page_seg(int page)
+{
+    unsigned paras = (screen_cols == 40 && screen_rows == 25) ? 128U : 256U;
+    if (screen_rows > 25) paras = 512U;
+    return 0xb800U + (unsigned)page * paras;
+}
+
+static unsigned gfx_page_seg(int mode, int page)
+{
+    if (mode == 7) return 0xa000U + (unsigned)page * 0x0200U;
+    if (mode == 8) return 0xa000U + (unsigned)page * 0x0400U;
+    if (mode == 9 || mode == 10) return 0xa000U + (unsigned)page * 0x0800U;
+    return 0xa000U;
+}
+
+static int max_page_for_mode(int mode)
+{
+    switch (mode) {
+    case 0: return screen_rows > 25 ? 1 : 7;
+    case 7: return 7;
+    case 8: return 3;
+    case 9:
+    case 10: return 1;
+    default: return 0;
+    }
+}
+
 void ckb_speaker_off(void)
 {
-    unsigned v = (unsigned)inp(0x61);
-    outp(0x61, (int)(v & ~3U));
+    ckb_snd_stop();
 }
 
 void ckb_con_reset_run(void)
 {
-    ckb_speaker_off();
+    ckb_snd_stop();
     screen_mode = 0;
     screen_cols = 80;
     screen_rows = 25;
+    active_page = 0;
+    visual_page = 0;
+    vram_page_seg_off = 0;
     gfx_width = 0;
     gfx_height = 0;
     max_color = 15;
@@ -163,19 +220,29 @@ void ckb_con_reset_run(void)
     direct_console = 0;
     last_x = 0;
     last_y = 0;
+    vp_active = 0;
+    vp_screen = 0;
+    vp_x1 = vp_y1 = vp_x2 = vp_y2 = 0;
+    win_active = 0;
+    win_screen = 0;
+    draw_scale = 4;
+    draw_angle = 0;
     play_octave = 4;
     play_length = 4;
     play_tempo = 120;
     play_style = 0;
     play_bg = 0;
+    play_frac_rem = 0;
     timer_has_prev = 0;
 }
 
 void ckb_con_reset_text(void)
 {
     union REGS regs = {0};
-    ckb_speaker_off();
-    if ((*(const unsigned char __far *)MK_FP(0x40, 0x49) & 0x7f) != 3) {
+    ckb_snd_stop();
+    if ((*(const unsigned char __far *)MK_FP(0x40, 0x49) & 0x7f) != 3 ||
+        *(const unsigned char __far *)MK_FP(0x40, 0x62) != 0 ||
+        *(const unsigned char __far *)MK_FP(0x40, 0x84) > 24) {
         regs.x.ax = 0x0003;
         int86(0x10, &regs, &regs);
     } else if (!cursor_visible && tty_console()) {
@@ -189,7 +256,7 @@ void ckb_con_reset_text(void)
 void ckb_con_acknowledge_graphics(void)
 {
     const char *msg = "Press any key to continue";
-    ckb_speaker_off();
+    ckb_snd_stop();
     view_top = 1;
     view_bottom = screen_rows;
     ckb_locate(screen_rows, 1, -1);
@@ -198,19 +265,70 @@ void ckb_con_acknowledge_graphics(void)
     }
 }
 
-const char *ckb_screen(int mode)
+static int adapter_supports_mode(int target_mode)
 {
     union REGS regs = {0};
+    struct SREGS sregs = {0};
+    unsigned char fbuf[64];
+    int has_vga, has_ega, is_mda_equip;
+    if (target_mode == 0) return 1;
+    regs.x.ax = 0x1a00;
+    int86(0x10, &regs, &regs);
+    has_vga = (regs.h.al == 0x1a);
+    if (has_vga) {
+        if (target_mode >= 7) {
+            memset(fbuf, 0, sizeof(fbuf));
+            segread(&sregs);
+            sregs.es = sregs.ss;
+            regs.x.ax = 0x1b00;
+            regs.x.bx = 0x0000;
+            regs.x.di = (unsigned)(size_t)fbuf;
+            int86x(0x10, &regs, &regs, &sregs);
+            if (regs.h.al == 0x1b) {
+                unsigned off = (unsigned)fbuf[0] | ((unsigned)fbuf[1] << 8);
+                unsigned seg = (unsigned)fbuf[2] | ((unsigned)fbuf[3] << 8);
+                if ((seg || off) &&
+                    (((const unsigned char __far *)MK_FP(seg, off))[2] & 0x0fU) == 0U)
+                    return 0;
+            }
+        }
+        return 1;
+    }
+    memset(&regs, 0, sizeof(regs));
+    regs.h.ah = 0x12;
+    regs.h.bl = 0x10;
+    int86(0x10, &regs, &regs);
+    has_ega = (regs.h.bl <= 3);
+    if (target_mode >= 11) return 0;
+    if (target_mode >= 7) return has_ega;
+    is_mda_equip = ((*(const unsigned __far *)MK_FP(0x40, 0x10)) & 0x30U) == 0x30U;
+    return has_ega || !is_mda_equip;
+}
+
+const char *ckb_screen_ex(int mode, int colorswitch, int apage, int vpage)
+{
+    union REGS regs = {0};
+    int target_mode = mode == -1 ? screen_mode : mode;
+    int mode_changed = (mode != -1 && mode != screen_mode) ||
+                       (mode == 0 && screen_mode == 0 && apage == -1 && vpage == -1);
     int bios_mode = 0x03;
-    switch (mode) {
+    int max_pg;
+    (void)colorswitch;
+
+    if (tty_console() && !adapter_supports_mode(target_mode))
+        return "Illegal function call";
+
+    switch (target_mode) {
     case 0:
         bios_mode = screen_cols == 40 ? 0x01 : 0x03;
-        screen_rows = 25;
-        gfx_width = 0;
-        gfx_height = 0;
-        max_color = 15;
-        fg_color = 7;
-        bg_color = 0;
+        if (mode_changed) {
+            screen_rows = 25;
+            gfx_width = 0;
+            gfx_height = 0;
+            max_color = 15;
+            fg_color = 7;
+            bg_color = 0;
+        }
         break;
     case 1:
         bios_mode = 0x04;
@@ -262,6 +380,26 @@ const char *ckb_screen(int mode)
         fg_color = 15;
         bg_color = 0;
         break;
+    case 10:
+        bios_mode = 0x0f;
+        screen_cols = 80;
+        screen_rows = 25;
+        gfx_width = 640;
+        gfx_height = 350;
+        max_color = 3;
+        fg_color = 3;
+        bg_color = 0;
+        break;
+    case 11:
+        bios_mode = 0x11;
+        screen_cols = 80;
+        screen_rows = 30;
+        gfx_width = 640;
+        gfx_height = 480;
+        max_color = 1;
+        fg_color = 1;
+        bg_color = 0;
+        break;
     case 12:
         bios_mode = 0x12;
         screen_cols = 80;
@@ -285,29 +423,101 @@ const char *ckb_screen(int mode)
     default:
         return "Illegal function call";
     }
+
+    max_pg = max_page_for_mode(target_mode);
+    if ((apage != -1 && (apage < 0 || apage > max_pg)) ||
+        (vpage != -1 && (vpage < 0 || vpage > max_pg)))
+        return "Illegal function call";
+
     if (!direct_console) fflush(stdout);
-    screen_mode = mode;
-    text_attr = (unsigned char)(((bg_color & 7) << 4) | (fg_color & 15));
-    view_top = 1;
-    view_bottom = screen_rows;
-    cur_row = 1;
-    cur_col = 1;
-    cursor_synced = 1;
-    cursor_visible = 0;
-    pending_wrap = 0;
-    last_x = gfx_width / 2;
-    last_y = gfx_height / 2;
-    if (mode != 0 || tty_console()) {
-        direct_console = 1;
-        regs.x.ax = (unsigned)bios_mode;
-        int86(0x10, &regs, &regs);
-        if (mode == 0) {
-            regs.h.ah = 0x01;
-            regs.x.cx = 0x2607;
+    screen_mode = target_mode;
+    if (mode_changed) {
+        active_page = 0;
+        visual_page = 0;
+        text_attr = (unsigned char)(((bg_color & 7) << 4) | (fg_color & 15));
+        view_top = 1;
+        view_bottom = screen_rows;
+        cur_row = 1;
+        cur_col = 1;
+        cursor_synced = 1;
+        cursor_visible = 0;
+        pending_wrap = 0;
+        vp_active = 0;
+        vp_screen = 0;
+        vp_x1 = 0;
+        vp_y1 = 0;
+        vp_x2 = gfx_width > 0 ? gfx_width - 1 : 0;
+        vp_y2 = gfx_height > 0 ? gfx_height - 1 : 0;
+        win_active = 0;
+        win_screen = 0;
+        draw_scale = 4;
+        draw_angle = 0;
+        last_x = gfx_width / 2;
+        last_y = gfx_height / 2;
+        if (target_mode != 0 || tty_console()) {
+            direct_console = 1;
+            regs.x.ax = (unsigned)bios_mode;
+            int86(0x10, &regs, &regs);
+            if (target_mode == 0) {
+                regs.h.ah = 0x01;
+                regs.x.cx = 0x2607;
+                int86(0x10, &regs, &regs);
+            }
+        }
+    }
+    if (apage != -1) active_page = apage;
+    if (vpage != -1) {
+        visual_page = vpage;
+        if (tty_console()) {
+            regs.h.ah = 0x05;
+            regs.h.al = (unsigned char)visual_page;
             int86(0x10, &regs, &regs);
         }
     }
+    vram_page_seg_off = target_mode == 0
+        ? (text_page_seg(active_page) - 0xb800U)
+        : (gfx_page_seg(target_mode, active_page) - 0xa000U);
     return NULL;
+}
+
+const char *ckb_screen(int mode)
+{
+    return ckb_screen_ex(mode, -1, -1, -1);
+}
+
+const char *ckb_pcopy(int src_page, int dst_page)
+{
+    int max_pg = max_page_for_mode(screen_mode);
+    if (src_page < 0 || src_page > max_pg || dst_page < 0 || dst_page > max_pg)
+        return "Illegal function call";
+    if (src_page == dst_page) return NULL;
+    if (screen_mode == 0) {
+        unsigned src_seg = text_page_seg(src_page);
+        unsigned dst_seg = text_page_seg(dst_page);
+        unsigned bytes = (unsigned)screen_cols * (unsigned)screen_rows * 2U;
+        _fmemcpy(MK_FP(dst_seg, 0), MK_FP(src_seg, 0), bytes);
+        return NULL;
+    }
+    if (screen_mode == 7 || screen_mode == 8 || screen_mode == 9 || screen_mode == 10) {
+        volatile unsigned char __far *src =
+            (volatile unsigned char __far *)MK_FP(gfx_page_seg(screen_mode, src_page), 0);
+        volatile unsigned char __far *dst =
+            (volatile unsigned char __far *)MK_FP(gfx_page_seg(screen_mode, dst_page), 0);
+        unsigned plane_bytes = (unsigned)(gfx_width >> 3) * (unsigned)gfx_height;
+        unsigned i;
+        outp(0x3c4, 0x02);
+        outp(0x3c5, 0x0f);
+        outp(0x3ce, 0x05);
+        outp(0x3cf, 0x01);
+        for (i = 0; i < plane_bytes; ++i) {
+            unsigned char v = src[i];
+            (void)v;
+            dst[i] = 0;
+        }
+        reset_planar_gc();
+        return NULL;
+    }
+    return "Illegal function call";
 }
 
 const char *ckb_width_screen(int cols, int rows)
@@ -316,12 +526,18 @@ const char *ckb_width_screen(int cols, int rows)
     if (rows != -1 && rows != 25 && rows != 30 && rows != 43 && rows != 50)
         return "Illegal function call";
     if (cols != -1) screen_cols = cols;
-    if (rows != -1 && screen_mode == 0) screen_rows = 25;
+    if (rows != -1 && screen_mode == 0) screen_rows = rows;
     if (screen_mode == 0 && tty_console()) {
         union REGS regs = {0};
         direct_console = 1;
         regs.x.ax = screen_cols == 40 ? 0x0001 : 0x0003;
         int86(0x10, &regs, &regs);
+        if (screen_rows >= 43) {
+            regs.x.ax = 0x1112;
+            regs.h.bl = 0;
+            int86(0x10, &regs, &regs);
+            screen_rows = (int)(*(const unsigned char __far *)MK_FP(0x40, 0x84)) + 1;
+        }
         if (!cursor_visible) {
             regs.h.ah = 0x01;
             regs.x.cx = 0x2607;
@@ -333,6 +549,7 @@ const char *ckb_width_screen(int cols, int rows)
         pending_wrap = 0;
         view_top = 1;
         view_bottom = screen_rows;
+        vram_page_seg_off = text_page_seg(active_page) - 0xb800U;
     }
     return NULL;
 }
@@ -384,7 +601,16 @@ void ckb_color(int foreground, int background)
     }
     if (screen_mode != 0) {
         if (foreground >= 0) fg_color = foreground & max_color;
-        if (background >= 0) bg_color = background & 15;
+        if (background >= 0) {
+            bg_color = background & 15;
+            if ((screen_mode == 7 || screen_mode == 8 || screen_mode == 9) && tty_console()) {
+                union REGS regs = {0};
+                regs.x.ax = 0x1000;
+                regs.h.bl = 0;
+                regs.h.bh = (unsigned char)(background & 0x3f);
+                int86(0x10, &regs, &regs);
+            }
+        }
         return;
     }
     if (foreground >= 0) {
@@ -404,7 +630,7 @@ void ckb_color(int foreground, int background)
 
 static void clear_text_rows(int top_row, int bottom_row)
 {
-    unsigned __far *vram = (unsigned __far *)MK_FP(0xb800, 0);
+    unsigned __far *vram = (unsigned __far *)MK_FP(0xb800U + vram_page_seg_off, 0);
     unsigned cell = ((unsigned)text_attr << 8) | ' ';
     int r, c;
     for (r = top_row - 1; r < bottom_row; ++r) {
@@ -513,6 +739,49 @@ const char *ckb_view_print(int top, int bottom)
     return NULL;
 }
 
+int ckb_csrlin(void)
+{
+    if (tty_console() && !cursor_synced) sync_bios_cursor_from_bda();
+    return cur_row;
+}
+
+int ckb_pos_col(void)
+{
+    if (tty_console() && !cursor_synced) sync_bios_cursor_from_bda();
+    return pending_wrap ? screen_cols : cur_col;
+}
+
+int ckb_screen_cell(int row, int col, int color_flag, const char **err_out)
+{
+    *err_out = NULL;
+    if (row < 1 || row > screen_rows || col < 1 || col > screen_cols) {
+        *err_out = "Illegal function call";
+        return 0;
+    }
+    if (color_flag && screen_mode != 0) {
+        *err_out = "Illegal function call";
+        return 0;
+    }
+    if (screen_mode == 0) {
+        const unsigned __far *vram =
+            (const unsigned __far *)MK_FP(0xb800U + vram_page_seg_off, 0);
+        unsigned cell = vram[(unsigned)(row - 1) * (unsigned)screen_cols + (unsigned)(col - 1)];
+        if (color_flag) return (int)((cell >> 8) & 0xffU);
+        return (int)((cell & 0xffU) ? (cell & 0xffU) : 32U);
+    }
+    if (tty_console()) {
+        union REGS regs = {0};
+        int save_r = cur_row, save_c = cur_col;
+        set_bios_cursor_hw(row, col);
+        regs.h.ah = 0x08;
+        regs.h.bh = (unsigned char)active_page;
+        int86(0x10, &regs, &regs);
+        set_bios_cursor(save_r, save_c);
+        return regs.h.al ? (int)regs.h.al : 32;
+    }
+    return 32;
+}
+
 int ckb_con_direct_active(void)
 {
     return (screen_mode != 0 || direct_console) && tty_console();
@@ -532,7 +801,7 @@ unsigned ckb_con_width(void)
 static void scroll_viewport_up(void)
 {
     if (screen_mode == 0) {
-        unsigned __far *vram = (unsigned __far *)MK_FP(0xb800, 0);
+        unsigned __far *vram = (unsigned __far *)MK_FP(0xb800U + vram_page_seg_off, 0);
         unsigned blank = ((unsigned)text_attr << 8) | ' ';
         int r, c;
         for (r = view_top - 1; r < view_bottom - 1; ++r) {
@@ -590,7 +859,7 @@ static void put_console_char(unsigned char ch)
         advance_line();
     }
     if (screen_mode == 0) {
-        unsigned __far *vram = (unsigned __far *)MK_FP(0xb800, 0);
+        unsigned __far *vram = (unsigned __far *)MK_FP(0xb800U + vram_page_seg_off, 0);
         unsigned idx = (unsigned)(cur_row - 1) * (unsigned)screen_cols + (unsigned)(cur_col - 1);
         vram[idx] = ((unsigned)text_attr << 8) | ch;
     } else {
@@ -598,7 +867,7 @@ static void put_console_char(unsigned char ch)
         set_bios_cursor(cur_row, cur_col);
         regs.h.ah = 0x09;
         regs.h.al = ch;
-        regs.h.bh = 0;
+        regs.h.bh = (unsigned char)active_page;
         regs.h.bl = (unsigned char)(fg_color & max_color);
         regs.x.cx = 1;
         int86(0x10, &regs, &regs);
@@ -635,10 +904,17 @@ int ckb_gfx_default_color(int is_preset)
     return is_preset ? 0 : fg_color;
 }
 
+int ckb_window_active(void) { return win_active; }
+
+static int clip_min_x(void) { return vp_active ? vp_x1 : 0; }
+static int clip_max_x(void) { return vp_active ? vp_x2 : (gfx_width - 1); }
+static int clip_min_y(void) { return vp_active ? vp_y1 : 0; }
+static int clip_max_y(void) { return vp_active ? vp_y2 : (gfx_height - 1); }
+
 static void raw_put_pixel(int x, int y, int color)
 {
     unsigned char c;
-    if (x < 0 || x >= gfx_width || y < 0 || y >= gfx_height) return;
+    if (x < clip_min_x() || x > clip_max_x() || y < clip_min_y() || y > clip_max_y()) return;
     c = (unsigned char)(color & max_color);
     switch (screen_mode) {
     case 1: {
@@ -656,14 +932,25 @@ static void raw_put_pixel(int x, int y, int color)
         else vram[off] &= (unsigned char)~bit;
         break;
     }
+    case 11: {
+        unsigned char __far *vram = (unsigned char __far *)MK_FP(0xa000U + vram_page_seg_off, 0);
+        unsigned off = (unsigned)y * 80U + (unsigned)(x >> 3);
+        unsigned bit = (unsigned)(0x80U >> (x & 7));
+        if (c & 1) vram[off] |= (unsigned char)bit;
+        else vram[off] &= (unsigned char)~bit;
+        break;
+    }
     case 7:
     case 8:
     case 9:
+    case 10:
     case 12: {
-        volatile unsigned char __far *vram = (volatile unsigned char __far *)MK_FP(0xa000, 0);
+        volatile unsigned char __far *vram =
+            (volatile unsigned char __far *)MK_FP(0xa000U + vram_page_seg_off, 0);
         unsigned stride = screen_mode == 7 ? 40U : 80U;
         unsigned off = (unsigned)y * stride + (unsigned)(x >> 3);
         unsigned char mask = (unsigned char)(0x80U >> (x & 7));
+        unsigned char pc = screen_mode == 10 ? (unsigned char)(((c & 2) << 1) | (c & 1)) : c;
         volatile unsigned char latch;
         outp(0x3ce, 0x05);
         outp(0x3cf, 0x02);
@@ -671,7 +958,7 @@ static void raw_put_pixel(int x, int y, int color)
         outp(0x3cf, mask);
         latch = vram[off];
         (void)latch;
-        vram[off] = c;
+        vram[off] = pc;
         reset_planar_gc();
         break;
     }
@@ -698,11 +985,19 @@ static int raw_get_pixel(int x, int y)
         unsigned off = (unsigned)(y >> 1) * 80U + (unsigned)(x >> 3);
         return (vram[off] >> (7 - (x & 7))) & 1;
     }
+    case 11: {
+        const unsigned char __far *vram =
+            (const unsigned char __far *)MK_FP(0xa000U + vram_page_seg_off, 0);
+        unsigned off = (unsigned)y * 80U + (unsigned)(x >> 3);
+        return (vram[off] >> (7 - (x & 7))) & 1;
+    }
     case 7:
     case 8:
     case 9:
+    case 10:
     case 12: {
-        const unsigned char __far *vram = (const unsigned char __far *)MK_FP(0xa000, 0);
+        const unsigned char __far *vram =
+            (const unsigned char __far *)MK_FP(0xa000U + vram_page_seg_off, 0);
         unsigned stride = screen_mode == 7 ? 40U : 80U;
         unsigned off = (unsigned)y * stride + (unsigned)(x >> 3);
         unsigned bit = (unsigned)(7 - (x & 7));
@@ -710,6 +1005,12 @@ static int raw_get_pixel(int x, int y)
         outp(0x3ce, 0x04);
         outp(0x3cf, 0);
         val = (vram[off] >> bit) & 1;
+        if (screen_mode == 10) {
+            outp(0x3cf, 2);
+            val |= ((vram[off] >> bit) & 1) << 1;
+            outp(0x3cf, 0);
+            return val;
+        }
         outp(0x3cf, 1);
         val |= ((vram[off] >> bit) & 1) << 1;
         outp(0x3cf, 2);
@@ -729,18 +1030,19 @@ static int raw_get_pixel(int x, int y)
 
 static void raw_hline(int x1, int x2, int y, int color)
 {
-    int x;
-    if (y < 0 || y >= gfx_height) return;
+    int x, minx = clip_min_x(), maxx = clip_max_x();
+    if (y < clip_min_y() || y > clip_max_y()) return;
     if (x1 > x2) {
         int t = x1;
         x1 = x2;
         x2 = t;
     }
-    if (x2 < 0 || x1 >= gfx_width) return;
-    if (x1 < 0) x1 = 0;
-    if (x2 >= gfx_width) x2 = gfx_width - 1;
+    if (x2 < minx || x1 > maxx) return;
+    if (x1 < minx) x1 = minx;
+    if (x2 > maxx) x2 = maxx;
     if (screen_mode == 7 || screen_mode == 8 || screen_mode == 9 || screen_mode == 12) {
-        volatile unsigned char __far *vram = (volatile unsigned char __far *)MK_FP(0xa000, 0);
+        volatile unsigned char __far *vram =
+            (volatile unsigned char __far *)MK_FP(0xa000U + vram_page_seg_off, 0);
         unsigned stride = screen_mode == 7 ? 40U : 80U;
         unsigned row_off = (unsigned)y * stride;
         unsigned b1 = (unsigned)(x1 >> 3), b2 = (unsigned)(x2 >> 3);
@@ -797,17 +1099,18 @@ static void raw_hline(int x1, int x2, int y, int color)
 
 static void raw_fill_rect(int x1, int y1, int x2, int y2, int color)
 {
-    int y;
+    int y, minx = clip_min_x(), maxx = clip_max_x(), miny = clip_min_y(), maxy = clip_max_y();
     if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
     if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
-    if (x2 < 0 || x1 >= gfx_width || y2 < 0 || y1 >= gfx_height) return;
-    if (x1 < 0) x1 = 0;
-    if (x2 >= gfx_width) x2 = gfx_width - 1;
-    if (y1 < 0) y1 = 0;
-    if (y2 >= gfx_height) y2 = gfx_height - 1;
+    if (x2 < minx || x1 > maxx || y2 < miny || y1 > maxy) return;
+    if (x1 < minx) x1 = minx;
+    if (x2 > maxx) x2 = maxx;
+    if (y1 < miny) y1 = miny;
+    if (y2 > maxy) y2 = maxy;
 
     if (screen_mode == 7 || screen_mode == 8 || screen_mode == 9 || screen_mode == 12) {
-        volatile unsigned char __far *vram = (volatile unsigned char __far *)MK_FP(0xa000, 0);
+        volatile unsigned char __far *vram =
+            (volatile unsigned char __far *)MK_FP(0xa000U + vram_page_seg_off, 0);
         unsigned stride = screen_mode == 7 ? 40U : 80U;
         unsigned b1 = (unsigned)(x1 >> 3), b2 = (unsigned)(x2 >> 3);
         unsigned char left_mask = (unsigned char)(0xffU >> (x1 & 7));
@@ -884,14 +1187,15 @@ static void raw_fill_rect(int x1, int y1, int x2, int y2, int color)
 
 static void raw_vline(int x, int y1, int y2, int color)
 {
-    int y;
-    if (x < 0 || x >= gfx_width) return;
+    int y, miny = clip_min_y(), maxy = clip_max_y();
+    if (x < clip_min_x() || x > clip_max_x()) return;
     if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
-    if (y2 < 0 || y1 >= gfx_height) return;
-    if (y1 < 0) y1 = 0;
-    if (y2 >= gfx_height) y2 = gfx_height - 1;
+    if (y2 < miny || y1 > maxy) return;
+    if (y1 < miny) y1 = miny;
+    if (y2 > maxy) y2 = maxy;
     if (screen_mode == 7 || screen_mode == 8 || screen_mode == 9 || screen_mode == 12) {
-        volatile unsigned char __far *vram = (volatile unsigned char __far *)MK_FP(0xa000, 0);
+        volatile unsigned char __far *vram =
+            (volatile unsigned char __far *)MK_FP(0xa000U + vram_page_seg_off, 0);
         unsigned stride = screen_mode == 7 ? 40U : 80U;
         unsigned off = (unsigned)y1 * stride + (unsigned)(x >> 3);
         unsigned char mask = (unsigned char)(0x80U >> (x & 7));
@@ -920,9 +1224,10 @@ static void raw_line_segment_ex(int x0, int y0, int x1, int y1, int color, int p
         if (y0 == y1) { raw_hline(x0, x1, y0, color); return; }
         if (x0 == x1) { raw_vline(x0, y0, y1, color); return; }
     }
-    if (is_planar && x0 >= -4096 && x0 <= 4096 && x1 >= -4096 && x1 <= 4096 &&
+    if (!vp_active && is_planar && x0 >= -4096 && x0 <= 4096 && x1 >= -4096 && x1 <= 4096 &&
         y0 >= -4096 && y0 <= 4096 && y1 >= -4096 && y1 <= 4096) {
-        volatile unsigned char __far *vram = (volatile unsigned char __far *)MK_FP(0xa000, 0);
+        volatile unsigned char __far *vram =
+            (volatile unsigned char __far *)MK_FP(0xa000U + vram_page_seg_off, 0);
         unsigned stride = screen_mode == 7 ? 40U : 80U;
         unsigned char c = (unsigned char)(color & 15);
         int dx = x1 >= x0 ? x1 - x0 : x0 - x1;
@@ -1166,7 +1471,8 @@ typedef struct {
 
 static void unpack_planar_row(int y, unsigned char __far *row_buf)
 {
-    const unsigned char __far *vram = (const unsigned char __far *)MK_FP(0xa000, 0);
+    const unsigned char __far *vram =
+        (const unsigned char __far *)MK_FP(0xa000U + vram_page_seg_off, 0);
     unsigned stride = screen_mode == 7 ? 40U : 80U;
     unsigned b_cnt = (unsigned)gfx_width >> 3;
     unsigned row_off = (unsigned)y * stride;
@@ -1349,7 +1655,8 @@ const char *ckb_gfx_get(int x1, int y1, int x2, int y2,
 
     if (screen_mode == 7 || screen_mode == 8 || screen_mode == 9 || screen_mode == 12) {
         unsigned pbytes = (width + 7U) >> 3;
-        const unsigned char __far *vram = (const unsigned char __far *)MK_FP(0xa000, 0);
+        const unsigned char __far *vram =
+            (const unsigned char __far *)MK_FP(0xa000U + vram_page_seg_off, 0);
         unsigned stride = screen_mode == 7 ? 40U : 80U;
         unsigned sh = (unsigned)left & 7U;
         unsigned b0 = (unsigned)left >> 3;
@@ -1411,7 +1718,8 @@ const char *ckb_gfx_put(int x, int y, const unsigned char CKB_FAR *buffer,
     if (total > capacity) return "Illegal function call";
 
     if (screen_mode == 7 || screen_mode == 8 || screen_mode == 9 || screen_mode == 12) {
-        volatile unsigned char __far *vram = (volatile unsigned char __far *)MK_FP(0xa000, 0);
+        volatile unsigned char __far *vram =
+            (volatile unsigned char __far *)MK_FP(0xa000U + vram_page_seg_off, 0);
         unsigned stride = screen_mode == 7 ? 40U : 80U;
         unsigned pbytes = (width + 7U) >> 3;
         unsigned b_start = (unsigned)x >> 3;
@@ -1544,6 +1852,10 @@ double ckb_timer(void)
     unsigned sub = 0;
     unsigned long total = read_pit_sample(&bda, &sub);
     double dbda;
+    if (timer_has_prev) {
+        while (pit_elapsed(timer_prev_total, total) < 600UL)
+            total = read_pit_sample(&bda, &sub);
+    }
     timer_has_prev = 1;
     timer_prev_total = total;
     if (bda == 0) return (double)sub * 8.380953445225638e-7;
@@ -1597,49 +1909,369 @@ void ckb_sleep(long seconds, volatile int *break_flag)
     }
 }
 
-static void speaker_tone_divisor(unsigned divisor)
+static int round_nearest(double v)
 {
-    unsigned port61;
-    if (divisor < 18U) divisor = 18U;
-    outp(0x43, 0xb6);
-    outp(0x42, (int)(divisor & 0xffU));
-    outp(0x42, (int)(divisor >> 8));
-    port61 = (unsigned)inp(0x61);
-    if ((port61 & 3U) != 3U) outp(0x61, (int)(port61 | 3U));
+    return v >= 0.0 ? (int)(v + 0.5) : -(int)(-v + 0.5);
+}
+
+const char *ckb_view_gfx(int reset, int is_screen, int x1, int y1, int x2, int y2,
+                         int fill_color, int border_color)
+{
+    int left, right, top, bottom;
+    if (screen_mode == 0) return "Illegal function call";
+    if (reset) {
+        vp_active = 0;
+        vp_screen = 0;
+        vp_x1 = 0;
+        vp_y1 = 0;
+        vp_x2 = gfx_width - 1;
+        vp_y2 = gfx_height - 1;
+        last_x = gfx_width / 2;
+        last_y = gfx_height / 2;
+        return NULL;
+    }
+    left = x1 < x2 ? x1 : x2;
+    right = x1 < x2 ? x2 : x1;
+    top = y1 < y2 ? y1 : y2;
+    bottom = y1 < y2 ? y2 : y1;
+    if (left == right || top == bottom || left < 0 || top < 0 ||
+        right >= gfx_width || bottom >= gfx_height)
+        return "Illegal function call";
+
+    vp_active = 0;
+    if (fill_color >= 0) raw_fill_rect(left, top, right, bottom, fill_color);
+    if (border_color >= 0) {
+        raw_hline(left - 1, right + 1, top - 1, border_color);
+        raw_hline(left - 1, right + 1, bottom + 1, border_color);
+        raw_vline(left - 1, top - 1, bottom + 1, border_color);
+        raw_vline(right + 1, top - 1, bottom + 1, border_color);
+    }
+    vp_x1 = left;
+    vp_y1 = top;
+    vp_x2 = right;
+    vp_y2 = bottom;
+    vp_screen = is_screen ? 1 : 0;
+    vp_active = 1;
+    last_x = (left + right) / 2;
+    last_y = (top + bottom) / 2;
+    return NULL;
+}
+
+const char *ckb_window(int reset, int is_screen, double x1, double y1,
+                       double x2, double y2)
+{
+    if (screen_mode == 0) return "Illegal function call";
+    if (reset) {
+        win_active = 0;
+        win_screen = 0;
+        return NULL;
+    }
+    if (x1 == x2 || y1 == y2) return "Illegal function call";
+    win_active = 1;
+    win_screen = is_screen ? 1 : 0;
+    if (x1 < x2) { win_x1 = x1; win_x2 = x2; }
+    else { win_x1 = x2; win_x2 = x1; }
+    if (y1 < y2) { win_y1 = y1; win_y2 = y2; }
+    else { win_y1 = y2; win_y2 = y1; }
+    return NULL;
+}
+
+double ckb_pmap(double coord, int func, const char **err_out)
+{
+    double vw = (double)((vp_active ? (vp_x2 - vp_x1) : (gfx_width - 1)));
+    double vh = (double)((vp_active ? (vp_y2 - vp_y1) : (gfx_height - 1)));
+    double base_x = (vp_active && vp_screen) ? (double)vp_x1 : 0.0;
+    double base_y = (vp_active && vp_screen) ? (double)vp_y1 : 0.0;
+    *err_out = NULL;
+    if (screen_mode == 0 || func < 0 || func > 3) {
+        *err_out = "Illegal function call";
+        return 0.0;
+    }
+    if (!win_active) return (double)round_nearest(coord);
+    switch (func) {
+    case 0:
+        return (double)round_nearest(base_x + ((coord - win_x1) * vw) / (win_x2 - win_x1));
+    case 1:
+        if (win_screen)
+            return (double)round_nearest(base_y + ((coord - win_y1) * vh) / (win_y2 - win_y1));
+        return (double)round_nearest(base_y + vh - ((coord - win_y1) * vh) / (win_y2 - win_y1));
+    case 2:
+        return win_x1 + ((coord - base_x) * (win_x2 - win_x1)) / vw;
+    case 3:
+        if (win_screen)
+            return win_y1 + ((coord - base_y) * (win_y2 - win_y1)) / vh;
+        return win_y1 + ((vh - (coord - base_y)) * (win_y2 - win_y1)) / vh;
+    }
+    return 0.0;
+}
+
+double ckb_point_info(int func, const char **err_out)
+{
+    int vx, vy;
+    const char *e = NULL;
+    *err_out = NULL;
+    if (screen_mode == 0 || func < 0 || func > 3) {
+        *err_out = "Illegal function call";
+        return 0.0;
+    }
+    vx = last_x - ((vp_active && !vp_screen) ? vp_x1 : 0);
+    vy = last_y - ((vp_active && !vp_screen) ? vp_y1 : 0);
+    if (func == 0) return (double)vx;
+    if (func == 1) return (double)vy;
+    if (!win_active) return (double)(func == 2 ? vx : vy);
+    return ckb_pmap((double)(func == 2 ? vx : vy), func, &e);
+}
+
+void ckb_gfx_map_coord(double wx, double wy, int is_step, int *px_out, int *py_out)
+{
+    int ox = (vp_active && !vp_screen) ? vp_x1 : 0;
+    int oy = (vp_active && !vp_screen) ? vp_y1 : 0;
+    if (!win_active) {
+        int ix = round_nearest(wx);
+        int iy = round_nearest(wy);
+        if (is_step) {
+            *px_out = last_x + ix;
+            *py_out = last_y + iy;
+        } else {
+            *px_out = ox + ix;
+            *py_out = oy + iy;
+        }
+        return;
+    }
+    {
+        const char *e = NULL;
+        if (is_step) {
+            double cur_wx = ckb_point_info(2, &e);
+            double cur_wy = ckb_point_info(3, &e);
+            wx += cur_wx;
+            wy += cur_wy;
+        }
+        *px_out = ox + (int)ckb_pmap(wx, 0, &e) - ((vp_active && vp_screen) ? vp_x1 : 0);
+        *py_out = oy + (int)ckb_pmap(wy, 1, &e) - ((vp_active && vp_screen) ? vp_y1 : 0);
+    }
+}
+
+static int parse_draw_int(const char **pp, const char *end, int def_val, int *has_val)
+{
+    const char *p = *pp;
+    int sign = 1;
+    long v = 0;
+    while (p < end && (*p == ' ' || *p == '\t')) ++p;
+    if (p < end && (*p == '+' || *p == '-')) {
+        if (*p == '-') sign = -1;
+        ++p;
+        while (p < end && (*p == ' ' || *p == '\t')) ++p;
+    }
+    if (p >= end || !isdigit((unsigned char)*p)) {
+        if (has_val) *has_val = 0;
+        return def_val;
+    }
+    while (p < end && isdigit((unsigned char)*p)) {
+        v = v * 10L + (long)(*p - '0');
+        ++p;
+    }
+    *pp = p;
+    if (has_val) *has_val = 1;
+    return (int)(v * sign);
+}
+
+static void rotate_draw_vec(long dx, long dy, int *rx_out, int *ry_out)
+{
+    long sx = (dx * (long)draw_scale + (dx >= 0 ? 2L : -2L)) / 4L;
+    long sy = (dy * (long)draw_scale + (dy >= 0 ? 2L : -2L)) / 4L;
+    int a = ((draw_angle % 360) + 360) % 360;
+    if (a == 0) { *rx_out = (int)sx; *ry_out = (int)sy; return; }
+    if (a == 90) { *rx_out = (int)sy; *ry_out = (int)(-sx); return; }
+    if (a == 180) { *rx_out = (int)(-sx); *ry_out = (int)(-sy); return; }
+    if (a == 270) { *rx_out = (int)(-sy); *ry_out = (int)sx; return; }
+    {
+        double rad = (double)a * (TWO_PI / 360.0);
+        double cs = cos(rad), sn = sin(rad);
+        /* Screen Y grows downward; CCW rotation maps (dx, dy) -> (dx*cos + dy*sin, -dx*sin + dy*cos) */
+        *rx_out = round_nearest((double)sx * cs + (double)sy * sn);
+        *ry_out = round_nearest(-(double)sx * sn + (double)sy * cs);
+    }
+}
+
+static const char *draw_exec(const char *mml, unsigned length,
+                             CkbVarptrStrResolver resolver, unsigned depth)
+{
+    const char *p = mml;
+    const char *end = mml + length;
+    int blind = 0, no_update = 0;
+
+    if (screen_mode == 0 || depth > 8U) return "Illegal function call";
+
+    while (p < end) {
+        int ch = toupper((unsigned char)*p++);
+        long dx = 0, dy = 0;
+        int is_move = 0;
+
+        if (ch == ' ' || ch == '\t' || ch == ';') continue;
+        if (ch == 'B') { blind = 1; continue; }
+        if (ch == 'N') { no_update = 1; continue; }
+
+        switch (ch) {
+        case 'U': dy = -1; is_move = 1; break;
+        case 'D': dy = 1; is_move = 1; break;
+        case 'L': dx = -1; is_move = 1; break;
+        case 'R': dx = 1; is_move = 1; break;
+        case 'E': dx = 1; dy = -1; is_move = 1; break;
+        case 'F': dx = 1; dy = 1; is_move = 1; break;
+        case 'G': dx = -1; dy = 1; is_move = 1; break;
+        case 'H': dx = -1; dy = -1; is_move = 1; break;
+        case 'M': {
+            int rel = 0, mx, my, has_x = 0, has_y = 0, tx, ty, sx, sy;
+            while (p < end && (*p == ' ' || *p == '\t')) ++p;
+            if (p < end && (*p == '+' || *p == '-')) rel = 1;
+            mx = parse_draw_int(&p, end, 0, &has_x);
+            while (p < end && (*p == ' ' || *p == '\t')) ++p;
+            if (!has_x || p >= end || *p != ',') return "Illegal function call";
+            ++p;
+            my = parse_draw_int(&p, end, 0, &has_y);
+            if (!has_y) return "Illegal function call";
+            sx = last_x;
+            sy = last_y;
+            if (rel) {
+                int rdx, rdy;
+                rotate_draw_vec(mx, my, &rdx, &rdy);
+                tx = sx + rdx;
+                ty = sy + rdy;
+            } else {
+                tx = ((vp_active && !vp_screen) ? vp_x1 : 0) + mx;
+                ty = ((vp_active && !vp_screen) ? vp_y1 : 0) + my;
+            }
+            if (!blind) raw_line_segment(sx, sy, tx, ty, fg_color);
+            if (!no_update) { last_x = tx; last_y = ty; }
+            blind = no_update = 0;
+            continue;
+        }
+        case 'C': {
+            int has_c = 0, c = parse_draw_int(&p, end, 0, &has_c);
+            if (!has_c || c < 0 || c > max_color) return "Illegal function call";
+            fg_color = c;
+            continue;
+        }
+        case 'S': {
+            int has_s = 0, s = parse_draw_int(&p, end, 0, &has_s);
+            if (!has_s || s < 1 || s > 255) return "Illegal function call";
+            draw_scale = s;
+            continue;
+        }
+        case 'A': {
+            int has_a = 0, a = parse_draw_int(&p, end, 0, &has_a);
+            if (!has_a || a < 0 || a > 3) return "Illegal function call";
+            draw_angle = a * 90;
+            continue;
+        }
+        case 'T': {
+            int has_ta = 0, ta;
+            if (p >= end || toupper((unsigned char)*p) != 'A') return "Illegal function call";
+            ++p;
+            ta = parse_draw_int(&p, end, 0, &has_ta);
+            if (!has_ta || ta < -360 || ta > 360) return "Illegal function call";
+            draw_angle = ta;
+            continue;
+        }
+        case 'P': {
+            int has_fc = 0, has_bc = 0, fc, bc;
+            const char *err;
+            fc = parse_draw_int(&p, end, 0, &has_fc);
+            while (p < end && (*p == ' ' || *p == '\t')) ++p;
+            if (!has_fc || p >= end || *p != ',') return "Illegal function call";
+            ++p;
+            bc = parse_draw_int(&p, end, 0, &has_bc);
+            if (!has_bc || fc < 0 || fc > max_color || bc < 0 || bc > max_color)
+                return "Illegal function call";
+            err = ckb_paint(last_x, last_y, fc, bc);
+            if (err) return err;
+            continue;
+        }
+        case 'X': {
+            unsigned sub_len = 0;
+            const char *sub_str;
+            const char *err;
+            if (!resolver || (unsigned)(end - p) < 3U) return "Illegal function call";
+            sub_str = resolver((const unsigned char *)p, &sub_len);
+            p += 3;
+            if (!sub_str) return "Illegal function call";
+            err = draw_exec(sub_str, sub_len, resolver, depth + 1U);
+            if (err) return err;
+            continue;
+        }
+        default:
+            return "Illegal function call";
+        }
+
+        if (is_move) {
+            int dist = parse_draw_int(&p, end, 1, NULL);
+            int rdx, rdy, sx = last_x, sy = last_y, tx, ty;
+            rotate_draw_vec(dx * (long)dist, dy * (long)dist, &rdx, &rdy);
+            tx = sx + rdx;
+            ty = sy + rdy;
+            if (!blind) raw_line_segment(sx, sy, tx, ty, fg_color);
+            if (!no_update) { last_x = tx; last_y = ty; }
+            blind = no_update = 0;
+        }
+    }
+    return NULL;
+}
+
+const char *ckb_draw(const char *mml, unsigned length, CkbVarptrStrResolver resolver)
+{
+    return draw_exec(mml, length, resolver, 0U);
 }
 
 void ckb_beep(void)
 {
+    union REGS regs = {0};
     if (!tty_console()) return;
-    speaker_tone_divisor(1491U); /* ~800 Hz */
-    delay_pit_ticks(260000UL, NULL, 0);
-    ckb_speaker_off();
+    /* Dispatch BIOS INT 10h teletype BEL (AX=0E07h) just as QBasic 1.0 does;
+     * the active VGA BIOS owns BEL tone generation. */
+    regs.x.ax = 0x0e07;
+    regs.x.bx = 0x0000;
+    int86(0x10, &regs, &regs);
+}
+
+static void enqueue_note(unsigned div, unsigned ticks, int fg_wait,
+                         volatile int *break_flag)
+{
+    if (!ticks) return;
+    if (fg_wait) {
+        while (ckb_snd_active()) {
+            if (break_flag && *break_flag) { ckb_snd_stop(); return; }
+        }
+    }
+    while (!ckb_snd_push(div, ticks)) {
+        if (break_flag && *break_flag) { ckb_snd_stop(); return; }
+    }
 }
 
 const char *ckb_sound(double freq, double ticks, volatile int *break_flag)
 {
-    unsigned long pit_wait;
+    unsigned bticks, div;
     if (ticks < 0.0 || ticks > 65535.0) return "Illegal function call";
     if (ticks == 0.0) {
-        ckb_speaker_off();
+        ckb_snd_stop();
         return NULL;
     }
     if (freq < 37.0 || freq > 32767.0) return "Illegal function call";
     if (!tty_console()) return NULL;
-    speaker_tone_divisor((unsigned)(1193182.0 / freq + 0.5));
-    pit_wait = (unsigned long)(ticks * 65536.0);
-    delay_pit_ticks(pit_wait, break_flag, 0);
-    ckb_speaker_off();
+    div = (unsigned)(1193182.0 / freq + 0.5);
+    if (div < 18U) div = 18U;
+    bticks = (unsigned)(ticks + 0.5);
+    if (!bticks) bticks = 1U;
+    enqueue_note(div, bticks, 1, break_flag);
     return NULL;
 }
 
-static unsigned parse_mml_uint(const char **pp, unsigned def_val)
+static unsigned parse_mml_uint_len(const char **pp, const char *end, unsigned def_val)
 {
     const char *p = *pp;
     unsigned v = 0;
-    while (*p == ' ') ++p;
-    if (!isdigit((unsigned char)*p)) return def_val;
-    while (isdigit((unsigned char)*p)) {
+    while (p < end && *p == ' ') ++p;
+    if (p >= end || !isdigit((unsigned char)*p)) return def_val;
+    while (p < end && isdigit((unsigned char)*p)) {
         v = v * 10U + (unsigned)(*p - '0');
         ++p;
     }
@@ -1647,139 +2279,180 @@ static unsigned parse_mml_uint(const char **pp, unsigned def_val)
     return v;
 }
 
-const char *ckb_play(const char *mml, volatile int *break_flag)
+static unsigned alloc_mml_bios_ticks(unsigned long pit_ticks)
 {
-    /* PIT divisors for O0: C, C#, D, D#, E, F, F#, G, G#, A, A#, B */
-    static const unsigned base_div[12] = {
-        18242U, 17218U, 16252U, 15340U, 14479U, 13666U,
-        12899U, 12175U, 11492U, 10847U, 10238U, 9664U
+    unsigned long total = pit_ticks + play_frac_rem;
+    unsigned bticks = (unsigned)(total >> 16);
+    play_frac_rem = total & 0xffffUL;
+    return bticks ? bticks : 1U;
+}
+
+static const char *play_exec(const char *mml, unsigned length,
+                             volatile int *break_flag,
+                             CkbVarptrStrResolver resolver, unsigned depth)
+{
+    /* 16x PIT divisors for O0: C, C#, D, D#, E, F, F#, G, G#, A, A#, B */
+    static const unsigned long base_div16[12] = {
+        291867UL, 275486UL, 260024UL, 245430UL, 231655UL, 218653UL,
+        206381UL, 194798UL, 183865UL, 173545UL, 163805UL, 154611UL
     };
     static const int letter_semi[7] = {9, 11, 0, 2, 4, 5, 7}; /* A..G */
     const char *p = mml;
+    const char *end = mml + length;
 
-    while (*p) {
+    if (depth > 8U) return "Illegal function call";
+
+    while (p < end) {
         int ch = toupper((unsigned char)*p++);
         if (ch == ' ' || ch == ';') continue;
-        if (break_flag && *break_flag) break;
-        if (play_bg && bios_key_waiting()) break;
+        if (break_flag && *break_flag) { ckb_snd_stop(); break; }
 
         if (ch == 'O') {
-            unsigned oct = parse_mml_uint(&p, 99U);
-            if (oct > 6U) { ckb_speaker_off(); return "Illegal function call"; }
+            unsigned oct = parse_mml_uint_len(&p, end, 99U);
+            if (oct > 6U) { ckb_snd_stop(); return "Illegal function call"; }
             play_octave = (int)oct;
         } else if (ch == '<') {
             if (play_octave > 0) --play_octave;
         } else if (ch == '>') {
             if (play_octave < 6) ++play_octave;
         } else if (ch == 'L') {
-            unsigned len = parse_mml_uint(&p, 0U);
-            if (len < 1U || len > 64U) { ckb_speaker_off(); return "Illegal function call"; }
+            unsigned len = parse_mml_uint_len(&p, end, 0U);
+            if (len < 1U || len > 64U) { ckb_snd_stop(); return "Illegal function call"; }
             play_length = (int)len;
         } else if (ch == 'T') {
-            unsigned t = parse_mml_uint(&p, 0U);
-            if (t < 32U || t > 255U) { ckb_speaker_off(); return "Illegal function call"; }
+            unsigned t = parse_mml_uint_len(&p, end, 0U);
+            if (t < 32U || t > 255U) { ckb_snd_stop(); return "Illegal function call"; }
             play_tempo = (int)t;
         } else if (ch == 'M') {
             int sub;
-            while (*p == ' ') ++p;
-            sub = toupper((unsigned char)*p);
-            if (!sub) { ckb_speaker_off(); return "Illegal function call"; }
-            ++p;
+            while (p < end && *p == ' ') ++p;
+            if (p >= end) { ckb_snd_stop(); return "Illegal function call"; }
+            sub = toupper((unsigned char)*p++);
             if (sub == 'N') play_style = 0;
             else if (sub == 'L') play_style = 1;
             else if (sub == 'S') play_style = 2;
             else if (sub == 'F') play_bg = 0;
             else if (sub == 'B') play_bg = 1;
-            else { ckb_speaker_off(); return "Illegal function call"; }
+            else { ckb_snd_stop(); return "Illegal function call"; }
         } else if (ch == 'P') {
-            unsigned len = parse_mml_uint(&p, (unsigned)play_length);
+            unsigned len = parse_mml_uint_len(&p, end, (unsigned)play_length);
             unsigned long whole_ticks, dur_ticks, add_ticks;
-            if (len < 1U || len > 64U) { ckb_speaker_off(); return "Illegal function call"; }
+            if (len < 1U || len > 64U) { ckb_snd_stop(); return "Illegal function call"; }
             whole_ticks = (4UL * 60UL * 1193182UL) / (unsigned long)play_tempo;
             dur_ticks = whole_ticks / (unsigned long)len;
             add_ticks = dur_ticks >> 1;
-            while (*p == '.') {
+            while (p < end && *p == '.') {
                 dur_ticks += add_ticks;
                 add_ticks >>= 1;
                 ++p;
             }
-            ckb_speaker_off();
-            if (tty_console()) delay_pit_ticks(dur_ticks, break_flag, play_bg);
+            if (tty_console())
+                enqueue_note(0U, alloc_mml_bios_ticks(dur_ticks), !play_bg, break_flag);
         } else if (ch == 'N') {
-            unsigned note_num = parse_mml_uint(&p, 999U);
+            unsigned note_num = parse_mml_uint_len(&p, end, 999U);
             unsigned long whole_ticks, dur_ticks, add_ticks;
-            if (note_num > 84U) { ckb_speaker_off(); return "Illegal function call"; }
+            if (note_num > 84U) { ckb_snd_stop(); return "Illegal function call"; }
             whole_ticks = (4UL * 60UL * 1193182UL) / (unsigned long)play_tempo;
             dur_ticks = whole_ticks / (unsigned long)play_length;
             add_ticks = dur_ticks >> 1;
-            while (*p == '.') {
+            while (p < end && *p == '.') {
                 dur_ticks += add_ticks;
                 add_ticks >>= 1;
                 ++p;
             }
-            if (note_num == 0U) {
-                ckb_speaker_off();
-                if (tty_console()) delay_pit_ticks(dur_ticks, break_flag, play_bg);
-            } else if (tty_console()) {
-                int oct = (int)((note_num - 1U) / 12U);
-                int semi = (int)((note_num - 1U) % 12U);
-                unsigned div = base_div[semi] >> oct;
-                unsigned long on_ticks = play_style == 1 ? dur_ticks :
-                                         play_style == 2 ? (dur_ticks * 3UL) >> 2 :
-                                                           (dur_ticks * 7UL) >> 3;
-                speaker_tone_divisor(div);
-                delay_pit_ticks(on_ticks, break_flag, play_bg);
-                ckb_speaker_off();
-                if (dur_ticks > on_ticks)
-                    delay_pit_ticks(dur_ticks - on_ticks, break_flag, play_bg);
+            if (tty_console()) {
+                unsigned bticks = alloc_mml_bios_ticks(dur_ticks);
+                if (note_num == 0U) {
+                    enqueue_note(0U, bticks, !play_bg, break_flag);
+                } else {
+                    int oct = (int)((note_num - 1U) / 12U);
+                    int semi = (int)((note_num - 1U) % 12U);
+                    unsigned shift = (unsigned)(oct + 4);
+                    unsigned div = (unsigned)((base_div16[semi] + (1UL << (shift - 1U))) >> shift);
+                    unsigned on_bt = play_style == 1 ? bticks :
+                                     play_style == 2 ? (bticks * 3U + 2U) >> 2 :
+                                                       (bticks * 7U + 4U) >> 3;
+                    if (!on_bt) on_bt = 1U;
+                    enqueue_note(div, on_bt, !play_bg, break_flag);
+                    if (bticks > on_bt)
+                        enqueue_note(0U, bticks - on_bt, !play_bg, break_flag);
+                }
             }
         } else if (ch >= 'A' && ch <= 'G') {
             int semi = letter_semi[ch - 'A'];
             int oct = play_octave;
             unsigned len;
             unsigned long whole_ticks, dur_ticks, add_ticks;
-            while (*p == ' ') ++p;
-            if (*p == '#' || *p == '+') { ++semi; ++p; }
-            else if (*p == '-') { --semi; ++p; }
+            while (p < end && *p == ' ') ++p;
+            if (p < end && (*p == '#' || *p == '+')) { ++semi; ++p; }
+            else if (p < end && *p == '-') { --semi; ++p; }
             if (semi < 0) { semi += 12; if (oct > 0) --oct; }
             else if (semi >= 12) { semi -= 12; if (oct < 6) ++oct; }
-            len = parse_mml_uint(&p, (unsigned)play_length);
-            if (len < 1U || len > 64U) { ckb_speaker_off(); return "Illegal function call"; }
+            len = parse_mml_uint_len(&p, end, (unsigned)play_length);
+            if (len < 1U || len > 64U) { ckb_snd_stop(); return "Illegal function call"; }
             whole_ticks = (4UL * 60UL * 1193182UL) / (unsigned long)play_tempo;
             dur_ticks = whole_ticks / (unsigned long)len;
             add_ticks = dur_ticks >> 1;
-            while (*p == '.') {
+            while (p < end && *p == '.') {
                 dur_ticks += add_ticks;
                 add_ticks >>= 1;
                 ++p;
             }
             if (tty_console()) {
-                unsigned div = base_div[semi] >> oct;
-                unsigned long on_ticks = play_style == 1 ? dur_ticks :
-                                         play_style == 2 ? (dur_ticks * 3UL) >> 2 :
-                                                           (dur_ticks * 7UL) >> 3;
-                speaker_tone_divisor(div);
-                delay_pit_ticks(on_ticks, break_flag, play_bg);
-                ckb_speaker_off();
-                if (dur_ticks > on_ticks)
-                    delay_pit_ticks(dur_ticks - on_ticks, break_flag, play_bg);
+                unsigned bticks = alloc_mml_bios_ticks(dur_ticks);
+                unsigned shift = (unsigned)(oct + 4);
+                unsigned div = (unsigned)((base_div16[semi] + (1UL << (shift - 1U))) >> shift);
+                unsigned on_bt = play_style == 1 ? bticks :
+                                 play_style == 2 ? (bticks * 3U + 2U) >> 2 :
+                                                   (bticks * 7U + 4U) >> 3;
+                if (!on_bt) on_bt = 1U;
+                enqueue_note(div, on_bt, !play_bg, break_flag);
+                if (bticks > on_bt)
+                    enqueue_note(0U, bticks - on_bt, !play_bg, break_flag);
             }
         } else if (ch == 'X') {
-            while (*p && *p != ';') ++p;
-            if (*p == ';') ++p;
+            unsigned sub_len = 0;
+            const char *sub_str;
+            const char *err;
+            if (!resolver || (unsigned)(end - p) < 3U) {
+                ckb_snd_stop();
+                return "Illegal function call";
+            }
+            sub_str = resolver((const unsigned char *)p, &sub_len);
+            p += 3;
+            if (!sub_str) { ckb_snd_stop(); return "Illegal function call"; }
+            err = play_exec(sub_str, sub_len, break_flag, resolver, depth + 1U);
+            if (err) return err;
         } else {
-            ckb_speaker_off();
+            ckb_snd_stop();
             return "Illegal function call";
         }
     }
-    ckb_speaker_off();
     return NULL;
+}
+
+const char *ckb_play(const char *mml, unsigned length, volatile int *break_flag,
+                     CkbVarptrStrResolver resolver)
+{
+    return play_exec(mml, length, break_flag, resolver, 0U);
+}
+
+int ckb_play_queued(void)
+{
+    return (int)ckb_snd_queued();
 }
 
 #else
 
 /* Host stub implementation when compiled outside DOS. */
+void ckb_set_display_flags(unsigned flags) { (void)flags; }
+unsigned ckb_get_display_flags(void) { return 0; }
 const char *ckb_screen(int mode) { return mode == 0 ? NULL : "Illegal function call"; }
+const char *ckb_screen_ex(int mode, int cs, int ap, int vp) {
+    (void)cs; (void)ap; (void)vp;
+    return mode <= 0 ? NULL : "Illegal function call";
+}
+const char *ckb_pcopy(int s, int d) { (void)s; (void)d; return "Illegal function call"; }
 const char *ckb_width_screen(int cols, int rows) { (void)cols; (void)rows; return NULL; }
 const char *ckb_palette(int attr, long color) { (void)attr; (void)color; return NULL; }
 void ckb_color(int foreground, int background) { (void)foreground; (void)background; }
@@ -1787,6 +2460,29 @@ void ckb_cls_mode(int mode) { (void)mode; }
 void ckb_cls(void) {}
 const char *ckb_locate(int row, int col, int cursor) { (void)row; (void)col; (void)cursor; return NULL; }
 const char *ckb_view_print(int top, int bottom) { (void)top; (void)bottom; return NULL; }
+const char *ckb_view_gfx(int r, int s, int x1, int y1, int x2, int y2, int fc, int bc) {
+    (void)r; (void)s; (void)x1; (void)y1; (void)x2; (void)y2; (void)fc; (void)bc;
+    return "Illegal function call";
+}
+const char *ckb_window(int r, int s, double x1, double y1, double x2, double y2) {
+    (void)r; (void)s; (void)x1; (void)y1; (void)x2; (void)y2;
+    return "Illegal function call";
+}
+double ckb_pmap(double c, int f, const char **e) {
+    (void)c; (void)f; *e = "Illegal function call"; return 0.0;
+}
+double ckb_point_info(int f, const char **e) {
+    (void)f; *e = "Illegal function call"; return 0.0;
+}
+void ckb_gfx_map_coord(double wx, double wy, int is_step, int *px, int *py) {
+    (void)is_step; *px = (int)wx; *py = (int)wy;
+}
+int ckb_window_active(void) { return 0; }
+int ckb_csrlin(void) { return 1; }
+int ckb_pos_col(void) { return 1; }
+int ckb_screen_cell(int r, int c, int f, const char **e) {
+    (void)r; (void)c; (void)f; *e = NULL; return 32;
+}
 int ckb_con_direct_active(void) { return 0; }
 unsigned ckb_con_column(void) { return 0; }
 unsigned ckb_con_width(void) { return 80; }
@@ -1795,6 +2491,8 @@ void ckb_con_newline(void) { fputc('\n', stdout); }
 void ckb_con_reset_run(void) {}
 void ckb_con_reset_text(void) {}
 void ckb_con_acknowledge_graphics(void) {}
+void ckb_con_sync_cursor_hw(void) {}
+void ckb_con_restore_cursor(void) {}
 void ckb_gfx_last(int *x, int *y) { *x = 0; *y = 0; }
 int ckb_gfx_default_color(int is_preset) { (void)is_preset; return 7; }
 const char *ckb_pset(int x, int y, int color, int is_preset) {
@@ -1813,6 +2511,9 @@ const char *ckb_circle(int x, int y, double r, int c, int hs, double sa,
 const char *ckb_paint(int x, int y, int fc, int bc) {
     (void)x; (void)y; (void)fc; (void)bc; return "Illegal function call";
 }
+const char *ckb_draw(const char *m, unsigned l, CkbVarptrStrResolver r) {
+    (void)m; (void)l; (void)r; return "Illegal function call";
+}
 const char *ckb_gfx_get(int x1, int y1, int x2, int y2, unsigned char *b, unsigned cap) {
     (void)x1; (void)y1; (void)x2; (void)y2; (void)b; (void)cap; return "Illegal function call";
 }
@@ -1826,9 +2527,11 @@ void ckb_beep(void) {}
 const char *ckb_sound(double freq, double ticks, volatile int *break_flag) {
     (void)freq; (void)ticks; (void)break_flag; return NULL;
 }
-const char *ckb_play(const char *mml, volatile int *break_flag) {
-    (void)mml; (void)break_flag; return NULL;
+const char *ckb_play(const char *mml, unsigned len, volatile int *break_flag,
+                     CkbVarptrStrResolver r) {
+    (void)mml; (void)len; (void)break_flag; (void)r; return NULL;
 }
+int ckb_play_queued(void) { return 0; }
 void ckb_speaker_off(void) {}
 
 #endif

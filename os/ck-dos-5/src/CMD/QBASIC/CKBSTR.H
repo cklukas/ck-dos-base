@@ -4,6 +4,12 @@
 #ifndef CKBSTR_H
 #define CKBSTR_H
 
+#if !defined(__WATCOMC__) && !defined(_MSDOS)
+#ifndef __far
+#define __far
+#endif
+#endif
+
 #define CKB_INLINE_STRING 255
 #define CKB_STRING_MAX 32767
 
@@ -11,7 +17,7 @@ typedef struct CkbStringTemp CkbStringTemp;
 
 typedef struct {
     double number;
-    const char *record;
+    const char __far *record;
     char text[CKB_INLINE_STRING + 1];
     char *wide;
     unsigned length;

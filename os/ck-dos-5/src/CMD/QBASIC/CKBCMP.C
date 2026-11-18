@@ -28,6 +28,7 @@ typedef struct {
     unsigned select_next_slot;
     unsigned last_cmp_pc, last_cmp_end;
     int overflowed;
+    int has_window_stmt;
 } VmCompiler;
 
 static void emit(VmCompiler *c, unsigned w)
@@ -273,6 +274,13 @@ static int compile_proc_call_args(VmCompiler *c, Parser *p, int proc_id, int par
                                 strcmp(vname, "RND") != 0 && strcmp(vname, "INKEY$") != 0 &&
                                 strcmp(vname, "ERR") != 0 && strcmp(vname, "ERL") != 0 &&
                                 strcmp(vname, "FREEFILE") != 0 && strcmp(vname, "FRE") != 0 &&
+                                strcmp(vname, "CSRLIN") != 0 && strcmp(vname, "COMMAND$") != 0 &&
+                                strcmp(vname, "DATE$") != 0 && strcmp(vname, "TIME$") != 0 &&
+                                strcmp(vname, "INP") != 0 && strcmp(vname, "PMAP") != 0 &&
+                                strcmp(vname, "POS") != 0 && strcmp(vname, "PLAY") != 0 &&
+                                strcmp(vname, "SCREEN") != 0 && strcmp(vname, "SADD") != 0 &&
+                                strcmp(vname, "VARPTR$") != 0 && strcmp(vname, "VARPTR") != 0 &&
+                                strcmp(vname, "VARSEG") != 0 &&
                                 !ckb_string_function(vname)) {
                                 if (try_p.token == ',' || try_p.token == ')' || end_statement(&try_p)) {
                                     int vid = named_variable(&try_p, vname, vkind, 0, 0, unsuf, 0);
@@ -350,6 +358,12 @@ static int compile_builtin_call(VmCompiler *c, Parser *p, char *out_kind)
     int sfn, nfn = 0;
 
     switch (p->first_upper) {
+    case 'C':
+        if (word(p, "CSRLIN") || word(p, "COMMAND$")) return -1;
+        break;
+    case 'D':
+        if (word(p, "DATE$")) return -1;
+        break;
     case 'E':
         if (word(p, "ERR") || word(p, "ERL")) {
             int is_erl = word(p, "ERL");
@@ -361,7 +375,7 @@ static int compile_builtin_call(VmCompiler *c, Parser *p, char *out_kind)
         if (word(p, "EOF") || word(p, "ENVIRON$")) return -1; /* fallback */
         break;
     case 'I':
-        if (word(p, "INPUT$")) return -1;
+        if (word(p, "INPUT$") || word(p, "INP")) return -1;
         if (take_word(p, "INKEY$")) {
             emit(c, OP_INKEY);
             *out_kind = '$';
@@ -396,6 +410,7 @@ static int compile_builtin_call(VmCompiler *c, Parser *p, char *out_kind)
         }
         break;
     case 'T':
+        if (word(p, "TIME$")) return -1;
         if (take_word(p, "TIMER")) {
             emit(c, OP_TIMER);
             *out_kind = '!';
@@ -403,13 +418,16 @@ static int compile_builtin_call(VmCompiler *c, Parser *p, char *out_kind)
         }
         break;
     case 'P':
+        if (word(p, "PMAP") || word(p, "POS") || word(p, "PLAY")) return -1;
         if (take_word(p, "PEEK")) {
             if (!take(p, '(') || !compile_int_expr(c, p) || !take(p, ')')) return -1;
             emit(c, OP_PEEK);
             *out_kind = '%';
             return 1;
         }
-        if (take_word(p, "POINT")) {
+        if (word(p, "POINT")) {
+            if (c->has_window_stmt) return -1;
+            scan(p);
             if (!take(p, '(') || !compile_int_expr(c, p)) return -1;
             if (take(p, ',')) {
                 if (!compile_int_expr(c, p) || !take(p, ')')) return -1;
@@ -437,7 +455,7 @@ static int compile_builtin_call(VmCompiler *c, Parser *p, char *out_kind)
         }
         break;
     case 'S':
-        if (word(p, "SEEK")) return -1;
+        if (word(p, "SEEK") || word(p, "SCREEN") || word(p, "SADD")) return -1;
         break;
     case 'L':
         if (word(p, "LOC") || word(p, "LOF")) return -1;
@@ -479,6 +497,9 @@ static int compile_builtin_call(VmCompiler *c, Parser *p, char *out_kind)
             *out_kind = '&';
             return 1;
         }
+        break;
+    case 'V':
+        if (word(p, "VARPTR$") || word(p, "VARPTR") || word(p, "VARSEG")) return -1;
         break;
     default:
         break;
@@ -653,12 +674,12 @@ static int compile_var_or_lvalue_load(VmCompiler *c, Parser *p, char *out_kind)
             if (record_size(variables[id].kind)) {
                 unsigned foff = 0, fw = 0;
                 char fk = 0;
-                if (dims != 1 || !take(p, '.') || p->token != T_NAME) return 0;
+                if (!take(p, '.') || p->token != T_NAME) return 0;
                 if (!resolve_field_vm(variables[id].kind, source + p->start, p->length,
                                       &foff, &fw, &fk) || fk == '$')
                     return 0;
                 scan(p);
-                emit(c, OP_LOAD_RECARR1);
+                emit(c, dims == 1 ? OP_LOAD_RECARR1 : OP_LOAD_RECARR2);
                 emit3(c, (unsigned)id, foff, (fw << 8) | (unsigned char)fk);
                 *out_kind = fk;
                 return 1;
@@ -886,6 +907,7 @@ static int compile_expr(VmCompiler *c, Parser *p, int min_prec, char *out_kind)
 
 static int compile_gfx_coord_vm(VmCompiler *c, Parser *p, int *out_step)
 {
+    if (c->has_window_stmt) return 0;
     *out_step = (p->token == T_NAME && p->first_upper == 'S') ? take_word(p, "STEP") : 0;
     if (!take(p, '(')) return 0;
     if (!compile_int_expr(c, p)) return 0;
@@ -898,6 +920,8 @@ static int compile_gfx_coord_vm(VmCompiler *c, Parser *p, int *out_step)
 static int is_reserved_stmt_vm(const char *s)
 {
     static const char *const kw[] = {
+        "BSAVE", "BLOAD", "CALL", "DRAW", "KEY", "LIST", "PCOPY",
+        "TIMER", "TRON", "TROFF", "WAIT", "WINDOW",
         "MID$", "ENVIRON", "OUT", "POKE", "PLAY", "SOUND", "SLEEP", "WIDTH",
         "OPEN", "CLOSE", "INPUT", "WRITE", "READ", "RESTORE", "RANDOMIZE",
         "SWAP", "LSET", "RSET", "ERASE", "REDIM", "CLEAR", "COMMON", "OPTION",
@@ -967,7 +991,7 @@ static int compile_assignment_vm(VmCompiler *c, Parser *p)
 
             if (record_size(variables[id].kind)) {
                 unsigned foff = 0, fw = 0;
-                if (dims != 1 || !take(p, '.') || p->token != T_NAME) return 0;
+                if (!take(p, '.') || p->token != T_NAME) return 0;
                 if (!resolve_field_vm(variables[id].kind, source + p->start, p->length,
                                       &foff, &fw, &lk) || lk == '$')
                     return 0;
@@ -975,7 +999,7 @@ static int compile_assignment_vm(VmCompiler *c, Parser *p)
                 if (!take(p, '=')) return 0;
                 if (!compile_expr(c, p, 1, &rk) || rk == '$') return 0;
                 emit_coerce_to(c, rk, lk);
-                emit(c, OP_STORE_RECARR1);
+                emit(c, dims == 1 ? OP_STORE_RECARR1 : OP_STORE_RECARR2);
                 emit3(c, (unsigned)id, foff, (fw << 8) | (unsigned char)lk);
                 return end_statement(p);
             }
@@ -1164,7 +1188,9 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
             return end_statement(p);
         }
         if (take_word(p, "CALL")) {
-            int pid = lookup_proc_token(p);
+            int pid;
+            if (word(p, "ABSOLUTE")) return 0;
+            pid = lookup_proc_token(p);
             if (pid < 0 || procedures[pid].function) return 0;
             scan(p);
             if (procedures[pid].count && p->token != '(') return 0;
@@ -1733,8 +1759,7 @@ static int compile_stmt(VmCompiler *c, Parser *p, Position at, unsigned inline_d
             return 1;
         }
         if (take_word(p, "SYSTEM")) {
-            emit(c, OP_HALT);
-            return end_statement(p);
+            return 0; /* fallback sets stopped_by_system = 1 */
         }
         if (take_word(p, "STOP")) {
             emit(c, OP_STOP_STMT);
@@ -1864,7 +1889,21 @@ int compile_module(void)
     for (line = 0; line < line_count; ++line) {
         if (lines[line].body < lines[line].end &&
             source[lines[line].body] != '\'') {
+            Parser wp;
             ++exec_lines;
+            init_parser_at(&wp, line, lines[line].body);
+            while (wp.token) {
+                if (wp.token == T_NAME) {
+                    if (wp.first_upper == 'W' && word(&wp, "WINDOW")) {
+                        comp.has_window_stmt = 1;
+                    } else if (wp.first_upper == 'O' && take_word(&wp, "ON")) {
+                        if (word(&wp, "TIMER") || word(&wp, "PLAY") || word(&wp, "KEY"))
+                            return 0;
+                        continue;
+                    }
+                }
+                scan(&wp);
+            }
         }
     }
 

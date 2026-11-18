@@ -345,6 +345,22 @@ typedef struct {
 #define seek_statement ckbr_seek_statement
 #define peek_function ckbr_peek_function
 #define point_function ckbr_point_function
+#define pcopy_statement ckbr_pcopy_statement
+#define window_statement ckbr_window_statement
+#define draw_statement ckbr_draw_statement
+#define pmap_function ckbr_pmap_function
+#define screen_function ckbr_screen_function
+#define inp_function ckbr_inp_function
+#define out_statement ckbr_out_statement
+#define wait_statement ckbr_wait_statement
+#define varptr_function ckbr_varptr_function
+#define varseg_function ckbr_varseg_function
+#define varptr_str_function ckbr_varptr_str_function
+#define sadd_function ckbr_sadd_function
+#define bsave_statement ckbr_bsave_statement
+#define bload_statement ckbr_bload_statement
+#define call_absolute_statement ckbr_call_absolute_statement
+#define reset_varptr_shadows ckbr_reset_varptr_shadows
 
 #define source ckbr_source
 #define lines ckbr_lines
@@ -458,7 +474,7 @@ Variable *array_storage(int id);
 int valid_cell(Parser *p, const Variable *v, unsigned cell);
 char *field_data(const Variable *variable, unsigned *width);
 void unbind_field(const Variable *variable);
-char *record_data(Parser *p, Reference ref);
+char __far *record_data(Parser *p, Reference ref);
 void packed_number(char *item, char kind, double *number, int store);
 void packed_number_far(char __far *item, char kind, double *number, int store);
 char __far *ckb_salloc(unsigned n);
@@ -556,5 +572,30 @@ void close_statement(Parser *p, int run);
 void seek_statement(Parser *p, int run);
 void peek_function(Parser *p, Value *v, int run, unsigned seg);
 void point_function(Parser *p, Value *v, int run);
+void pcopy_statement(Parser *p, int run);
+void window_statement(Parser *p, int run);
+void draw_statement(Parser *p, int run);
+void pmap_function(Parser *p, Value *v, int run);
+void screen_function(Parser *p, Value *v, int run);
+void inp_function(Parser *p, Value *v, int run);
+void out_statement(Parser *p, int run);
+void wait_statement(Parser *p, int run);
+void varptr_function(Parser *p, Value *v, int run);
+void varseg_function(Parser *p, Value *v, int run);
+void varptr_str_function(Parser *p, Value *v, int run);
+void sadd_function(Parser *p, Value *v, int run, unsigned depth);
+void bsave_statement(Parser *p, int run);
+void bload_statement(Parser *p, int run);
+void call_absolute_statement(Parser *p, int run);
+void reset_varptr_shadows(void);
+
+extern int ckbr_has_events;
+void ckbr_reset_events(void);
+void ckbr_key_statement(Parser *p, int run);
+void ckbr_on_statement(Parser *p, int run);
+void ckbr_timer_statement(Parser *p, int run);
+int ckbr_play_ctrl(Parser *p, int run);
+void ckbr_check_events(Position *at_io);
+void ckbr_on_return_pop(void);
 
 #endif

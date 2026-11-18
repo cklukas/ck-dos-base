@@ -83,11 +83,11 @@ static long vm_read_ref_int(Reference ref)
     if (record_size(v->kind)) {
         Parser dp;
         double d = 0;
-        char *item;
+        char __far *item;
         memset(&dp, 0, sizeof(dp));
         item = record_data(&dp, ref);
         if (!item) return 0;
-        packed_number(item, ref.kind, &d, 0);
+        packed_number_far(item, ref.kind, &d, 0);
         return (long)d;
     }
     if (v->array) {
@@ -116,11 +116,11 @@ static int vm_write_ref_int(Reference ref, long val)
     if (record_size(v->kind)) {
         Parser dp;
         double d = (double)val;
-        char *item;
+        char __far *item;
         memset(&dp, 0, sizeof(dp));
         item = record_data(&dp, ref);
         if (!item) return 0;
-        packed_number(item, ref.kind, &d, 1);
+        packed_number_far(item, ref.kind, &d, 1);
         return 1;
     }
     if (v->array) {
@@ -144,11 +144,11 @@ static double vm_read_ref_flt(Reference ref)
     double d = 0;
     if (record_size(v->kind)) {
         Parser dp;
-        char *item;
+        char __far *item;
         memset(&dp, 0, sizeof(dp));
         item = record_data(&dp, ref);
         if (!item) return 0.0;
-        packed_number(item, ref.kind, &d, 0);
+        packed_number_far(item, ref.kind, &d, 0);
         return d;
     }
     if (v->array) {
@@ -170,11 +170,11 @@ static int vm_write_ref_flt(Reference ref, double val)
     if (ref.kind == '!') val = ckb_single_precision(val);
     if (record_size(v->kind)) {
         Parser dp;
-        char *item;
+        char __far *item;
         memset(&dp, 0, sizeof(dp));
         item = record_data(&dp, ref);
         if (!item) return 0;
-        packed_number(item, ref.kind, &val, 1);
+        packed_number_far(item, ref.kind, &val, 1);
         return 1;
     }
     if (v->array) {
@@ -344,9 +344,9 @@ static void vm_store_elem(Variable *v, unsigned cell, const VmVal *src)
 
 int ckb_vm_execute(void)
 {
-    VmVal vstack[VM_STACK_MAX];
-    VmVal sel_vals[VM_SEL_MAX];
-    VmProcFrame pframes[STACK_MAX];
+    static VmVal vstack[VM_STACK_MAX];
+    static VmVal sel_vals[VM_SEL_MAX];
+    static VmProcFrame pframes[STACK_MAX];
     unsigned sp = 0, sp_base = 0, fn_depth = 0;
     unsigned pc = 0, cur_op_pc = 0;
     unsigned short __far *code;
@@ -993,6 +993,68 @@ int ckb_vm_execute(void)
                     Reference ref;
                     ref.target = av;
                     ref.cell = (unsigned)(idx - av->bounds[0].lower);
+                    ref.offset = foff;
+                    ref.kind = (char)(kw & 0xffU);
+                    ref.width = kw >> 8;
+                    if (ref.kind == '%' || ref.kind == '&')
+                        vm_write_ref_int(ref, val.u.i);
+                    else
+                        vm_write_ref_flt(ref, val.u.f);
+                }
+            }
+            break;
+        }
+
+        case OP_LOAD_RECARR2: {
+            unsigned id = code[pc++];
+            unsigned foff = code[pc++];
+            unsigned kw = code[pc++];
+            long idx2 = vstack[--sp].u.i;
+            long idx1 = vstack[--sp].u.i;
+            Variable *av = vm_ready_array((int)id, 2);
+            if (av) {
+                if (idx1 < av->bounds[0].lower || idx1 > av->bounds[0].upper ||
+                    idx2 < av->bounds[1].lower || idx2 > av->bounds[1].upper) {
+                    error_message = "Subscript out of range";
+                } else {
+                    Reference ref;
+                    VmVal *dst = &vstack[sp++];
+                    unsigned c1 = (unsigned)(idx1 - av->bounds[0].lower);
+                    unsigned ext2 = (unsigned)(av->bounds[1].upper - av->bounds[1].lower + 1L);
+                    ref.target = av;
+                    ref.cell = c1 * ext2 + (unsigned)(idx2 - av->bounds[1].lower);
+                    ref.offset = foff;
+                    ref.kind = (char)(kw & 0xffU);
+                    ref.width = kw >> 8;
+                    dst->kind = ref.kind;
+                    dst->is_ref = 0;
+                    if (ref.kind == '%' || ref.kind == '&')
+                        dst->u.i = vm_read_ref_int(ref);
+                    else
+                        dst->u.f = vm_read_ref_flt(ref);
+                }
+            }
+            break;
+        }
+
+        case OP_STORE_RECARR2: {
+            unsigned id = code[pc++];
+            unsigned foff = code[pc++];
+            unsigned kw = code[pc++];
+            VmVal val = vstack[--sp];
+            long idx2 = vstack[--sp].u.i;
+            long idx1 = vstack[--sp].u.i;
+            Variable *av = vm_ready_array((int)id, 2);
+            if (av) {
+                if (idx1 < av->bounds[0].lower || idx1 > av->bounds[0].upper ||
+                    idx2 < av->bounds[1].lower || idx2 > av->bounds[1].upper) {
+                    error_message = "Subscript out of range";
+                } else {
+                    Reference ref;
+                    unsigned c1 = (unsigned)(idx1 - av->bounds[0].lower);
+                    unsigned ext2 = (unsigned)(av->bounds[1].upper - av->bounds[1].lower + 1L);
+                    ref.target = av;
+                    ref.cell = c1 * ext2 + (unsigned)(idx2 - av->bounds[1].lower);
                     ref.offset = foff;
                     ref.kind = (char)(kw & 0xffU);
                     ref.width = kw >> 8;
@@ -1961,10 +2023,11 @@ int ckb_vm_execute(void)
 
         case OP_PEEK: {
             long addr = vstack[sp - 1].u.i;
-            if (addr < 0 || addr > 65535L) error_message = "Illegal function call";
+            if (addr < -65536L || addr > 65535L) error_message = "Overflow";
             else {
 #if defined(__WATCOMC__) || defined(_MSDOS)
-                vstack[sp - 1].u.i = *(const unsigned char __far *)MK_FP(current_def_seg(), (unsigned)addr);
+                unsigned off = (unsigned)(addr < 0 ? (addr + 65536L) : addr);
+                vstack[sp - 1].u.i = *(const unsigned char __far *)MK_FP(current_def_seg(), off);
 #else
                 vstack[sp - 1].u.i = 0;
 #endif

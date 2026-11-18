@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #if defined(__WATCOMC__) || defined(_MSDOS)
+#include <conio.h>
 #include <direct.h>
 #include <dos.h>
 #include <io.h>
@@ -483,15 +484,11 @@ void file_transfer(Parser *p, int run, int writing)
         fail(p, "Expected: ,");
         return;
     }
-    if (operand && file->mode == FILE_RANDOM) {
-        fail(p, "Bad file mode");
-        return;
-    }
     clearerr(file->stream);
     if (positioned) seek_file(p, file, position);
     else if (fseek(file->stream, 0, SEEK_CUR) != 0) file_io_error(p, "Read error");
     if (error_message) return;
-    if (file->mode == FILE_RANDOM) {
+    if (file->mode == FILE_RANDOM && !operand) {
         if (writing) {
             if (fwrite(file->record, 1, file->record_length, file->stream) != file->record_length)
                 file_io_error(p, "Write error");
@@ -499,21 +496,87 @@ void file_transfer(Parser *p, int run, int writing)
         return;
     }
     if (!ref.target) return;
-    fetch_reference(p, ref, 1, &value);
-    if (error_message) return;
-    size = value.string ? value.length : member_size(ref.kind, ref.width);
-    if (record_size(ref.kind)) bytes = (char *)value.record;
-    else if (value.string) bytes = ckb_string_buffer_at(&value);
-    else { bytes = value.text; if (writing) packed_number(bytes, ref.kind, &value.number, 1); }
-    if (!writing) {
-        size_t count = fread(bytes, 1, size, file->stream);
-        if (ferror(file->stream)) { file_io_error(p, "Read error"); return; }
-        memset(bytes + count, 0, size - count);
-        if (!record_size(ref.kind)) {
-            if (!value.string) packed_number(bytes, ref.kind, &value.number, 0);
-            assign_reference(p, ref, &value, 1);
+    {
+        long rec_start = file->mode == FILE_RANDOM ? ftell(file->stream) : 0L;
+        if (file->mode == FILE_RANDOM && ref.kind == '$' && !ref.width) {
+            unsigned char len2[2];
+            if (writing) {
+                fetch_reference(p, ref, 1, &value);
+                if (error_message) return;
+                if (2U + value.length > file->record_length) {
+                    fail(p, "Bad record length");
+                    return;
+                }
+                len2[0] = (unsigned char)(value.length & 0xffU);
+                len2[1] = (unsigned char)(value.length >> 8);
+                if (fwrite(len2, 1, 2, file->stream) != 2 ||
+                    (value.length && fwrite(ckb_string_bytes(&value), 1, value.length, file->stream) != value.length)) {
+                    file_io_error(p, "Write error");
+                    return;
+                }
+            } else {
+                unsigned slen = 0;
+                INIT_VALUE(&value);
+                value.string = 1;
+                value.kind = '$';
+                if (fread(len2, 1, 2, file->stream) == 2)
+                    slen = (unsigned)len2[0] | ((unsigned)len2[1] << 8);
+                else if (ferror(file->stream)) { file_io_error(p, "Read error"); return; }
+                if (2U + slen > file->record_length) {
+                    fail(p, "Bad record length");
+                    return;
+                }
+                bytes = ckb_string_buffer(&value, slen);
+                if (!bytes) { fail(p, "Out of memory"); return; }
+                if (slen) {
+                    size_t got = fread(bytes, 1, slen, file->stream);
+                    if (ferror(file->stream)) { file_io_error(p, "Read error"); return; }
+                    if (got < slen) memset(bytes + got, 0, slen - got);
+                }
+                assign_reference(p, ref, &value, 1);
+            }
+            if (!error_message)
+                fseek(file->stream, rec_start + (long)file->record_length, SEEK_SET);
+            return;
         }
-    } else if (fwrite(bytes, 1, size, file->stream) != size) file_io_error(p, "Write error");
+        fetch_reference(p, ref, 1, &value);
+        if (error_message) return;
+        size = value.string ? value.length : member_size(ref.kind, ref.width);
+        if (file->mode == FILE_RANDOM && size > file->record_length) {
+            fail(p, "Bad record length");
+            return;
+        }
+        if (record_size(ref.kind)) {
+            char __far *frec = (char __far *)value.record;
+            unsigned char rbuf[256];
+            unsigned off = 0;
+            while (off < size) {
+                unsigned n = (size - off) > sizeof(rbuf) ? sizeof(rbuf) : (size - off);
+                if (!writing) {
+                    size_t got = fread(rbuf, 1, n, file->stream);
+                    if (ferror(file->stream)) { file_io_error(p, "Read error"); return; }
+                    if (got < n) memset(rbuf + got, 0, n - got);
+                    _fmemcpy(frec + off, rbuf, n);
+                } else {
+                    _fmemcpy(rbuf, frec + off, n);
+                    if (fwrite(rbuf, 1, n, file->stream) != n) { file_io_error(p, "Write error"); return; }
+                }
+                off += n;
+            }
+        } else {
+            if (value.string) bytes = ckb_string_buffer_at(&value);
+            else { bytes = value.text; if (writing) packed_number(bytes, ref.kind, &value.number, 1); }
+            if (!writing) {
+                size_t count = fread(bytes, 1, size, file->stream);
+                if (ferror(file->stream)) { file_io_error(p, "Read error"); return; }
+                memset(bytes + count, 0, size - count);
+                if (!value.string) packed_number(bytes, ref.kind, &value.number, 0);
+                assign_reference(p, ref, &value, 1);
+            } else if (fwrite(bytes, 1, size, file->stream) != size) file_io_error(p, "Write error");
+        }
+        if (file->mode == FILE_RANDOM && !error_message)
+            fseek(file->stream, rec_start + (long)file->record_length, SEEK_SET);
+    }
 }
 
 void file_lock_statement(Parser *p, int run, int unlocking)
@@ -1085,7 +1148,7 @@ void swap_statement(Parser *p, int run)
     Reference left = lvalue(p, run), right;
     Value a, b;
     unsigned size;
-    char *x, *y;
+    char __far *x, *y;
     if (!expect(p, ',', "Expected: ,")) return;
     right = lvalue(p, run);
     if (error_message || !left.target || !right.target) return;
@@ -1130,11 +1193,12 @@ void justify_assign(Parser *p, int run, int right)
     expression(p, &replacement, 1, 0, run);
     if (!ref.target || error_message) return;
     if (!right && record_size(ref.kind) && record_size(replacement.kind)) {
+        char __far *rfield;
         if (!run || !valid_cell(p, ref.target, ref.cell)) return;
         width = record_size(ref.kind);
         count = record_size(replacement.kind);
-        field = record_data(p, ref);
-        if (field) memmove(field, replacement.record, count < width ? count : width);
+        rfield = record_data(p, ref);
+        if (rfield) _fmemmove(rfield, replacement.record, count < width ? count : width);
         return;
     }
     if (ref.kind != '$' || !replacement.string) {
@@ -1206,21 +1270,20 @@ void mid_assign(Parser *p, int run)
 int parse_gfx_coord(Parser *p, int run, int *x_out, int *y_out)
 {
     int step = take_word(p, "STEP");
-    long x, y;
+    double wx, wy;
     if (!expect(p, '(', "Expected: (")) return 0;
-    x = integer_operand(p, numeric(p, run), run);
-    if (!expect(p, ',', "Expected: ,")) return 0;
-    y = integer_operand(p, numeric(p, run), run);
+    if (ckb_window_active()) {
+        wx = numeric(p, run);
+        if (!expect(p, ',', "Expected: ,")) return 0;
+        wy = numeric(p, run);
+    } else {
+        wx = (double)integer_operand(p, numeric(p, run), run);
+        if (!expect(p, ',', "Expected: ,")) return 0;
+        wy = (double)integer_operand(p, numeric(p, run), run);
+    }
     if (!expect(p, ')', "Expected: )")) return 0;
     if (run && !error_message) {
-        if (step) {
-            int lx, ly;
-            ckb_gfx_last(&lx, &ly);
-            x += lx;
-            y += ly;
-        }
-        *x_out = (int)x;
-        *y_out = (int)y;
+        ckb_gfx_map_coord(wx, wy, step, x_out, y_out);
     } else {
         *x_out = *y_out = 0;
     }
@@ -1407,20 +1470,14 @@ void clear_array(Variable *v)
             items[i] = NULL;
         }
     } else if (v->elements) {
-        if (record_size(v->kind))
-            memset((void *)v->elements, 0, v->cells * array_element_size(v));
-        else
-            _fmemset(v->elements, 0, v->cells * array_element_size(v));
+        _fmemset(v->elements, 0, v->cells * array_element_size(v));
     }
 }
 
 void release_array(Variable *v)
 {
     if (v->kind == '$') clear_array(v);
-    if (v->elements) {
-        if (record_size(v->kind)) free((void *)v->elements);
-        else _ffree(v->elements);
-    }
+    if (v->elements) _ffree(v->elements);
     free(v->bounds);
     v->elements = NULL;
     v->bounds = NULL;
@@ -1433,26 +1490,19 @@ void dimension_array(Parser *p, Variable *v, const Bounds *bounds, unsigned dime
     Bounds *shape;
     void __far *elements;
     unsigned size = array_element_size(v);
-    unsigned is_rec = record_size(v->kind);
     unsigned long total = (unsigned long)cells * (unsigned long)size;
-    if ((is_rec && total > 32767UL) || (!is_rec && total > 65520UL)) {
+    unsigned bytes;
+    if (total > 65520UL) {
         fail(p, "Out of memory");
         return;
     }
     shape = malloc(dimensions * sizeof(*shape));
-    if (is_rec) {
-        elements = (void __far *)calloc(cells ? cells : 1U, size ? size : 1U);
-    } else {
-        unsigned bytes = (unsigned)(total ? total : 1UL);
-        elements = _fmalloc(bytes);
-        if (elements) _fmemset(elements, 0, bytes);
-    }
+    bytes = (unsigned)(total ? total : 1UL);
+    elements = _fmalloc(bytes);
+    if (elements) _fmemset(elements, 0, bytes);
     if (!shape || !elements) {
         free(shape);
-        if (elements) {
-            if (is_rec) free((void *)elements);
-            else _ffree(elements);
-        }
+        if (elements) _ffree(elements);
         fail(p, "Out of memory");
         return;
     }
@@ -1698,10 +1748,7 @@ void free_common(CommonValue *saved, unsigned count, CommonType *types)
             for (cell = 0; cell < v->cells; ++cell)
                 ckb_sfree(((char __far * __far *)v->elements)[cell]);
         }
-        if (v->elements) {
-            if (record_size(v->kind)) free((void *)v->elements);
-            else _ffree(v->elements);
-        }
+        if (v->elements) _ffree(v->elements);
         free(v->bounds);
         ckb_sfree(v->text);
     }
@@ -1824,15 +1871,330 @@ void color_statement(Parser *p, int run)
     if (run && !error_message) ckb_color(fg, bg);
 }
 
+#if defined(__WATCOMC__) || defined(_MSDOS)
+extern void __far ckb_call_absolute(unsigned target_seg, unsigned target_off,
+                                    unsigned argc, const unsigned *arg_offsets);
+#ifdef __WATCOMC__
+#pragma aux ckb_call_absolute "CKB_CALL_ABSOLUTE" parm [ax] [dx] [cx] [bx] modify exact []
+#endif
+#endif
+
+static unsigned dgroup_seg(void)
+{
+#if defined(__WATCOMC__) || defined(_MSDOS)
+    unsigned char local_b = 0;
+    return FP_SEG((void __far *)&local_b);
+#else
+    return 0;
+#endif
+}
+
+static int parse_u16_addr(Parser *p, int run, unsigned *out)
+{
+    double v = numeric(p, run), r;
+    *out = 0;
+    if (!run || error_message) return !error_message;
+    if (!finite_number(v)) { fail(p, "Overflow"); return 0; }
+    r = round_even(v);
+    if (r < -65536.0 || r > 65535.0) { fail(p, "Overflow"); return 0; }
+    *out = (unsigned)((unsigned long)(long)r & 0xffffUL);
+    return 1;
+}
+
+typedef struct {
+    Variable *var;
+    unsigned char num_bytes[8];
+    unsigned short str_desc[2];
+    char *str_near;
+    unsigned str_cap;
+} VarShadow;
+
+#define VAR_SHADOW_MAX 4
+static VarShadow var_shadows[VAR_SHADOW_MAX];
+static unsigned var_shadow_next = 0;
+static char varptr_resolve_buf[260];
+
+void reset_varptr_shadows(void)
+{
+    unsigned i;
+    for (i = 0; i < VAR_SHADOW_MAX; ++i) {
+        if (var_shadows[i].str_near) free(var_shadows[i].str_near);
+        memset(&var_shadows[i], 0, sizeof(var_shadows[i]));
+    }
+    var_shadow_next = 0;
+}
+
+static VarShadow *bind_scalar_shadow(Variable *v)
+{
+    unsigned i, slot_idx;
+    VarShadow *s = NULL;
+    for (i = 0; i < VAR_SHADOW_MAX; ++i) {
+        if (var_shadows[i].var == v) { s = &var_shadows[i]; break; }
+    }
+    if (!s) {
+        for (i = 0; i < VAR_SHADOW_MAX; ++i) {
+            if (!var_shadows[i].var) { s = &var_shadows[i]; break; }
+        }
+        if (!s) {
+            slot_idx = var_shadow_next++ % VAR_SHADOW_MAX;
+            s = &var_shadows[slot_idx];
+        }
+        s->var = v;
+    }
+    if (v->kind == '$') {
+        unsigned fwidth = 0;
+        char *fdata = field_data(v, &fwidth);
+        unsigned len = fdata ? fwidth :
+                       v->fixed_width ? v->fixed_width :
+                       (v->text ? *(const unsigned __far *)v->text : 0U);
+        if (len > s->str_cap || !s->str_near) {
+            char *nb = malloc(len + 2U);
+            if (nb) {
+                free(s->str_near);
+                s->str_near = nb;
+                s->str_cap = len + 1U;
+            } else {
+                len = s->str_cap;
+            }
+        }
+        if (s->str_near && len) {
+            if (fdata) memcpy(s->str_near, fdata, len);
+            else if (v->text) _fmemcpy(s->str_near, v->fixed_width ? v->text : v->text + 4, len);
+            else memset(s->str_near, ' ', len);
+        }
+        s->str_desc[0] = (unsigned short)len;
+        s->str_desc[1] = (unsigned short)(size_t)s->str_near;
+    } else {
+        double n = v->number;
+        packed_number((char *)s->num_bytes, v->kind, &n, 1);
+    }
+    return s;
+}
+
+static void sync_shadows_to_vars(void)
+{
+    unsigned i;
+    for (i = 0; i < VAR_SHADOW_MAX; ++i) {
+        VarShadow *s = &var_shadows[i];
+        Variable *v = s->var;
+        if (!v) continue;
+        if (v->kind != '$') {
+            double n = 0.0;
+            packed_number((char *)s->num_bytes, v->kind, &n, 0);
+            v->number = n;
+        }
+    }
+}
+
+static const char *resolve_varptr_str(const unsigned char *vp3, unsigned *len_out)
+{
+    unsigned code = (unsigned)vp3[1] | ((unsigned)vp3[2] << 8);
+    *len_out = 0;
+    if (vp3[0] != 3U) return NULL;
+    if (code & 0x8000U) {
+        unsigned vid = code & 0x7fffU;
+        Variable *v;
+        unsigned len;
+        if (vid >= variable_count) return NULL;
+        v = variable_storage((int)vid);
+        if (v->kind != '$') return NULL;
+        if (v->fixed_width) {
+            len = v->fixed_width < 255U ? v->fixed_width : 255U;
+            if (v->text) _fmemcpy(varptr_resolve_buf, v->text, len);
+            else memset(varptr_resolve_buf, ' ', len);
+        } else {
+            len = v->text ? *(const unsigned __far *)v->text : 0U;
+            if (len > 255U) len = 255U;
+            if (len) _fmemcpy(varptr_resolve_buf, v->text + 4, len);
+        }
+        varptr_resolve_buf[len] = '\0';
+        *len_out = len;
+        return varptr_resolve_buf;
+    }
+    return NULL;
+}
+
+static int resolve_lvalue_far_addr(Parser *p, int run, unsigned *seg_out,
+                                   unsigned *off_out, Reference *ref_out)
+{
+    Reference ref = lvalue(p, run);
+    if (ref_out) *ref_out = ref;
+    *seg_out = 0;
+    *off_out = 0;
+    if (!run || error_message || !ref.target) return !error_message;
+    if (record_size(ref.target->kind)) {
+        char __far *rdata = record_data(p, ref);
+        if (!rdata) return 0;
+#if defined(__WATCOMC__) || defined(_MSDOS)
+        *seg_out = FP_SEG(rdata);
+        *off_out = FP_OFF(rdata);
+#endif
+        return 1;
+    }
+    if (ref.target->array) {
+        unsigned esize = array_element_size(ref.target);
+        unsigned char __far *elem;
+        if (!valid_cell(p, ref.target, ref.cell)) return 0;
+        elem = (unsigned char __far *)ref.target->elements + ref.cell * esize;
+        if (ref.target->kind == '$') {
+            VarShadow *s = bind_scalar_shadow(ref.target);
+            char __far *st = ((char __far * __far *)ref.target->elements)[ref.cell];
+            unsigned len = ref.target->fixed_width ? ref.target->fixed_width :
+                           (st ? *(const unsigned __far *)st : 0U);
+            if (len > 255U) len = 255U;
+            if (!s->str_near || s->str_cap < len + 1U) {
+                char *nb = malloc(len + 2U);
+                if (nb) { free(s->str_near); s->str_near = nb; s->str_cap = len + 1U; }
+            }
+            if (s->str_near && len && st)
+                _fmemcpy(s->str_near, ref.target->fixed_width ? elem : (unsigned char __far *)(st + 4), len);
+            s->var = NULL;
+            s->str_desc[0] = (unsigned short)len;
+            s->str_desc[1] = (unsigned short)(size_t)s->str_near;
+            *seg_out = dgroup_seg();
+            *off_out = (unsigned)(size_t)s->str_desc;
+            return 1;
+        }
+#if defined(__WATCOMC__) || defined(_MSDOS)
+        *seg_out = FP_SEG(elem);
+        *off_out = FP_OFF(elem);
+#endif
+        return 1;
+    }
+    {
+        VarShadow *s = bind_scalar_shadow(ref.target);
+        *seg_out = dgroup_seg();
+        *off_out = (ref.target->kind == '$')
+            ? (unsigned)(size_t)s->str_desc
+            : (unsigned)(size_t)s->num_bytes;
+    }
+    return 1;
+}
+
+void varseg_function(Parser *p, Value *v, int run)
+{
+    unsigned seg = 0, off = 0;
+    expect(p, '(', "Expected: (");
+    resolve_lvalue_far_addr(p, run, &seg, &off, NULL);
+    expect(p, ')', "Expected: )");
+    v->kind = '%';
+    if (run && !error_message) v->number = (double)(short)seg;
+}
+
+void varptr_function(Parser *p, Value *v, int run)
+{
+    unsigned seg = 0, off = 0;
+    expect(p, '(', "Expected: (");
+    resolve_lvalue_far_addr(p, run, &seg, &off, NULL);
+    expect(p, ')', "Expected: )");
+    v->kind = '%';
+    if (run && !error_message) v->number = (double)(short)off;
+}
+
+void varptr_str_function(Parser *p, Value *v, int run)
+{
+    Reference ref;
+    unsigned char tag = 4U;
+    unsigned code = 0U;
+    expect(p, '(', "Expected: (");
+    ref = lvalue(p, run);
+    expect(p, ')', "Expected: )");
+    v->kind = '$';
+    v->string = 1;
+    if (!run || error_message || !ref.target) {
+        v->length = 0;
+        v->text[0] = '\0';
+        return;
+    }
+    switch (ref.kind) {
+    case '%': tag = 2U; break;
+    case '$': tag = 3U; break;
+    case '&': tag = 20U; break;
+    case '!': tag = 4U; break;
+    case '#': tag = 8U; break;
+    default: tag = 4U; break;
+    }
+    if (!ref.target->array)
+        code = 0x8000U | (unsigned)(ref.target - variables);
+    v->length = 3U;
+    v->text[0] = (char)tag;
+    v->text[1] = (char)(code & 0xffU);
+    v->text[2] = (char)((code >> 8) & 0xffU);
+    v->text[3] = '\0';
+}
+
+void sadd_function(Parser *p, Value *v, int run, unsigned depth)
+{
+    Parser save_p;
+    expect(p, '(', "Expected: (");
+    save_p = *p;
+    v->kind = '%';
+    if (p->token == T_NAME) {
+        Reference ref = lvalue(p, run);
+        if (!error_message && p->token == ')' && ref.target && ref.kind == '$' && !ref.target->array) {
+            expect(p, ')', "Expected: )");
+            if (run) {
+                VarShadow *s = bind_scalar_shadow(ref.target);
+                v->number = (double)(short)s->str_desc[1];
+            }
+            return;
+        }
+    }
+    error_message = NULL;
+    *p = save_p;
+    {
+        Value sv;
+        expression(p, &sv, 1, depth + 1U, run);
+        expect(p, ')', "Expected: )");
+        if (!error_message && !sv.string) fail(p, "Type mismatch");
+        else if (run && !error_message) {
+            VarShadow *s = &var_shadows[var_shadow_next++ % VAR_SHADOW_MAX];
+            unsigned len = sv.length;
+            s->var = NULL;
+            if (!s->str_near || s->str_cap < len + 1U) {
+                char *nb = malloc(len + 2U);
+                if (nb) { free(s->str_near); s->str_near = nb; s->str_cap = len + 1U; }
+            }
+            if (s->str_near && len) memcpy(s->str_near, ckb_string_bytes(&sv), len);
+            v->number = (double)(short)(unsigned)(size_t)s->str_near;
+        }
+    }
+}
+
 void screen_statement(Parser *p, int run)
 {
-    int mode = (int)integer_operand(p, numeric(p, run), run), extra;
-    for (extra = 0; extra < 3 && take(p, ','); ++extra)
-        if (p->token != ',' && !end_statement(p)) (void)numeric(p, run);
+    int mode = -1, cs = -1, ap = -1, vp = -1;
+    if (p->token != ',' && !end_statement(p))
+        mode = (int)integer_operand(p, numeric(p, run), run);
+    if (take(p, ',')) {
+        if (p->token != ',' && !end_statement(p))
+            cs = (int)integer_operand(p, numeric(p, run), run);
+        if (take(p, ',')) {
+            if (p->token != ',' && !end_statement(p))
+                ap = (int)integer_operand(p, numeric(p, run), run);
+            if (take(p, ',') && !end_statement(p))
+                vp = (int)integer_operand(p, numeric(p, run), run);
+        }
+    }
+    if (mode == -1 && cs == -1 && ap == -1 && vp == -1) {
+        fail(p, "Expected: expression");
+        return;
+    }
     if (run && !error_message) {
-        const char *err = ckb_screen(mode);
+        const char *err = ckb_screen_ex(mode, cs, ap, vp);
         if (err) fail(p, err);
         else screen_column = 0;
+    }
+}
+
+void pcopy_statement(Parser *p, int run)
+{
+    int src = (int)integer_operand(p, numeric(p, run), run), dst;
+    expect(p, ',', "Expected: ,");
+    dst = (int)integer_operand(p, numeric(p, run), run);
+    if (run && !error_message) {
+        const char *err = ckb_pcopy(src, dst);
+        if (err) fail(p, err);
     }
 }
 
@@ -1900,25 +2262,380 @@ void view_statement(Parser *p, int run)
             if (err) fail(p, err);
             else screen_column = 0;
         }
+    } else if (end_statement(p)) {
+        if (run) {
+            const char *err = ckb_view_gfx(1, 0, 0, 0, 0, 0, -1, -1);
+            if (err) fail(p, err);
+        }
     } else {
-        while (!end_statement(p)) scan(p);
+        int is_scr = take_word(p, "SCREEN");
+        int x1 = 0, y1 = 0, x2 = 0, y2 = 0, fc = -1, bc = -1;
+        if (!expect(p, '(', "Expected: (")) return;
+        x1 = (int)integer_operand(p, numeric(p, run), run);
+        if (!expect(p, ',', "Expected: ,")) return;
+        y1 = (int)integer_operand(p, numeric(p, run), run);
+        if (!expect(p, ')', "Expected: )") || !expect(p, '-', "Expected: -") ||
+            !expect(p, '(', "Expected: (")) return;
+        x2 = (int)integer_operand(p, numeric(p, run), run);
+        if (!expect(p, ',', "Expected: ,")) return;
+        y2 = (int)integer_operand(p, numeric(p, run), run);
+        if (!expect(p, ')', "Expected: )")) return;
+        if (take(p, ',')) {
+            if (p->token != ',' && !end_statement(p))
+                fc = (int)integer_operand(p, numeric(p, run), run);
+            if (take(p, ',') && !end_statement(p))
+                bc = (int)integer_operand(p, numeric(p, run), run);
+        }
+        if (run && !error_message) {
+            const char *err = ckb_view_gfx(0, is_scr, x1, y1, x2, y2, fc, bc);
+            if (err) fail(p, err);
+        }
+    }
+}
+
+void window_statement(Parser *p, int run)
+{
+    if (end_statement(p)) {
+        if (run) {
+            const char *err = ckb_window(1, 0, 0.0, 0.0, 0.0, 0.0);
+            if (err) fail(p, err);
+        }
+    } else {
+        int is_scr = take_word(p, "SCREEN");
+        double x1, y1, x2, y2;
+        if (!expect(p, '(', "Expected: (")) return;
+        x1 = numeric(p, run);
+        if (!expect(p, ',', "Expected: ,")) return;
+        y1 = numeric(p, run);
+        if (!expect(p, ')', "Expected: )") || !expect(p, '-', "Expected: -") ||
+            !expect(p, '(', "Expected: (")) return;
+        x2 = numeric(p, run);
+        if (!expect(p, ',', "Expected: ,")) return;
+        y2 = numeric(p, run);
+        if (!expect(p, ')', "Expected: )")) return;
+        if (run && !error_message) {
+            const char *err = ckb_window(0, is_scr, x1, y1, x2, y2);
+            if (err) fail(p, err);
+        }
+    }
+}
+
+void draw_statement(Parser *p, int run)
+{
+    Value mml;
+    expression(p, &mml, 1, 0, run);
+    if (!mml.string) fail(p, "Type mismatch");
+    else if (run && !error_message) {
+        const char *err = ckb_draw(ckb_string_bytes(&mml), mml.length, resolve_varptr_str);
+        if (err) fail(p, err);
     }
 }
 
 void poke_statement(Parser *p, int run, unsigned seg)
 {
-    long addr = integer_operand(p, numeric(p, run), run), val;
+    unsigned addr = 0;
+    long val;
+    if (!parse_u16_addr(p, run, &addr)) return;
     expect(p, ',', "Expected: ,");
     val = integer_operand(p, numeric(p, run), run);
     if (run && !error_message) {
-        if (addr < 0 || addr > 65535L || val < 0 || val > 255L)
+        if (val < 0 || val > 255L)
             fail(p, "Illegal function call");
 #if defined(__WATCOMC__) || defined(_MSDOS)
-        else *(unsigned char __far *)MK_FP(seg, (unsigned)addr) = (unsigned char)val;
+        else {
+            *(unsigned char __far *)MK_FP(seg, addr) = (unsigned char)val;
+            if (seg == dgroup_seg()) sync_shadows_to_vars();
+        }
 #else
         else (void)seg;
 #endif
     }
+}
+
+void out_statement(Parser *p, int run)
+{
+    unsigned port = 0;
+    long val;
+    if (!parse_u16_addr(p, run, &port)) return;
+    expect(p, ',', "Expected: ,");
+    val = integer_operand(p, numeric(p, run), run);
+    if (run && !error_message) {
+        if (val < -128L || val > 255L) fail(p, "Illegal function call");
+#if defined(__WATCOMC__) || defined(_MSDOS)
+        else outp(port, (int)((unsigned long)val & 0xffUL));
+#endif
+    }
+}
+
+void wait_statement(Parser *p, int run)
+{
+    unsigned port = 0;
+    long and_mask, xor_mask = 0;
+    if (!parse_u16_addr(p, run, &port)) return;
+    expect(p, ',', "Expected: ,");
+    and_mask = integer_operand(p, numeric(p, run), run);
+    if (take(p, ',') && !end_statement(p))
+        xor_mask = integer_operand(p, numeric(p, run), run);
+    if (run && !error_message) {
+        if (and_mask < 0 || and_mask > 255L || xor_mask < 0 || xor_mask > 255L) {
+            fail(p, "Illegal function call");
+            return;
+        }
+#if defined(__WATCOMC__) || defined(_MSDOS)
+        while ((((unsigned)inp(port) ^ (unsigned)xor_mask) & (unsigned)and_mask) == 0U) {
+        }
+#endif
+    }
+}
+
+void inp_function(Parser *p, Value *v, int run)
+{
+    unsigned port = 0;
+    expect(p, '(', "Expected: (");
+    parse_u16_addr(p, run, &port);
+    expect(p, ')', "Expected: )");
+    v->kind = '%';
+    if (run && !error_message) {
+#if defined(__WATCOMC__) || defined(_MSDOS)
+        v->number = (double)((unsigned)inp(port) & 0xffU);
+#else
+        v->number = 0;
+#endif
+    }
+}
+
+void bsave_statement(Parser *p, int run)
+{
+    Value path;
+    unsigned off = 0;
+    long len;
+    expression(p, &path, 1, 0, run);
+    if (!path.string) { fail(p, "Type mismatch"); return; }
+    if (!expect(p, ',', "Expected: ,") || !parse_u16_addr(p, run, &off) ||
+        !expect(p, ',', "Expected: ,")) return;
+    len = integer_operand(p, numeric(p, run), run);
+    if (!run || error_message) return;
+    if (len < 0 || len > 65535L) { fail(p, "Illegal function call"); return; }
+    if (!path.length || path.length > TEXT_INPUT_MAX) { fail(p, "Bad file name"); return; }
+    {
+        FILE *fp = fopen(ckb_string_bytes(&path), "wb");
+        unsigned seg = current_def_seg();
+        unsigned ulen = (unsigned)len;
+        unsigned char hdr[7];
+        unsigned char chunk[256];
+        unsigned pos = 0;
+        if (!fp) { fail(p, "Path/File access error"); return; }
+        hdr[0] = 0xfdU;
+        hdr[1] = (unsigned char)(seg & 0xffU);
+        hdr[2] = (unsigned char)(seg >> 8);
+        hdr[3] = (unsigned char)(off & 0xffU);
+        hdr[4] = (unsigned char)(off >> 8);
+        hdr[5] = (unsigned char)(ulen & 0xffU);
+        hdr[6] = (unsigned char)(ulen >> 8);
+        if (fwrite(hdr, 1, 7, fp) != 7) { fclose(fp); fail(p, "Write error"); return; }
+#if defined(__WATCOMC__) || defined(_MSDOS)
+        while (pos < ulen) {
+            unsigned n = (ulen - pos) > sizeof(chunk) ? sizeof(chunk) : (ulen - pos);
+            _fmemcpy(chunk, MK_FP(seg, off + pos), n);
+            if (fwrite(chunk, 1, n, fp) != n) { fclose(fp); fail(p, "Write error"); return; }
+            pos += n;
+        }
+#else
+        memset(chunk, 0, sizeof(chunk));
+        while (pos < ulen) {
+            unsigned n = (ulen - pos) > sizeof(chunk) ? sizeof(chunk) : (ulen - pos);
+            if (fwrite(chunk, 1, n, fp) != n) { fclose(fp); fail(p, "Write error"); return; }
+            pos += n;
+        }
+#endif
+        if (fclose(fp) != 0) fail(p, "Write error");
+    }
+}
+
+void bload_statement(Parser *p, int run)
+{
+    Value path;
+    int has_off = 0;
+    unsigned off = 0;
+    expression(p, &path, 1, 0, run);
+    if (!path.string) { fail(p, "Type mismatch"); return; }
+    if (take(p, ',') && !end_statement(p)) {
+        has_off = 1;
+        if (!parse_u16_addr(p, run, &off)) return;
+    }
+    if (!run || error_message) return;
+    if (!path.length || path.length > TEXT_INPUT_MAX) { fail(p, "Bad file name"); return; }
+    {
+        FILE *fp = fopen(ckb_string_bytes(&path), "rb");
+        unsigned char hdr[7];
+        unsigned char chunk[256];
+        unsigned seg, dst_off, ulen, pos = 0;
+        if (!fp) { fail(p, "File not found"); return; }
+        if (fread(hdr, 1, 7, fp) != 7) {
+            fclose(fp);
+            fail(p, "Bad file mode");
+            return;
+        }
+        seg = has_off ? current_def_seg() : ((unsigned)hdr[1] | ((unsigned)hdr[2] << 8));
+        dst_off = has_off ? off : ((unsigned)hdr[3] | ((unsigned)hdr[4] << 8));
+        ulen = (unsigned)hdr[5] | ((unsigned)hdr[6] << 8);
+        while (pos < ulen) {
+            unsigned n = (ulen - pos) > sizeof(chunk) ? sizeof(chunk) : (ulen - pos);
+            if (fread(chunk, 1, n, fp) != n) {
+                fclose(fp);
+                fail(p, "Bad file mode");
+                return;
+            }
+#if defined(__WATCOMC__) || defined(_MSDOS)
+            _fmemcpy(MK_FP(seg, dst_off + pos), chunk, n);
+#else
+            (void)seg; (void)dst_off;
+#endif
+            pos += n;
+        }
+        fclose(fp);
+#if defined(__WATCOMC__) || defined(_MSDOS)
+        if (seg == dgroup_seg()) sync_shadows_to_vars();
+#endif
+    }
+}
+
+typedef struct {
+    Reference ref;
+    int is_ref;
+    char kind;
+    unsigned char num_slot[8];
+    unsigned short str_desc[2];
+    char *str_buf;
+    unsigned str_len;
+} AbsArg;
+
+void call_absolute_statement(Parser *p, int run)
+{
+    AbsArg args[PARAM_MAX];
+    unsigned arg_offs[PARAM_MAX];
+    unsigned argc = 0, i, target_off = 0;
+    memset(args, 0, sizeof(args));
+    if (!expect(p, '(', "Expected: (")) return;
+    for (;;) {
+        Parser scan_p = *p;
+        int depth = 0;
+        while (scan_p.token && !(depth == 0 && (scan_p.token == ',' || scan_p.token == ')'))) {
+            if (scan_p.token == '(') ++depth;
+            else if (scan_p.token == ')') --depth;
+            scan(&scan_p);
+        }
+        if (scan_p.token == ',') {
+            Parser item_start = *p;
+            AbsArg *a;
+            if (argc >= PARAM_MAX) { fail(p, "Too many arguments"); goto cleanup; }
+            a = &args[argc];
+            if (p->token == T_NAME) {
+                Reference r = lvalue(p, run);
+                if (!error_message && p->token == ',') {
+                    a->ref = r;
+                    a->is_ref = 1;
+                    a->kind = r.kind;
+                } else {
+                    error_message = NULL;
+                    *p = item_start;
+                }
+            }
+            if (!a->is_ref) {
+                Value val;
+                expression(p, &val, 1, 0, run);
+                if (error_message) goto cleanup;
+                a->kind = val.string ? '$' : (val.kind ? val.kind : '!');
+                if (run) {
+                    if (val.string) {
+                        a->str_len = val.length;
+                        a->str_buf = malloc(a->str_len + 2U);
+                        if (!a->str_buf) { fail(p, "Out of memory"); goto cleanup; }
+                        if (a->str_len) memcpy(a->str_buf, ckb_string_bytes(&val), a->str_len);
+                        a->str_desc[0] = (unsigned short)a->str_len;
+                        a->str_desc[1] = (unsigned short)(size_t)a->str_buf;
+                    } else {
+                        double d = val.number;
+                        packed_number((char *)a->num_slot, a->kind, &d, 1);
+                    }
+                }
+            } else if (run && a->ref.target) {
+                Value cur;
+                unsigned rsize = record_size(a->kind);
+                if (rsize) {
+                    char __far *rd = record_data(p, a->ref);
+                    if (!rd) goto cleanup;
+                    a->str_len = rsize;
+                    a->str_buf = malloc(rsize);
+                    if (!a->str_buf) { fail(p, "Out of memory"); goto cleanup; }
+                    _fmemcpy(a->str_buf, rd, rsize);
+                    arg_offs[argc++] = (unsigned)(size_t)a->str_buf;
+                    expect(p, ',', "Expected: ,");
+                    continue;
+                }
+                fetch_reference(p, a->ref, 1, &cur);
+                if (error_message) goto cleanup;
+                if (a->kind == '$') {
+                    a->str_len = cur.length;
+                    a->str_buf = malloc(a->str_len + 2U);
+                    if (!a->str_buf) { fail(p, "Out of memory"); goto cleanup; }
+                    if (a->str_len) memcpy(a->str_buf, ckb_string_bytes(&cur), a->str_len);
+                    a->str_desc[0] = (unsigned short)a->str_len;
+                    a->str_desc[1] = (unsigned short)(size_t)a->str_buf;
+                } else {
+                    double d = cur.number;
+                    packed_number((char *)a->num_slot, a->kind, &d, 1);
+                }
+            }
+            arg_offs[argc] = (a->kind == '$')
+                ? (unsigned)(size_t)a->str_desc
+                : (unsigned)(size_t)a->num_slot;
+            ++argc;
+            expect(p, ',', "Expected: ,");
+        } else {
+            parse_u16_addr(p, run, &target_off);
+            expect(p, ')', "Expected: )");
+            break;
+        }
+    }
+    if (run && !error_message) {
+#if defined(__WATCOMC__) || defined(_MSDOS)
+        ckb_call_absolute(current_def_seg(), target_off, argc, arg_offs);
+        sync_shadows_to_vars();
+#endif
+        for (i = 0; i < argc && !error_message; ++i) {
+            AbsArg *a = &args[i];
+            unsigned rsize = record_size(a->kind);
+            if (!a->is_ref || !a->ref.target) continue;
+            if (rsize) {
+                char __far *rd = record_data(p, a->ref);
+                if (rd && a->str_buf) _fmemcpy(rd, a->str_buf, rsize);
+                continue;
+            }
+            if (a->kind == '$') {
+                Value nv;
+                unsigned nlen = a->str_desc[0] <= a->str_len ? a->str_desc[0] : a->str_len;
+                char *dst;
+                INIT_VALUE(&nv);
+                nv.string = 1;
+                nv.kind = '$';
+                dst = ckb_string_buffer(&nv, nlen);
+                if (dst && nlen && a->str_buf) memcpy(dst, a->str_buf, nlen);
+                if (dst) dst[nlen] = '\0';
+                assign_reference(p, a->ref, &nv, 1);
+            } else {
+                Value nv;
+                double d = 0.0;
+                packed_number((char *)a->num_slot, a->kind, &d, 0);
+                INIT_VALUE(&nv);
+                nv.kind = a->kind;
+                nv.number = d;
+                assign_reference(p, a->ref, &nv, 1);
+            }
+        }
+    }
+cleanup:
+    for (i = 0; i < argc; ++i) free(args[i].str_buf);
 }
 
 void sound_statement(Parser *p, int run)
@@ -1938,7 +2655,7 @@ void play_statement(Parser *p, int run)
     expression(p, &mml, 1, 0, run);
     if (!mml.string) fail(p, "Type mismatch");
     else if (run && !error_message) {
-        const char *err = ckb_play(ckb_string_bytes(&mml), NULL);
+        const char *err = ckb_play(ckb_string_bytes(&mml), mml.length, NULL, resolve_varptr_str);
         if (err) fail(p, err);
     }
 }
@@ -1987,40 +2704,85 @@ void seek_statement(Parser *p, int run)
 
 void peek_function(Parser *p, Value *v, int run, unsigned seg)
 {
-    long addr;
+    unsigned addr = 0;
     expect(p, '(', "Expected: (");
-    addr = integer_operand(p, numeric(p, run), run);
+    parse_u16_addr(p, run, &addr);
     expect(p, ')', "Expected: )");
     v->kind = '%';
     if (run && !error_message) {
-        if (addr < 0 || addr > 65535L) fail(p, "Illegal function call");
 #if defined(__WATCOMC__) || defined(_MSDOS)
-        else v->number = *(const unsigned char __far *)MK_FP(seg, (unsigned)addr);
+        v->number = *(const unsigned char __far *)MK_FP(seg, addr);
 #else
-        else { (void)seg; v->number = 0; }
+        (void)seg;
+        v->number = 0;
 #endif
+    }
+}
+
+void pmap_function(Parser *p, Value *v, int run)
+{
+    double coord;
+    long func;
+    expect(p, '(', "Expected: (");
+    coord = numeric(p, run);
+    expect(p, ',', "Expected: ,");
+    func = integer_operand(p, numeric(p, run), run);
+    expect(p, ')', "Expected: )");
+    v->kind = '!';
+    if (run && !error_message) {
+        const char *err = NULL;
+        v->number = ckb_pmap(coord, (int)func, &err);
+        if (err) fail(p, err);
+    }
+}
+
+void screen_function(Parser *p, Value *v, int run)
+{
+    long row, col, flag = 0;
+    expect(p, '(', "Expected: (");
+    row = integer_operand(p, numeric(p, run), run);
+    expect(p, ',', "Expected: ,");
+    col = integer_operand(p, numeric(p, run), run);
+    if (take(p, ','))
+        flag = integer_operand(p, numeric(p, run), run);
+    expect(p, ')', "Expected: )");
+    v->kind = '%';
+    if (run && !error_message) {
+        const char *err = NULL;
+        v->number = (double)ckb_screen_cell((int)row, (int)col, (int)flag, &err);
+        if (err) fail(p, err);
     }
 }
 
 void point_function(Parser *p, Value *v, int run)
 {
-    long x, y;
+    double first;
     expect(p, '(', "Expected: (");
-    x = integer_operand(p, numeric(p, run), run);
+    first = numeric(p, run);
     if (take(p, ',')) {
-        y = integer_operand(p, numeric(p, run), run);
-        expect(p, ')', "Expected: )");
-        v->kind = '%';
-        if (run && !error_message) v->number = ckb_point((int)x, (int)y);
-    } else {
-        int lx, ly;
+        double second = numeric(p, run);
         expect(p, ')', "Expected: )");
         v->kind = '%';
         if (run && !error_message) {
-            ckb_gfx_last(&lx, &ly);
-            if (x == 0 || x == 2) v->number = lx;
-            else if (x == 1 || x == 3) v->number = ly;
-            else fail(p, "Illegal function call");
+            int px = 0, py = 0;
+            if (!ckb_window_active()) {
+                long ix = integer_operand(p, first, 1);
+                long iy = integer_operand(p, second, 1);
+                if (error_message) return;
+                ckb_gfx_map_coord((double)ix, (double)iy, 0, &px, &py);
+            } else {
+                ckb_gfx_map_coord(first, second, 0, &px, &py);
+            }
+            v->number = ckb_point(px, py);
+        }
+    } else {
+        long fn = integer_operand(p, first, run);
+        expect(p, ')', "Expected: )");
+        v->kind = (fn >= 2 && ckb_window_active()) ? '!' : '%';
+        if (run && !error_message) {
+            const char *err = NULL;
+            v->number = ckb_point_info((int)fn, &err);
+            if (err) fail(p, err);
         }
     }
 }
