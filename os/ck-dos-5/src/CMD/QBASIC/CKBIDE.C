@@ -155,7 +155,7 @@ struct workspace {
     unsigned text_gen, cached_last_gen, cached_last, drawn_thumb_row;
     int cached_last_proc, syntax_checking, next_menu;
     unsigned ui_rows, disp_flags, save_segment;
-    int mbf_mode;
+    int mbf_mode, slash_run_active;
 };
 
 static void fill(unsigned row, unsigned col, unsigned ch, unsigned attr, unsigned count)
@@ -2846,6 +2846,7 @@ static int pause_workspace(void *context, unsigned line, unsigned column,
     unsigned original_line = w->line;
     int original_procedure = w->procedure;
     if (fflush(stdout) == EOF) return 0;
+    w->slash_run_active = 0;
     capture_output(w);
     w->caret = run_source_position(w, line, column);
     w->anchor = NO_MARK;
@@ -2924,6 +2925,7 @@ static int should_break(void *context, unsigned line_start, int first_statement,
 static void run_workspace_ex(struct workspace *w, enum run_mode mode, int from_slash_run)
 {
     CkbRunResult result;
+    w->slash_run_active = from_slash_run;
     do {
         w->restart_requested = 0;
         w->run_mode = mode;
@@ -2952,7 +2954,7 @@ static void run_workspace_ex(struct workspace *w, enum run_mode mode, int from_s
         ide_ensure_text_mode(w);
         return;
     }
-    if (from_slash_run && result.system_exit && !result.error) {
+    if (w->slash_run_active && result.system_exit && !result.error) {
         ide_ensure_text_mode(w);
         w->exit_requested = 1;
         return;
