@@ -1,13 +1,14 @@
-; Copyright (c) 2026 C. Klukas
+; Copyright (c) 2026 C. Klukas. All rights reserved.
 ; SPDX-License-Identifier: MIT
 ;
-; EXPAND.EXE — Clean-room CK-DOS 5.0 SZDD and KWAJ file decompressor.
+; EXPAND.EXE — Clean-room CK-DOS 5.0 SZDD (mode 41h LZSS) file decompressor.
 ;
 ; Supports:
-;   - SZDD signature (53 5A 44 44 88 F0 27 33, mode 41h LZSS, missing-ext char)
-;   - KWAJ signature (4B 57 41 4A 88 F0 27 D1, methods 0=copy, 1=XOR FFh, 2=LZSS,
-;     optional uncompressed size and embedded filename/extension)
-;   - Pass-through copy for uncompressed files
+;   - SZDD signature (53 5A 44 44 88 F0 27 33, mode 41h LZSS, 4-byte length)
+;   - Pass-through copy for uncompressed files (with status diagnostic)
+;   - Packed DOS file date/time preservation (INT 21h AX=5700h / 5701h)
+;   - Canonicalized self-overwrite protection (INT 21h AH=60h)
+;   - Partial-output cleanup on write / disk-full failure
 ;   - Single file (EXPAND src dest), multiple files to directory, and /?
 
 .8086
@@ -36,20 +37,32 @@ START:
         CMP     BYTE PTR [OPT_HELP],0
         JE      CHK_ARGC
 
-        MOV     DX,OFFSET MSG_HELP
-        CALL    PRINT_STR
-        MOV     AX,4C00h
-        INT     21h
-
-CHK_ARGC:
-        CMP     WORD PTR [ARG_COUNT],2
-        JAE     ARGS_OK
-        MOV     DX,OFFSET MSG_SYNTAX
-        CALL    PRINT_STR
+SHOW_HELP_ERR:
+        MOV     SI,OFFSET MSG_HELP
+        CALL    WRITE_STDOUT_Z
         MOV     AX,4C01h
         INT     21h
 
-ARGS_OK:
+CHK_ARGC:
+        CMP     WORD PTR [ARG_COUNT],0
+        JE      SHOW_HELP_ERR
+        CMP     WORD PTR [ARG_COUNT],1
+        JA      ARGS_TWO_OR_MORE
+
+        ; Single argument: if not an existing directory, report missing dest dir
+        MOV     SI,[ARG_PTRS]
+        CALL    CHECK_IS_DIR
+        OR      AL,AL
+        JNZ     SHOW_HELP_ERR
+        MOV     SI,OFFSET MSG_NODIR_PFX
+        CALL    WRITE_STDOUT_Z
+        MOV     SI,[ARG_PTRS]
+        CALL    WRITE_STDOUT_Z
+        CALL    WRITE_CRLF
+        MOV     AX,4C01h
+        INT     21h
+
+ARGS_TWO_OR_MORE:
         ; Last argument is destination (file or directory)
         MOV     BX,[ARG_COUNT]
         DEC     BX
@@ -64,8 +77,11 @@ ARGS_OK:
         JBE     START_EXPAND_LOOP
         CMP     BYTE PTR [DEST_IS_DIR],0
         JNE     START_EXPAND_LOOP
-        MOV     DX,OFFSET MSG_MULTI_NODIR
-        CALL    PRINT_STR
+        MOV     SI,OFFSET MSG_NODIR_PFX
+        CALL    WRITE_STDOUT_Z
+        MOV     SI,[DEST_ARG]
+        CALL    WRITE_STDOUT_Z
+        CALL    WRITE_CRLF
         MOV     AX,4C01h
         INT     21h
 
@@ -92,34 +108,65 @@ EXIT_ERR:
         INT     21h
 
 ; ---------------------------------------------------------------------------
-; EXPAND_ONE_FILE: expands [CUR_SRC] to [DEST_ARG] (or dir + derived name)
+; EXPAND_ONE_FILE: expands [CUR_SRC] to [DEST_ARG] (or dir + original basename)
 ; ---------------------------------------------------------------------------
 EXPAND_ONE_FILE PROC    NEAR
         MOV     WORD PTR [IN_HANDLE],0FFFFh
         MOV     WORD PTR [OUT_HANDLE],0FFFFh
+        MOV     BYTE PTR [HAS_SRC_TS],0
+
+        ; Reject wildcards explicitly (DOS 5 EXPAND does not expand wildcards)
+        MOV     SI,[CUR_SRC]
+        CALL    HAS_WILDCARD
+        JC      EOF_OPEN_FAIL
 
         MOV     DX,[CUR_SRC]
         MOV     AX,3D00h                ; open read-only
         INT     21h
         JNC     EOF_OPEN_OK
-        MOV     DX,OFFSET MSG_OPEN_ERR
-        CALL    PRINT_STR
+
+EOF_OPEN_FAIL:
+        MOV     SI,OFFSET MSG_OPEN_IN
+        CALL    WRITE_STDOUT_Z
         MOV     SI,[CUR_SRC]
-        CALL    PRINT_ASCIIZ
-        CALL    PRINT_CRLF
+        CALL    WRITE_STDOUT_Z
+        CALL    WRITE_CRLF
         STC
         RET
 
 EOF_OPEN_OK:
         MOV     [IN_HANDLE],AX
+        MOV     BX,AX
+        MOV     AX,5700h                ; get file's last-written time & date
+        INT     21h
+        JC      EOF_NO_TS
+        MOV     [SRC_TIME],CX
+        MOV     [SRC_DATE],DX
+        MOV     BYTE PTR [HAS_SRC_TS],1
+EOF_NO_TS:
+        CALL    BUILD_DEST_PATH
+
+        ; Prevent truncating source file onto itself before AH=3Ch create
+        CALL    CHECK_SAME_FILE
+        JNC     EOF_NOT_SAME
+        CALL    CLOSE_HANDLES
+        MOV     SI,OFFSET MSG_SELF_COPY
+        CALL    WRITE_STDOUT_Z
+        MOV     SI,[CUR_SRC]
+        CALL    WRITE_STDOUT_Z
+        CALL    WRITE_CRLF
+        STC
+        RET
+
+EOF_NOT_SAME:
         MOV     WORD PTR [IN_POS],0
         MOV     WORD PTR [IN_LEN],0
         MOV     BYTE PTR [IN_EOF],0
         MOV     WORD PTR [OUT_POS],0
 
-        ; Read first 16 bytes (or file length if < 16) to inspect magic
+        ; Read first 14 bytes (or file length if < 14) to inspect SZDD header
         MOV     DI,OFFSET HDR_BUF
-        MOV     CX,16
+        MOV     CX,14
         XOR     BX,BX
 EOF_HDR_LP:
         CALL    GET_BYTE
@@ -131,7 +178,7 @@ EOF_HDR_LP:
 EOF_HDR_DONE:
         MOV     [HDR_READ],BX
 
-        ; Rewind input file to 0 so each format handler reads cleanly
+        ; Rewind input file to 0 so format handler reads cleanly
         MOV     BX,[IN_HANDLE]
         XOR     CX,CX
         XOR     DX,DX
@@ -141,253 +188,105 @@ EOF_HDR_DONE:
         MOV     WORD PTR [IN_LEN],0
         MOV     BYTE PTR [IN_EOF],0
 
-        ; Clear optional embedded name/missing char
-        MOV     BYTE PTR [MISSING_EXT_CH],0
-        MOV     BYTE PTR [KWAJ_NAME],0
-
-        ; Check SZDD magic: 53 5A 44 44 88 F0 27 33
+        ; Check 9-byte SZDD mode-41h header: 53 5A 44 44 88 F0 27 33 41
         CMP     WORD PTR [HDR_READ],14
         JB      EOF_RAW_COPY
         CMP     WORD PTR [HDR_BUF+0],5A53h
-        JNE     EOF_CHK_KWAJ
+        JNE     EOF_RAW_COPY
         CMP     WORD PTR [HDR_BUF+2],4444h
-        JNE     EOF_CHK_KWAJ
+        JNE     EOF_RAW_COPY
         CMP     WORD PTR [HDR_BUF+4],0F088h
-        JNE     EOF_CHK_KWAJ
+        JNE     EOF_RAW_COPY
         CMP     WORD PTR [HDR_BUF+6],3327h
-        JNE     EOF_CHK_KWAJ
-        JMP     HANDLE_SZDD
-
-EOF_CHK_KWAJ:
-        ; Check KWAJ magic: 4B 57 41 4A 88 F0 27 D1
-        CMP     WORD PTR [HDR_BUF+0],574Bh
         JNE     EOF_RAW_COPY
-        CMP     WORD PTR [HDR_BUF+2],4A41h
+        CMP     BYTE PTR [HDR_BUF+8],41h
         JNE     EOF_RAW_COPY
-        CMP     WORD PTR [HDR_BUF+4],0F088h
-        JNE     EOF_RAW_COPY
-        CMP     WORD PTR [HDR_BUF+6],0D127h
-        JNE     EOF_RAW_COPY
-        JMP     HANDLE_KWAJ
+        JMP     SHORT HANDLE_SZDD
 
 ; --- Uncompressed pass-through copy ---
 EOF_RAW_COPY:
-        CALL    BUILD_DEST_PATH
         CALL    OPEN_DEST_FILE
-        JNC     RAW_LP
-        JMP     EOF_FAIL_CLOSE
+        JNC     RAW_ANNOUNCE
+        JMP     EOF_OPEN_OUT_FAIL
+RAW_ANNOUNCE:
+        MOV     SI,OFFSET MSG_ALREADY_1
+        CALL    WRITE_STDOUT_Z
+        MOV     SI,[CUR_SRC]
+        CALL    WRITE_STDOUT_Z
+        MOV     SI,OFFSET MSG_ALREADY_2
+        CALL    WRITE_STDOUT_Z
 RAW_LP:
         CALL    GET_BYTE
-        JNC     RAW_PUT
-        JMP     EOF_FINISH_OK
-RAW_PUT:
+        JC      EOF_FINISH_OK
         CALL    PUT_BYTE
         JNC     RAW_LP
-        JMP     EOF_WRITE_ERR
+        JMP     SHORT EOF_WRITE_ERR
 
-; --- SZDD Decompressor ---
+; --- SZDD Mode 41h Decompressor ---
 HANDLE_SZDD:
-        CMP     BYTE PTR [HDR_BUF+8],41h
-        JE      SZ_MODE_OK
-        JMP     EOF_BAD_FMT
-SZ_MODE_OK:
-        MOV     AL,[HDR_BUF+9]
-        MOV     [MISSING_EXT_CH],AL
         MOV     AX,WORD PTR [HDR_BUF+10]
         MOV     [REM_OUT_LO],AX
         MOV     AX,WORD PTR [HDR_BUF+12]
         MOV     [REM_OUT_HI],AX
         MOV     BYTE PTR [HAS_OUT_LIMIT],1
 
-        ; Skip 14-byte SZDD header
+        CALL    OPEN_DEST_FILE
+        JNC     SZ_SKIP_HDR_INIT
+        JMP     SHORT EOF_OPEN_OUT_FAIL
+
+SZ_SKIP_HDR_INIT:
+        ; Consume 14-byte SZDD header
         MOV     CX,14
 SZ_SKIP_HDR:
         CALL    GET_BYTE
         LOOP    SZ_SKIP_HDR
 
-        CALL    BUILD_DEST_PATH
-        CALL    OPEN_DEST_FILE
-        JNC     SZ_DO_LZ
-        JMP     EOF_FAIL_CLOSE
-SZ_DO_LZ:
         MOV     WORD PTR [RING_INIT_POS],0FF0h  ; 4096 - 16
-        CALL    DECOMPRESS_LZSS
-        JNC     SZ_DONE_JMP
-        JMP     EOF_WRITE_ERR
-SZ_DONE_JMP:
-        JMP     EOF_FINISH_OK
-
-; --- KWAJ Decompressor ---
-HANDLE_KWAJ:
-        MOV     AX,WORD PTR [HDR_BUF+8]
-        MOV     [KWAJ_METHOD],AX
-        MOV     AX,WORD PTR [HDR_BUF+10]
-        MOV     [KWAJ_DATA_OFF],AX
-        MOV     AX,WORD PTR [HDR_BUF+12]
-        MOV     [KWAJ_FLAGS],AX
-        MOV     BYTE PTR [HAS_OUT_LIMIT],0
-
-        ; Consume 14-byte base header
-        MOV     CX,14
-KW_SKIP_BASE:
-        CALL    GET_BYTE
-        LOOP    KW_SKIP_BASE
-
-        ; Optional fields per KWAJ_FLAGS
-        TEST    WORD PTR [KWAJ_FLAGS],0001h     ; 4-byte uncompressed length
-        JZ      KW_FLG_2
-        CALL    GET_BYTE
-        MOV     BYTE PTR [REM_OUT_LO],AL
-        CALL    GET_BYTE
-        MOV     BYTE PTR [REM_OUT_LO+1],AL
-        CALL    GET_BYTE
-        MOV     BYTE PTR [REM_OUT_HI],AL
-        CALL    GET_BYTE
-        MOV     BYTE PTR [REM_OUT_HI+1],AL
-        MOV     BYTE PTR [HAS_OUT_LIMIT],1
-
-KW_FLG_2:
-        TEST    WORD PTR [KWAJ_FLAGS],0002h     ; 2-byte reserved word
-        JZ      KW_FLG_4
-        CALL    GET_BYTE
-        CALL    GET_BYTE
-
-KW_FLG_4:
-        TEST    WORD PTR [KWAJ_FLAGS],0004h     ; length-prefixed extra data
-        JZ      KW_FLG_8
-        CALL    GET_BYTE
-        MOV     CL,AL
-        CALL    GET_BYTE
-        MOV     CH,AL
-        JCXZ    KW_FLG_8
-KW_SKIP_EXTRA:
-        CALL    GET_BYTE
-        LOOP    KW_SKIP_EXTRA
-
-KW_FLG_8:
-        MOV     DI,OFFSET KWAJ_NAME
-        TEST    WORD PTR [KWAJ_FLAGS],0008h     ; 1..8 char filename
-        JZ      KW_FLG_10
-        MOV     CX,9
-KW_RD_NAME:
-        CALL    GET_BYTE
-        JC      KW_FLG_10
-        OR      AL,AL
-        JZ      KW_FLG_10
-        CMP     CX,1
-        JBE     KW_RD_NAME
-        MOV     [DI],AL
-        INC     DI
-        DEC     CX
-        JMP     SHORT KW_RD_NAME
-
-KW_FLG_10:
-        TEST    WORD PTR [KWAJ_FLAGS],0010h     ; 1..3 char extension
-        JZ      KW_SEEK_DATA
-        CMP     DI,OFFSET KWAJ_NAME
-        JE      KW_SKIP_EXT_ONLY
-        MOV     BYTE PTR [DI],'.'
-        INC     DI
-        MOV     CX,4
-KW_RD_EXT:
-        CALL    GET_BYTE
-        JC      KW_SEEK_DATA
-        OR      AL,AL
-        JZ      KW_SEEK_DATA
-        CMP     CX,1
-        JBE     KW_RD_EXT
-        MOV     [DI],AL
-        INC     DI
-        DEC     CX
-        JMP     SHORT KW_RD_EXT
-
-KW_SKIP_EXT_ONLY:
-        CALL    GET_BYTE
-        JC      KW_SEEK_DATA
-        OR      AL,AL
-        JNZ     KW_SKIP_EXT_ONLY
-
-KW_SEEK_DATA:
-        MOV     BYTE PTR [DI],0
-        ; Seek directly to KWAJ_DATA_OFF
-        MOV     BX,[IN_HANDLE]
-        XOR     CX,CX
-        MOV     DX,[KWAJ_DATA_OFF]
-        MOV     AX,4200h
-        INT     21h
-        MOV     WORD PTR [IN_POS],0
-        MOV     WORD PTR [IN_LEN],0
-        MOV     BYTE PTR [IN_EOF],0
-
-        CALL    BUILD_DEST_PATH
-        CALL    OPEN_DEST_FILE
-        JC      EOF_FAIL_CLOSE
-
-        MOV     AX,[KWAJ_METHOD]
-        CMP     AX,0
-        JE      KW_METH_COPY
-        CMP     AX,1
-        JE      KW_METH_XOR
-        CMP     AX,2
-        JE      KW_METH_LZSS
-        JMP     SHORT EOF_BAD_FMT
-
-KW_METH_COPY:
-        CALL    CHECK_OUT_REMAINING
-        JZ      EOF_FINISH_OK
-        CALL    GET_BYTE
-        JC      EOF_FINISH_OK
-        CALL    EMIT_COUNTED_BYTE
-        JC      EOF_WRITE_ERR
-        JMP     SHORT KW_METH_COPY
-
-KW_METH_XOR:
-        CALL    CHECK_OUT_REMAINING
-        JZ      EOF_FINISH_OK
-        CALL    GET_BYTE
-        JC      EOF_FINISH_OK
-        XOR     AL,0FFh
-        CALL    EMIT_COUNTED_BYTE
-        JC      EOF_WRITE_ERR
-        JMP     SHORT KW_METH_XOR
-
-KW_METH_LZSS:
-        MOV     WORD PTR [RING_INIT_POS],0FEFh  ; 4096 - 17 for KWAJ method 2
         CALL    DECOMPRESS_LZSS
         JC      EOF_WRITE_ERR
 
 EOF_FINISH_OK:
         CALL    FLUSH_OUT
         JC      EOF_WRITE_ERR
+        CMP     BYTE PTR [HAS_SRC_TS],0
+        JE      EOF_CLOSE_OK
+        MOV     BX,[OUT_HANDLE]
+        MOV     CX,[SRC_TIME]
+        MOV     DX,[SRC_DATE]
+        MOV     AX,5701h                ; preserve source timestamp
+        INT     21h
+EOF_CLOSE_OK:
         CALL    CLOSE_HANDLES
-        ; Print "src -> dst"
-        MOV     SI,[CUR_SRC]
-        CALL    PRINT_ASCIIZ
-        MOV     DX,OFFSET MSG_ARROW
-        CALL    PRINT_STR
-        MOV     SI,OFFSET DEST_PATH
-        CALL    PRINT_ASCIIZ
-        CALL    PRINT_CRLF
         CLC
         RET
 
-EOF_BAD_FMT:
-        MOV     DX,OFFSET MSG_BAD_FMT
-        CALL    PRINT_STR
-        JMP     SHORT EOF_FAIL_CLOSE
+EOF_OPEN_OUT_FAIL:
+        CALL    CLOSE_HANDLES
+        MOV     SI,OFFSET MSG_OPEN_OUT
+        CALL    WRITE_STDOUT_Z
+        MOV     SI,OFFSET DEST_PATH
+        CALL    WRITE_STDOUT_Z
+        CALL    WRITE_CRLF
+        STC
+        RET
 
 EOF_WRITE_ERR:
-        MOV     DX,OFFSET MSG_WRITE_ERR
-        CALL    PRINT_STR
-
-EOF_FAIL_CLOSE:
         CALL    CLOSE_HANDLES
+        ; Remove partial destination file on write / disk-full failure
+        MOV     DX,OFFSET DEST_PATH
+        MOV     AH,41h
+        INT     21h
+        MOV     SI,OFFSET MSG_DISK_FULL
+        CALL    WRITE_STDOUT_Z
+        MOV     SI,OFFSET DEST_PATH
+        CALL    WRITE_STDOUT_Z
+        CALL    WRITE_CRLF
         STC
         RET
 EXPAND_ONE_FILE ENDP
 
 ; ---------------------------------------------------------------------------
-; DECOMPRESS_LZSS: 4096-byte ring buffer LZSS (SZDD & KWAJ method 2)
+; DECOMPRESS_LZSS: 4096-byte ring buffer LZSS (SZDD mode 41h)
 ; ---------------------------------------------------------------------------
 DECOMPRESS_LZSS PROC    NEAR
         ; Fill RING_BUF (4096 bytes) with 20h (' ')
@@ -508,7 +407,7 @@ GET_BYTE        PROC    NEAR
         PUSH    DX
         MOV     BX,[IN_HANDLE]
         MOV     DX,OFFSET IN_BUF
-        MOV     CX,4096
+        MOV     CX,8192
         MOV     AH,3Fh
         INT     21h
         POP     DX
@@ -541,7 +440,7 @@ PUT_BYTE        PROC    NEAR
         MOV     [OUT_BUF+BX],AL
         INC     BX
         MOV     [OUT_POS],BX
-        CMP     BX,4096
+        CMP     BX,8192
         POP     BX
         JB      PB_OK
         CALL    FLUSH_OUT
@@ -583,11 +482,19 @@ FO_ERR:
 FLUSH_OUT       ENDP
 
 OPEN_DEST_FILE  PROC    NEAR
+        MOV     SI,OFFSET DEST_PATH
+        CALL    HAS_WILDCARD
+        JC      ODF_FAIL
         MOV     DX,OFFSET DEST_PATH
         XOR     CX,CX
         MOV     AH,3Ch
         INT     21h
+        JC      ODF_FAIL
         MOV     [OUT_HANDLE],AX
+        CLC
+        RET
+ODF_FAIL:
+        STC
         RET
 OPEN_DEST_FILE  ENDP
 
@@ -610,7 +517,7 @@ CH_DONE:
 CLOSE_HANDLES   ENDP
 
 ; ---------------------------------------------------------------------------
-; Destination Path Builder
+; Destination Path Builder & Self-Copy Protection
 ; ---------------------------------------------------------------------------
 BUILD_DEST_PATH PROC    NEAR
         PUSH    SI
@@ -636,32 +543,19 @@ BDP_DIR:
         JMP     SHORT BDP_DIR
 BDP_ADD_SEP:
         CMP     DI,OFFSET DEST_PATH
-        JE      BDP_PICK_NAME
+        JE      BDP_FROM_SRC
         MOV     AL,[DI-1]
         CMP     AL,'\'
-        JE      BDP_PICK_NAME
+        JE      BDP_FROM_SRC
         CMP     AL,'/'
-        JE      BDP_PICK_NAME
+        JE      BDP_FROM_SRC
         CMP     AL,':'
-        JE      BDP_PICK_NAME
+        JE      BDP_FROM_SRC
         MOV     AL,'\'
         STOSB
 
-BDP_PICK_NAME:
-        CMP     BYTE PTR [KWAJ_NAME],0
-        JE      BDP_FROM_SRC
-        MOV     SI,OFFSET KWAJ_NAME
-BDP_KW_CP:
-        LODSB
-        STOSB
-        OR      AL,AL
-        JNZ     BDP_KW_CP
-        POP     DI
-        POP     SI
-        RET
-
 BDP_FROM_SRC:
-        ; Find basename of CUR_SRC
+        ; Keep original source basename (MS-DOS 5.00 EXPAND behavior)
         MOV     SI,[CUR_SRC]
         MOV     BX,SI
 BDP_SCAN_BASE:
@@ -684,58 +578,218 @@ BDP_BASE_CP:
         STOSB
         OR      AL,AL
         JNZ     BDP_BASE_CP
-        ; If MISSING_EXT_CH != 0 and DEST_PATH ends with '_', replace '_'!
-        MOV     AL,[MISSING_EXT_CH]
-        OR      AL,AL
-        JZ      BDP_DONE
-        CMP     BYTE PTR [DI-2],'_'
-        JNE     BDP_DONE
-        MOV     [DI-2],AL
-BDP_DONE:
         POP     DI
         POP     SI
         RET
 BUILD_DEST_PATH ENDP
 
-; Input: DS:SI -> path -> Output: AL=1 if existing directory or ends in \ / :, else 0
+; Sets CF=1 if CUR_SRC and DEST_PATH resolve to the same file, else CF=0
+CHECK_SAME_FILE PROC    NEAR
+        PUSH    SI
+        PUSH    DI
+        PUSH    CS
+        POP     ES
+        MOV     SI,[CUR_SRC]
+        MOV     DI,OFFSET TRUE_SRC
+        MOV     AH,60h
+        INT     21h
+        JC      CSF_RAW
+        MOV     SI,OFFSET DEST_PATH
+        MOV     DI,OFFSET TRUE_DST
+        MOV     AH,60h
+        INT     21h
+        JC      CSF_RAW
+        MOV     SI,OFFSET TRUE_SRC
+        MOV     DI,OFFSET TRUE_DST
+        JMP     SHORT CSF_CMP
+CSF_RAW:
+        MOV     SI,[CUR_SRC]
+        MOV     DI,OFFSET DEST_PATH
+CSF_CMP:
+        CALL    STRICMP_Z
+        JZ      CSF_SAME
+        CLC
+        JMP     SHORT CSF_RET
+CSF_SAME:
+        STC
+CSF_RET:
+        POP     DI
+        POP     SI
+        RET
+CHECK_SAME_FILE ENDP
+
+; ZF=1 if ASCIIZ strings at DS:SI and DS:DI match case-insensitively
+STRICMP_Z       PROC    NEAR
+SCZ_LP:
+        MOV     AL,[SI]
+        MOV     AH,[DI]
+        INC     SI
+        INC     DI
+        CMP     AL,'a'
+        JB      SCZ_U1
+        CMP     AL,'z'
+        JA      SCZ_U1
+        SUB     AL,20h
+SCZ_U1:
+        CMP     AH,'a'
+        JB      SCZ_U2
+        CMP     AH,'z'
+        JA      SCZ_U2
+        SUB     AH,20h
+SCZ_U2:
+        CMP     AL,'/'
+        JNE     SCZ_S1
+        MOV     AL,'\'
+SCZ_S1:
+        CMP     AH,'/'
+        JNE     SCZ_S2
+        MOV     AH,'\'
+SCZ_S2:
+        CMP     AL,AH
+        JNE     SCZ_RET
+        OR      AL,AL
+        JNZ     SCZ_LP
+SCZ_RET:
+        RET
+STRICMP_Z       ENDP
+
+; Sets CF=1 if DS:SI contains '*' or '?', else CF=0
+HAS_WILDCARD    PROC    NEAR
+        PUSH    SI
+HW_LP:
+        LODSB
+        OR      AL,AL
+        JZ      HW_NO
+        CMP     AL,'*'
+        JE      HW_YES
+        CMP     AL,'?'
+        JE      HW_YES
+        JMP     SHORT HW_LP
+HW_YES:
+        POP     SI
+        STC
+        RET
+HW_NO:
+        POP     SI
+        CLC
+        RET
+HAS_WILDCARD    ENDP
+
+; Input: DS:SI -> path -> Output: AL=1 if existing directory / valid drive root, else 0
 CHECK_IS_DIR    PROC    NEAR
+        PUSH    BX
         PUSH    CX
         PUSH    DX
         PUSH    SI
-        MOV     DX,SI
+        PUSH    DI
+        PUSH    CS
+        POP     ES
+
+        CALL    HAS_WILDCARD
+        JNC     CID_COPY_INIT
+        JMP     CID_NO
+
+CID_COPY_INIT:
+        ; Copy path to TMP_DIR_BUF and compute length in CX
+        MOV     DI,OFFSET TMP_DIR_BUF
         XOR     CX,CX
-CID_END:
+CID_CP:
         LODSB
+        STOSB
         OR      AL,AL
-        JZ      CID_AT_END
-        MOV     CL,AL
-        JMP     SHORT CID_END
-CID_AT_END:
-        CMP     CL,'\'
-        JE      CID_YES
-        CMP     CL,'/'
-        JE      CID_YES
-        CMP     CL,':'
-        JE      CID_YES
+        JZ      CID_CP_DONE
+        INC     CX
+        CMP     CX,126
+        JB      CID_CP
+        MOV     BYTE PTR [DI],0
+CID_CP_DONE:
+        OR      CX,CX
+        JNZ     CID_CHK_ROOT
+        JMP     CID_NO
+
+CID_CHK_ROOT:
+        ; Check "\" or "/" (root of current drive)
+        CMP     CX,1
+        JNE     CID_CHK_DRV
+        MOV     AL,[TMP_DIR_BUF]
+        CMP     AL,'\'
+        JNE     CID_CHK_ROOT_SL
+        JMP     CID_YES
+CID_CHK_ROOT_SL:
+        CMP     AL,'/'
+        JNE     CID_CHK_DRV
+        JMP     CID_YES
+
+CID_CHK_DRV:
+        ; Check "X:" or "X:\" or "X:/"
+        CMP     BYTE PTR [TMP_DIR_BUF+1],':'
+        JNE     CID_STRIP_SEP
+        CMP     CX,2
+        JE      CID_TEST_DRV
+        CMP     CX,3
+        JNE     CID_STRIP_SEP
+        MOV     AL,[TMP_DIR_BUF+2]
+        CMP     AL,'\'
+        JE      CID_TEST_DRV
+        CMP     AL,'/'
+        JNE     CID_STRIP_SEP
+
+CID_TEST_DRV:
+        MOV     AL,[TMP_DIR_BUF]
+        CMP     AL,'a'
+        JB      CID_DRV_UP
+        CMP     AL,'z'
+        JA      CID_DRV_UP
+        SUB     AL,20h
+CID_DRV_UP:
+        CMP     AL,'A'
+        JB      CID_NO
+        CMP     AL,'Z'
+        JA      CID_NO
+        SUB     AL,'A'-1
+        MOV     DL,AL
+        MOV     AH,36h                  ; Get Disk Free Space (validates drive)
+        INT     21h
+        CMP     AX,0FFFFh
+        JE      CID_NO
+        JMP     SHORT CID_YES
+
+CID_STRIP_SEP:
+        ; Strip trailing '\' or '/' on non-root path before AX=4300h
+        MOV     BX,CX
+        DEC     BX
+        MOV     AL,[TMP_DIR_BUF+BX]
+        CMP     AL,'\'
+        JE      CID_DO_STRIP
+        CMP     AL,'/'
+        JNE     CID_ATTR
+CID_DO_STRIP:
+        MOV     BYTE PTR [TMP_DIR_BUF+BX],0
+
+CID_ATTR:
+        MOV     DX,OFFSET TMP_DIR_BUF
         MOV     AX,4300h
         INT     21h
         JC      CID_NO
         TEST    CX,10h
         JNZ     CID_YES
+
 CID_NO:
         XOR     AL,AL
         JMP     SHORT CID_RET
 CID_YES:
         MOV     AL,1
 CID_RET:
+        POP     DI
         POP     SI
         POP     DX
         POP     CX
+        POP     BX
         RET
 CHECK_IS_DIR    ENDP
 
 ; ---------------------------------------------------------------------------
-; Argument Parser & Console Output
+; Argument Parser & Handle-1 Output
 ; ---------------------------------------------------------------------------
 PARSE_ARGS      PROC    NEAR
         MOV     WORD PTR [ARG_COUNT],0
@@ -754,21 +808,9 @@ PA_SKIP:
         CMP     AL,'/'
         JNE     PA_TOK
         CMP     BYTE PTR [SI+1],'?'
-        JNE     PA_SKIP_SW
+        JNE     PA_TOK
         MOV     BYTE PTR [OPT_HELP],1
         RET
-PA_SKIP_SW:
-        INC     SI
-        MOV     AL,[SI]
-        OR      AL,AL
-        JZ      PA_DONE
-        CMP     AL,0Dh
-        JE      PA_DONE
-        CMP     AL,' '
-        JE      PA_SKIP
-        CMP     AL,9
-        JE      PA_SKIP
-        JMP     SHORT PA_SKIP_SW
 PA_ADV:
         INC     SI
         JMP     SHORT PA_SKIP
@@ -790,6 +832,13 @@ PA_TOK_CH:
         JE      PA_TERM
         CMP     AL,9
         JE      PA_TERM
+        CMP     AL,'/'
+        JNE     PA_TOK_NEXT
+        CMP     BYTE PTR [SI+1],'?'
+        JNE     PA_TOK_NEXT
+        MOV     BYTE PTR [OPT_HELP],1
+        RET
+PA_TOK_NEXT:
         INC     SI
         JMP     SHORT PA_TOK_CH
 PA_TERM:
@@ -800,49 +849,62 @@ PA_DONE:
         RET
 PARSE_ARGS      ENDP
 
-PRINT_STR       PROC    NEAR
-        MOV     AH,09h
-        INT     21h
-        RET
-PRINT_STR       ENDP
-
-PRINT_ASCIIZ    PROC    NEAR
-PAZ_LP:
+; Writes NUL-terminated string at DS:SI to stdout (handle 1)
+WRITE_STDOUT_Z  PROC    NEAR
+        PUSH    AX
+        PUSH    BX
+        PUSH    CX
+        PUSH    DX
+        PUSH    SI
+        MOV     DX,SI
+        XOR     CX,CX
+WSZ_LEN:
         LODSB
         OR      AL,AL
-        JZ      PAZ_RET
-        MOV     DL,AL
-        MOV     AH,02h
+        JZ      WSZ_DO
+        INC     CX
+        JMP     SHORT WSZ_LEN
+WSZ_DO:
+        JCXZ    WSZ_DONE
+        MOV     BX,1
+        MOV     AH,40h
         INT     21h
-        JMP     SHORT PAZ_LP
-PAZ_RET:
+WSZ_DONE:
+        POP     SI
+        POP     DX
+        POP     CX
+        POP     BX
+        POP     AX
         RET
-PRINT_ASCIIZ    ENDP
+WRITE_STDOUT_Z  ENDP
 
-PRINT_CRLF      PROC    NEAR
-        MOV     DX,OFFSET MSG_CRLF
-        CALL    PRINT_STR
+WRITE_CRLF      PROC    NEAR
+        MOV     SI,OFFSET MSG_CRLF
+        CALL    WRITE_STDOUT_Z
         RET
-PRINT_CRLF      ENDP
+WRITE_CRLF      ENDP
 
 ; ---------------------------------------------------------------------------
 ; Messages and Buffers
 ; ---------------------------------------------------------------------------
 MSG_HELP        DB      'Expands one or more compressed files.',13,10,13,10
-                DB      'EXPAND [drive:][path]filename [[drive:][path]filename[ ...]] destination',13,10,'$'
-MSG_SYNTAX      DB      'Required parameter missing. Type EXPAND /? for help.',13,10,'$'
-MSG_MULTI_NODIR DB      'Destination must be a directory when expanding multiple files.',13,10,'$'
-MSG_OPEN_ERR    DB      'Cannot open input file: $'
-MSG_WRITE_ERR   DB      'Error writing destination file.',13,10,'$'
-MSG_BAD_FMT     DB      'Unrecognized compression method in input file.',13,10,'$'
-MSG_ARROW       DB      ' -> $'
-MSG_CRLF        DB      13,10,'$'
+                DB      'EXPAND [drive:][path]filename [[drive1:][path1]filename[ ...]] destination',13,10,13,10
+                DB      '  [drive:][path]filename  Compressed source file(s) to expand (no wildcards).',13,10
+                DB      '  destination             Target file (single source) or existing directory.',13,10,0
+MSG_NODIR_PFX   DB      'Destination directory does not exist: ',0
+MSG_OPEN_IN     DB      'Can',27h,'t open input file: ',0
+MSG_OPEN_OUT    DB      'Can',27h,'t open output file: ',0
+MSG_ALREADY_1   DB      'Input file ',27h,0
+MSG_ALREADY_2   DB      27h,' already in expanded format',13,10,0
+MSG_DISK_FULL   DB      'Out of disk space while writing output file: ',0
+MSG_SELF_COPY   DB      'File cannot be copied onto itself: ',0
+MSG_CRLF        DB      13,10,0
 
 OPT_HELP        DB      0
 DEST_IS_DIR     DB      0
 IN_EOF          DB      0
 HAS_OUT_LIMIT   DB      0
-MISSING_EXT_CH  DB      0
+HAS_SRC_TS      DB      0
 
 ARG_COUNT       DW      0
 SRC_LIMIT       DW      0
@@ -851,6 +913,8 @@ CUR_SRC         DW      0
 DEST_ARG        DW      0
 IN_HANDLE       DW      0FFFFh
 OUT_HANDLE      DW      0FFFFh
+SRC_TIME        DW      0
+SRC_DATE        DW      0
 IN_POS          DW      0
 IN_LEN          DW      0
 OUT_POS         DW      0
@@ -858,19 +922,18 @@ HDR_READ        DW      0
 RING_INIT_POS   DW      0FF0h
 REM_OUT_LO      DW      0
 REM_OUT_HI      DW      0
-KWAJ_METHOD     DW      0
-KWAJ_DATA_OFF   DW      0
-KWAJ_FLAGS      DW      0
 
 ARG_PTRS        DW      32 DUP (0)
 CMD_BUF         DB      132 DUP (0)
 HDR_BUF         DB      20 DUP (0)
-KWAJ_NAME       DB      16 DUP (0)
 DEST_PATH       DB      132 DUP (0)
+TMP_DIR_BUF     DB      132 DUP (0)
+TRUE_SRC        DB      132 DUP (0)
+TRUE_DST        DB      132 DUP (0)
 
 RING_BUF        DB      4096 DUP (0)
-IN_BUF          DB      4096 DUP (0)
-OUT_BUF         DB      4096 DUP (0)
+IN_BUF          DB      8192 DUP (0)
+OUT_BUF         DB      8192 DUP (0)
 
 CODE    ENDS
 

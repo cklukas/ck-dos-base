@@ -33,7 +33,7 @@ features:
     details: Moves 16-bit FCB safety directly into the kernel so large hard-disk volumes boot cleanly without spending ~13.5 KB of RAM on mandatory SHARE.EXE.
     link: memory-management.md
   - title: Modern DOS 5 CLI & Universal /?
-    details: Ships dual-mode DOSKEY.COM (command history & macros), SETVER.EXE, LOADFIX.COM, EXPAND.EXE (SZDD/KWAJ), and universal /? help across every command.
+    details: Ships dual-mode DOSKEY.COM (command history & macros), SETVER.EXE, LOADFIX.COM, EXPAND.EXE (SZDD), and universal /? help across every command.
     link: command-reference.md
   - title: 100% Built From Source
     details: Zero prebuilt binaries and zero proprietary MS-DOS 5.0 or QBasic source code — built end-to-end by ckcl, ckmasm, cklink, cklib, and ckmkimg.

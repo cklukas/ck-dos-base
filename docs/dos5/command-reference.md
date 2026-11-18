@@ -421,7 +421,7 @@ EXIT ends a secondary COMMAND.COM shell and returns to the parent program or com
 **Expand compressed files** — Decompresses one or more compressed distribution files.
 
 ```text
-EXPAND [drive:][path]source [[drive:][path]destination]
+EXPAND [drive:][path]filename [[drive1:][path1]filename[ ...]] destination
 ```
 
 EXPAND unpacks distribution files stored in compressed format and writes the expanded output to the named destination file or directory.
