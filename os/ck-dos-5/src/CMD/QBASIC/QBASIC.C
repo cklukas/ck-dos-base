@@ -392,7 +392,7 @@ static int qbasic_main(void)
 int main(void)
 {
 #ifdef __CKCL__
-    ckb_compact_dgroup(3840U, 6400U);
+    ckb_compact_dgroup(8448U, 8192U);
 #endif
     return qbasic_main();
 }

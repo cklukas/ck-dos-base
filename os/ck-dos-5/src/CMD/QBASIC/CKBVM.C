@@ -1980,7 +1980,6 @@ int ckb_vm_execute(void)
         }
 
         case OP_INKEY: {
-            CkbValue tmp;
             char kbuf[4];
             unsigned klen = (unsigned)ckb_inkey(kbuf);
             VmVal *v = &vstack[sp++];
@@ -1990,9 +1989,7 @@ int ckb_vm_execute(void)
                 v->u.fs = (const char __far *)"";
                 v->length = 0;
             } else {
-                char *dst;
-                INIT_VALUE(&tmp);
-                dst = ckb_string_buffer(&tmp, CKB_INLINE_STRING + 4U);
+                char *dst = ckb_string_temp_alloc(klen);
                 if (!dst) { error_message = "Out of memory"; break; }
                 memcpy(dst, kbuf, klen);
                 dst[klen] = '\0';
