@@ -581,9 +581,13 @@ fs::path compile_medium_model_runtime(const fs::path& repo_root,
         }
     };
 
-    auto run_cc_mm = [&](const fs::path& src, const std::string& obj) {
-        if (run_process({ckcl.string(), "-c", "-AM", "-Os", "-Zl",
-                         "-I" + inc_dir.string(), "-Fo" + obj, src.string()}, d) != 0) {
+    auto run_cc_mm = [&](const fs::path& src, const std::string& obj, const char* extra_def = nullptr) {
+        std::vector<std::string> args = {ckcl.string(), "-c", "-AM", "-Os", "-Zl",
+                                         "-I" + inc_dir.string()};
+        if (extra_def) args.push_back(extra_def);
+        args.push_back("-Fo" + obj);
+        args.push_back(src.string());
+        if (run_process(args, d) != 0) {
             throw std::runtime_error("ckcl -AM failed on medium-model CRT " + src.string());
         }
     };
@@ -594,14 +598,18 @@ fs::path compile_medium_model_runtime(const fs::path& repo_root,
     run_cc_mm(rt_root / "crt" / "crt_mem.c", "CRT_MEM.OBJ");
     run_cc_mm(rt_root / "crt" / "crt_str.c", "CRT_STR.OBJ");
     run_cc_mm(rt_root / "crt" / "crt_fp.c", "CRT_FP.OBJ");
-    run_cc_mm(rt_root / "crt" / "crt_math.c", "CRT_MATH.OBJ");
-    run_cc_mm(rt_root / "crt" / "crt_dos.c", "CRT_DOS.OBJ");
-    run_cc_mm(rt_root / "crt" / "crt_mstdio.c", "CRT_MSTDIO.OBJ");
+    run_cc_mm(rt_root / "crt" / "crt_math.c", "CRT_MATH.OBJ", "-DCRT_PART_CORE");
+    run_cc_mm(rt_root / "crt" / "crt_math.c", "CRT_MATX.OBJ", "-DCRT_PART_EXTRA");
+    run_cc_mm(rt_root / "crt" / "crt_dos.c", "CRT_DOS.OBJ", "-DCRT_PART_CORE");
+    run_cc_mm(rt_root / "crt" / "crt_dos.c", "CRT_DOSX.OBJ", "-DCRT_PART_EXTRA");
+    run_cc_mm(rt_root / "crt" / "crt_mstdio.c", "CRT_MSTDIO.OBJ", "-DCRT_PART_CORE");
+    run_cc_mm(rt_root / "crt" / "crt_mstdio.c", "CRT_MSCN.OBJ", "-DCRT_PART_EXTRA");
 
     std::ostringstream rsp;
     rsp << "MLIBCE.LIB\nY\n"
         << "+MCRT0.OBJ&\n+CRT_FMEM.OBJ&\n+CRT_FP386.OBJ&\n+CRT_MEM.OBJ&\n+CRT_STR.OBJ&\n"
-        << "+CRT_FP.OBJ&\n+CRT_MATH.OBJ&\n+CRT_DOS.OBJ&\n+CRT_MSTDIO.OBJ;\n";
+        << "+CRT_FP.OBJ&\n+CRT_MATH.OBJ&\n+CRT_MATX.OBJ&\n+CRT_DOS.OBJ&\n+CRT_DOSX.OBJ&\n"
+        << "+CRT_MSTDIO.OBJ&\n+CRT_MSCN.OBJ;\n";
     write_text_file(d / "MLIBCE.RSP", rsp.str());
     if (run_process({cklib.string(), "@MLIBCE.RSP"}, d) != 0) {
         throw std::runtime_error("cklib failed building MLIBCE.LIB");

@@ -183,9 +183,11 @@ DOSBASE_TEST(runtime_medium_model_mlibce_float_and_dos_link) {
             dosbase::bootstrap_test::run_tool(tool_dir, "ckmasm", args, d), 0);
     };
 
-    auto run_cc_mm = [&](const fs::path& src, const std::string& obj, bool omit_lib = true) {
+    auto run_cc_mm = [&](const fs::path& src, const std::string& obj, bool omit_lib = true,
+                         const char* extra_def = nullptr) {
         std::vector<std::string> args = {"-c", "-AM", "-I" + (rt_root / "include").string()};
         if (omit_lib) args.push_back("-Zl");
+        if (extra_def) args.push_back(extra_def);
         args.push_back("-Fo" + obj);
         args.push_back(src.string());
         DOSBASE_TEST_EXPECT_EQ(
@@ -198,15 +200,19 @@ DOSBASE_TEST(runtime_medium_model_mlibce_float_and_dos_link) {
     run_cc_mm(rt_root / "crt" / "crt_mem.c", "CRT_MEM.OBJ");
     run_cc_mm(rt_root / "crt" / "crt_str.c", "CRT_STR.OBJ");
     run_cc_mm(rt_root / "crt" / "crt_fp.c", "CRT_FP.OBJ");
-    run_cc_mm(rt_root / "crt" / "crt_math.c", "CRT_MATH.OBJ");
-    run_cc_mm(rt_root / "crt" / "crt_dos.c", "CRT_DOS.OBJ");
-    run_cc_mm(rt_root / "crt" / "crt_mstdio.c", "CRT_MSTDIO.OBJ");
+    run_cc_mm(rt_root / "crt" / "crt_math.c", "CRT_MATH.OBJ", true, "-DCRT_PART_CORE");
+    run_cc_mm(rt_root / "crt" / "crt_math.c", "CRT_MATX.OBJ", true, "-DCRT_PART_EXTRA");
+    run_cc_mm(rt_root / "crt" / "crt_dos.c", "CRT_DOS.OBJ", true, "-DCRT_PART_CORE");
+    run_cc_mm(rt_root / "crt" / "crt_dos.c", "CRT_DOSX.OBJ", true, "-DCRT_PART_EXTRA");
+    run_cc_mm(rt_root / "crt" / "crt_mstdio.c", "CRT_MSTDIO.OBJ", true, "-DCRT_PART_CORE");
+    run_cc_mm(rt_root / "crt" / "crt_mstdio.c", "CRT_MSCN.OBJ", true, "-DCRT_PART_EXTRA");
 
     {
         std::ostringstream rsp;
         rsp << "MLIBCE.LIB\nY\n"
             << "+MCRT0.OBJ&\n+CRT_FMEM.OBJ&\n+CRT_FP386.OBJ&\n+CRT_MEM.OBJ&\n+CRT_STR.OBJ&\n"
-            << "+CRT_FP.OBJ&\n+CRT_MATH.OBJ&\n+CRT_DOS.OBJ&\n+CRT_MSTDIO.OBJ;\n";
+            << "+CRT_FP.OBJ&\n+CRT_MATH.OBJ&\n+CRT_MATX.OBJ&\n+CRT_DOS.OBJ&\n+CRT_DOSX.OBJ&\n"
+            << "+CRT_MSTDIO.OBJ&\n+CRT_MSCN.OBJ;\n";
         write_text_file(d / "MLIBCE.RSP", rsp.str());
         DOSBASE_TEST_EXPECT_EQ(
             dosbase::bootstrap_test::run_tool(tool_dir, "cklib", {"@MLIBCE.RSP"}, d), 0);

@@ -82,12 +82,27 @@ static double m_zero(int sign)
     return m_from_bits(sign ? (math_u32)0x80000000UL : (math_u32)0, 0);
 }
 
+#define M_INV_LN2 1.44269504088896340736
+#define M_LN2_HI  6.93147180369123816490e-01
+#define M_LN2_LO  1.90821492927058770002e-10
+
+#if defined(CRT_PART_EXTRA)
+double fabs(double x);
+double ldexp(double x, int exp);
+double sqrt(double x);
+double exp(double x);
+double atan(double x);
+#endif
+
+#if !defined(CRT_PART_EXTRA)
 double fabs(double x)
 {
     math_u64 b = m_get_bits(x);
     return m_from_bits(b.hi & (math_u32)0x7FFFFFFFUL, b.lo);
 }
+#endif
 
+#if !defined(CRT_PART_CORE)
 double modf(double x, double *iptr)
 {
     math_u64 b = m_get_bits(x);
@@ -127,7 +142,9 @@ double modf(double x, double *iptr)
     if (ihi == b.hi && ilo == b.lo) return m_zero(sign);
     return x - trunc_x;
 }
+#endif
 
+#if !defined(CRT_PART_EXTRA)
 double floor(double x)
 {
     math_u64 b = m_get_bits(x);
@@ -153,7 +170,9 @@ double floor(double x)
     if (ihi == b.hi && ilo == b.lo) return x;
     return sign ? (m_from_bits(ihi, ilo) - 1.0) : m_from_bits(ihi, ilo);
 }
+#endif
 
+#if !defined(CRT_PART_CORE)
 double ceil(double x)
 {
     math_u64 b = m_get_bits(x);
@@ -179,7 +198,9 @@ double ceil(double x)
     if (ihi == b.hi && ilo == b.lo) return x;
     return sign ? m_from_bits(ihi, ilo) : (m_from_bits(ihi, ilo) + 1.0);
 }
+#endif
 
+#if !defined(CRT_PART_EXTRA)
 double frexp(double x, int *eptr)
 {
     math_u64 b = m_get_bits(x);
@@ -365,10 +386,6 @@ double sqrt(double x)
     y = 0.5 * (y + m / y);
     return ldexp(y, e / 2);
 }
-
-#define M_INV_LN2 1.44269504088896340736
-#define M_LN2_HI  6.93147180369123816490e-01
-#define M_LN2_LO  1.90821492927058770002e-10
 
 double exp(double x)
 {
@@ -755,7 +772,9 @@ double atan(double x)
     }
     return sign ? -res : res;
 }
+#endif
 
+#if !defined(CRT_PART_CORE)
 double atan2(double y, double x)
 {
     const double pi     = 3.14159265358979323846;
@@ -879,3 +898,4 @@ double tanh(double x)
     t = (t - 1.0) / (t + 1.0);
     return (b.hi >> 31) ? -t : t;
 }
+#endif

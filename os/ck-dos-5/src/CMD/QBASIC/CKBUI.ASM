@@ -2,6 +2,14 @@
 ; SPDX-License-Identifier: MIT
 
 .8086
+_DATA   SEGMENT WORD PUBLIC 'DATA'
+        EXTRN   __psp:WORD
+        EXTRN   __heap_ptr:WORD
+        EXTRN   __heap_limit:WORD
+        EXTRN   __stack_bottom:WORD
+_DATA   ENDS
+DGROUP  GROUP   _DATA
+
 DOSUI_TEXT SEGMENT PUBLIC 'CODE'
 ASSUME CS:DOSUI_TEXT
 
@@ -57,6 +65,7 @@ CKBASIC_DOSUI_SMOKE ENDP
 PUBLIC CKBIDE_INIT, CKBIDE_DONE, CKBIDE_FILL, CKBIDE_WRITE
 PUBLIC CKBIDE_MENU, CKBIDE_CURSOR, CKBIDE_EVENT
 PUBLIC CKBIDE_BEGIN_FRAME, CKBIDE_END_FRAME
+PUBLIC CKBIDE_SUSPEND_BB, CKBIDE_RESUME_BB, CKBIDE_SAVED_PARAS
 
 CKBIDE_INIT PROC FAR
     MOV CS:DOSUI_SAVE_SEGMENT,AX
@@ -80,6 +89,35 @@ CKBIDE_END_FRAME PROC FAR
     CALL DOSUI_END_FRAME
     RET
 CKBIDE_END_FRAME ENDP
+
+CKBIDE_SUSPEND_BB PROC FAR
+    CALL DOSUI_END_FRAME
+    MOV WORD PTR CS:DOSUI_FRAME_SEGMENT,0
+    MOV BYTE PTR CS:DOSUI_HAS_BACKBUFFER,0
+    RET
+CKBIDE_SUSPEND_BB ENDP
+
+CKBIDE_RESUME_BB PROC FAR
+    PUSH AX
+    ADD AX,DOSUI_TEXT_SAVE_PARAGRAPHS
+    MOV CS:DOSUI_FRAME_SEGMENT,AX
+    MOV BYTE PTR CS:DOSUI_HAS_BACKBUFFER,1
+    POP AX
+    RET
+CKBIDE_RESUME_BB ENDP
+
+CKBIDE_SAVED_PARAS PROC FAR
+    MOV AX,CS:DOSUI_SAVED_CELLS
+    ADD AX,7
+    SHR AX,1
+    SHR AX,1
+    SHR AX,1
+    OR AX,AX
+    JNZ SHORT CKBIDE_SP_OK
+    INC AX
+CKBIDE_SP_OK:
+    RET
+CKBIDE_SAVED_PARAS ENDP
 
 CKBIDE_DONE PROC FAR
     CALL DOSUI_MOUSE_SHUTDOWN
@@ -199,9 +237,11 @@ CKB_INPUT_SCAN ENDP
 PUBLIC _dosui_smoke
 PUBLIC _ui_init, _ui_done, _ui_fill, _ui_write, _ui_menu, _ui_cursor, _ui_event
 PUBLIC _ui_begin_frame, _ui_end_frame, _ui_setup_mode
+PUBLIC _ui_suspend_backbuffer, _ui_resume_backbuffer, _ui_saved_paragraphs
 PUBLIC _input_scan, _input_scan_init, _input_scan_pending, _input_key, _input_idle
 PUBLIC _ckb_snd_push, _ckb_snd_queued, _ckb_snd_active, _ckb_snd_stop
 PUBLIC _ckb_call_absolute
+PUBLIC _ckb_compact_dgroup
 PUBLIC CKB_SND_PUSH, CKB_SND_QUEUED, CKB_SND_ACTIVE, CKB_SND_STOP
 PUBLIC CKB_CALL_ABSOLUTE, CKBIDE_SETUP_MODE
 
@@ -600,6 +640,25 @@ _ui_end_frame PROC FAR
     RET
 _ui_end_frame ENDP
 
+_ui_suspend_backbuffer PROC FAR
+    CALL FAR PTR CKBIDE_SUSPEND_BB
+    RET
+_ui_suspend_backbuffer ENDP
+
+_ui_resume_backbuffer PROC FAR
+    PUSH BP
+    MOV BP,SP
+    MOV AX,[BP+6]
+    CALL FAR PTR CKBIDE_RESUME_BB
+    POP BP
+    RET
+_ui_resume_backbuffer ENDP
+
+_ui_saved_paragraphs PROC FAR
+    CALL FAR PTR CKBIDE_SAVED_PARAS
+    RET
+_ui_saved_paragraphs ENDP
+
 _input_scan_init PROC FAR
     PUSH BP
     MOV BP,SP
@@ -674,6 +733,57 @@ _ckb_call_absolute PROC FAR
     POP BP
     RET
 _ckb_call_absolute ENDP
+
+ASSUME DS:DGROUP
+_ckb_compact_dgroup PROC FAR
+    MOV BX,SP
+    MOV AX,SS:[BX+4]
+    MOV DX,SS:[BX+6]
+    ADD AX,__heap_ptr
+    JC SHORT _ckb_cd_done
+    INC AX
+    AND AX,0FFFEh
+    ADD DX,AX
+    JC SHORT _ckb_cd_done
+    AND DX,0FFFEh
+    CMP DX,0FFD0h
+    JAE SHORT _ckb_cd_done
+    MOV __heap_limit,AX
+    MOV __stack_bottom,AX
+    PUSH SI
+    PUSH DI
+    PUSH ES
+    PUSH DS
+    POP ES
+    MOV CX,0FFF0h
+    SUB CX,SP
+    MOV AX,0FFF0h
+    SUB AX,DX
+    MOV SI,SP
+    MOV DI,SP
+    SUB DI,AX
+    SHR CX,1
+    CLD
+    REP MOVSW
+    SUB SP,AX
+    SUB BP,AX
+    MOV ES,__psp
+    MOV AX,DX
+    ADD AX,15
+    MOV CL,4
+    SHR AX,CL
+    MOV BX,DS
+    ADD AX,BX
+    SUB AX,__psp
+    MOV BX,AX
+    MOV AH,4Ah
+    INT 21h
+    POP ES
+    POP DI
+    POP SI
+_ckb_cd_done:
+    RET
+_ckb_compact_dgroup ENDP
 
 DOSUI_TEXT ENDS
 END

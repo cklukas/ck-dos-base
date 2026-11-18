@@ -28,6 +28,7 @@
 #define _F_OUT   0x0400U
 #define _F_OPEN  0x0800U
 
+#if !defined(CRT_PART_EXTRA)
 FILE _iob[FOPEN_MAX] = {
     { NULL, 0, NULL, _F_OPEN | _F_READ,           0, 0, -1 },
     { NULL, 0, NULL, _F_OPEN | _F_WRIT,           1, 0, -1 },
@@ -276,12 +277,16 @@ int setvbuf(FILE *stream, char *buf, int mode, size_t size)
     if (mode == _IOLBF) stream->_flag |= _F_LBUF;
     return 0;
 }
+#endif
 
+#if !defined(CRT_PART_CORE)
 void setbuf(FILE *stream, char *buf)
 {
     setvbuf(stream, buf, buf ? _IOFBF : _IONBF, BUFSIZ);
 }
+#endif
 
+#if !defined(CRT_PART_EXTRA)
 static int raw_getc(FILE *f)
 {
     unsigned char ch;
@@ -424,7 +429,9 @@ char *fgets(char *s, int n, FILE *stream)
     s[i] = '\0';
     return s;
 }
+#endif
 
+#if !defined(CRT_PART_CORE)
 char *gets(char *s)
 {
     int i = 0, c;
@@ -436,7 +443,9 @@ char *gets(char *s)
     s[i] = '\0';
     return s;
 }
+#endif
 
+#if !defined(CRT_PART_EXTRA)
 int fputs(const char *s, FILE *stream)
 {
     if (!s || !stream) return EOF;
@@ -445,13 +454,17 @@ int fputs(const char *s, FILE *stream)
     }
     return 0;
 }
+#endif
 
+#if !defined(CRT_PART_CORE)
 int puts(const char *s)
 {
     if (fputs(s, stdout) == EOF) return EOF;
     return fputc('\n', stdout);
 }
+#endif
 
+#if !defined(CRT_PART_EXTRA)
 size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream)
 {
     unsigned char *dst = (unsigned char *)ptr;
@@ -561,7 +574,9 @@ int fseek(FILE *stream, long offset, int whence)
     stream->_flag &= ~(_F_EOF | _F_IN);
     return (lseek(stream->_file, offset, whence) < 0L) ? -1 : 0;
 }
+#endif
 
+#if !defined(CRT_PART_CORE)
 void rewind(FILE *stream)
 {
     if (stream) {
@@ -583,7 +598,9 @@ int fsetpos(FILE *stream, const fpos_t *pos)
     if (!pos) return -1;
     return fseek(stream, *pos, SEEK_SET);
 }
+#endif
 
+#if !defined(CRT_PART_EXTRA)
 void clearerr(FILE *stream)
 {
     if (stream) stream->_flag &= ~(_F_EOF | _F_ERR);
@@ -608,7 +625,9 @@ int _fileno(FILE *stream)
 {
     return fileno(stream);
 }
+#endif
 
+#if !defined(CRT_PART_CORE)
 void perror(const char *s)
 {
     if (s && *s) {
@@ -634,7 +653,9 @@ FILE *tmpfile(void)
     char name[L_tmpnam];
     return fopen(tmpnam(name), "w+b");
 }
+#endif
 
+#if !defined(CRT_PART_EXTRA)
 /* --- IEEE-754 pow10 helper for strtod & printf --- */
 
 static const double p10_small[23] = {
@@ -1293,18 +1314,6 @@ int vsprintf(char *buf, const char *fmt, va_list ap)
     return format_core(&sk, fmt, ap);
 }
 
-int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
-{
-    fmt_sink sk;
-    sk.buf = buf;
-    sk.cap = size;
-    sk.pos = 0U;
-    sk.has_cap = 1;
-    sk.stream = NULL;
-    sk.err = 0;
-    return format_core(&sk, fmt, ap);
-}
-
 int sprintf(char *buf, const char *fmt, ...)
 {
     int rc;
@@ -1315,14 +1324,16 @@ int sprintf(char *buf, const char *fmt, ...)
     return rc;
 }
 
-int snprintf(char *buf, size_t size, const char *fmt, ...)
+int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
 {
-    int rc;
-    va_list ap;
-    va_start(ap, fmt);
-    rc = vsnprintf(buf, size, fmt, ap);
-    va_end(ap);
-    return rc;
+    fmt_sink sk;
+    sk.buf = buf;
+    sk.cap = size;
+    sk.pos = 0U;
+    sk.has_cap = 1;
+    sk.stream = NULL;
+    sk.err = 0;
+    return format_core(&sk, fmt, ap);
 }
 
 int vfprintf(FILE *stream, const char *fmt, va_list ap)
@@ -1338,11 +1349,6 @@ int vfprintf(FILE *stream, const char *fmt, va_list ap)
     return format_core(&sk, fmt, ap);
 }
 
-int vprintf(const char *fmt, va_list ap)
-{
-    return vfprintf(stdout, fmt, ap);
-}
-
 int fprintf(FILE *stream, const char *fmt, ...)
 {
     int rc;
@@ -1351,6 +1357,23 @@ int fprintf(FILE *stream, const char *fmt, ...)
     rc = vfprintf(stream, fmt, ap);
     va_end(ap);
     return rc;
+}
+#endif
+
+#if !defined(CRT_PART_CORE)
+int snprintf(char *buf, size_t size, const char *fmt, ...)
+{
+    int rc;
+    va_list ap;
+    va_start(ap, fmt);
+    rc = vsnprintf(buf, size, fmt, ap);
+    va_end(ap);
+    return rc;
+}
+
+int vprintf(const char *fmt, va_list ap)
+{
+    return vfprintf(stdout, fmt, ap);
 }
 
 int printf(const char *fmt, ...)
@@ -1362,7 +1385,6 @@ int printf(const char *fmt, ...)
     va_end(ap);
     return rc;
 }
-
 /* --- sscanf / fscanf / scanf --- */
 
 static int vsscanf_str(const char *str, const char *fmt, va_list ap)
@@ -1546,3 +1568,4 @@ int scanf(const char *fmt, ...)
     va_end(ap);
     return rc;
 }
+#endif

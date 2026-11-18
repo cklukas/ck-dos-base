@@ -28,9 +28,11 @@ extern unsigned __far dosui_smoke(unsigned segment, const char *text);
 #ifdef __WATCOMC__
 #pragma aux dosui_smoke "CKBASIC_DOSUI_SMOKE" parm [ax] [si] value [ax] modify exact [ax]
 #endif
+#ifdef __CKCL__
+extern void __far ckb_compact_dgroup(unsigned heap_bytes, unsigned stack_bytes);
+#endif
 
 static char tail[PSP_TAIL_MAX + 1U];
-static unsigned char file_buffer[512];
 
 static int is_space(char byte)
 {
@@ -121,6 +123,7 @@ static int write_text(int handle, const char *text)
 /* DOS 3+ create-new (INT 21h/5Bh); never truncate an existing destination. */
 static int copy_file(const char *input, const char *output)
 {
+    unsigned char file_buffer[512];
     int from, to;
     unsigned size;
     int ok = 0;
@@ -287,7 +290,7 @@ static int editor_command_args(unsigned disp_flags, const char *file_arg)
     return status == -1 ? error_message("QBASIC: Cannot execute EDIT.COM\r\n", 1) : status;
 }
 
-int main(void)
+static int qbasic_main(void)
 {
     char *cursor = tail;
     char *first, *second;
@@ -384,4 +387,12 @@ int main(void)
         }
     }
     return error_message("Usage: QBASIC [source.bas] | /RUN source.bas | /EDITOR [file]\r\n", 1);
+}
+
+int main(void)
+{
+#ifdef __CKCL__
+    ckb_compact_dgroup(3840U, 6400U);
+#endif
+    return qbasic_main();
 }

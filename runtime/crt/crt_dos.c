@@ -19,6 +19,7 @@
 #include <sys/stat.h>
 #include <time.h>
 
+#if !defined(CRT_PART_EXTRA)
 int _doserrno = 0;
 
 extern unsigned int _dos_raw_find(const char *path, unsigned int attr, void *dta, int first);
@@ -53,18 +54,23 @@ static int map_dos_err(unsigned int derr)
 /* --- <ctype.h> additions (complementing crt_str.c) --- */
 
 int isalnum(int c) { return isalpha(c) || isdigit(c); }
+int isspace(int c) { return c == ' ' || (c >= '\t' && c <= '\r'); }
+#endif
+
+#if !defined(CRT_PART_CORE)
 int isupper(int c) { return c >= 'A' && c <= 'Z'; }
 int islower(int c) { return c >= 'a' && c <= 'z'; }
-int isspace(int c) { return c == ' ' || (c >= '\t' && c <= '\r'); }
 int iscntrl(int c) { return (c >= 0 && c < 0x20) || c == 0x7F; }
 int isprint(int c) { return c >= 0x20 && c <= 0x7E; }
 int isgraph(int c) { return c >= 0x21 && c <= 0x7E; }
 int ispunct(int c) { return isgraph(c) && !isalnum(c); }
 int isascii(int c) { return (unsigned int)c <= 0x7FU; }
 int toascii(int c) { return c & 0x7F; }
+#endif
 
 /* --- <string.h> additions (complementing crt_mem.c & crt_str.c) --- */
 
+#if !defined(CRT_PART_EXTRA)
 void *memchr(const void *s, int c, size_t n)
 {
     const unsigned char *p = (const unsigned char *)s;
@@ -74,21 +80,6 @@ void *memchr(const void *s, int c, size_t n)
         if (p[i] == target) return (void *)(p + i);
     }
     return NULL;
-}
-
-size_t strspn(const char *s, const char *accept)
-{
-    size_t n = 0;
-    const char *a;
-    while (s[n] != '\0') {
-        int found = 0;
-        for (a = accept; *a != '\0'; ++a) {
-            if (s[n] == *a) { found = 1; break; }
-        }
-        if (!found) break;
-        ++n;
-    }
-    return n;
 }
 
 size_t strcspn(const char *s, const char *reject)
@@ -102,28 +93,6 @@ size_t strcspn(const char *s, const char *reject)
         ++n;
     }
     return n;
-}
-
-char *strtok(char *s, const char *delim)
-{
-    static char *save_ptr = NULL;
-    char *tok;
-    if (s == NULL) s = save_ptr;
-    if (s == NULL) return NULL;
-    s += strspn(s, delim);
-    if (*s == '\0') {
-        save_ptr = NULL;
-        return NULL;
-    }
-    tok = s;
-    s += strcspn(s, delim);
-    if (*s != '\0') {
-        *s = '\0';
-        save_ptr = s + 1;
-    } else {
-        save_ptr = NULL;
-    }
-    return tok;
 }
 
 int stricmp(const char *a, const char *b)
@@ -152,6 +121,45 @@ int strnicmp(const char *a, const char *b, size_t n)
 }
 
 int _strnicmp(const char *a, const char *b, size_t n) { return strnicmp(a, b, n); }
+#endif
+
+#if !defined(CRT_PART_CORE)
+size_t strspn(const char *s, const char *accept)
+{
+    size_t n = 0;
+    const char *a;
+    while (s[n] != '\0') {
+        int found = 0;
+        for (a = accept; *a != '\0'; ++a) {
+            if (s[n] == *a) { found = 1; break; }
+        }
+        if (!found) break;
+        ++n;
+    }
+    return n;
+}
+
+char *strtok(char *s, const char *delim)
+{
+    static char *save_ptr = NULL;
+    char *tok;
+    if (s == NULL) s = save_ptr;
+    if (s == NULL) return NULL;
+    s += strspn(s, delim);
+    if (*s == '\0') {
+        save_ptr = NULL;
+        return NULL;
+    }
+    tok = s;
+    s += strcspn(s, delim);
+    if (*s != '\0') {
+        *s = '\0';
+        save_ptr = s + 1;
+    } else {
+        save_ptr = NULL;
+    }
+    return tok;
+}
 
 char *strdup(const char *s)
 {
@@ -415,7 +423,9 @@ void qsort(void *base, size_t nmemb, size_t size,
         gap /= 3U;
     }
 }
+#endif
 
+#if !defined(CRT_PART_EXTRA)
 typedef void (*atexit_fn)(void);
 static atexit_fn atexit_list[16];
 static int atexit_count = 0;
@@ -1270,7 +1280,9 @@ int spawnvp(int mode, const char *file, const char *const *argv)
     errno = ENOENT;
     return -1;
 }
+#endif
 
+#if !defined(CRT_PART_CORE)
 int spawnl(int mode, const char *path, const char *arg0, ...)
 {
     const char *argv[34];
@@ -1445,3 +1457,4 @@ struct tm *localtime(const time_t *timer)
 {
     return gmtime(timer);
 }
+#endif

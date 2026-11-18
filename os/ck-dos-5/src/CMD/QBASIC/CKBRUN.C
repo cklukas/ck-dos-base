@@ -41,6 +41,7 @@ static unsigned imm_line_idx, imm_offset;
 Line __far *lines;
 static char __far *var_names;
 static unsigned long __far *var_shared_scopes;
+static unsigned var_cap;
 Variable variables[VALUE_MAX];
 RecordType records[RECORD_MAX];
 unsigned record_count;
@@ -468,11 +469,42 @@ static void tok_cache_clear(void)
     if (tok_cache) _fmemset(tok_cache, 0xFF, TOK_CACHE_MAX * sizeof(*tok_cache));
 }
 
+static void release_base_tables(void)
+{
+    if (var_names) { _ffree(var_names); var_names = NULL; }
+    if (var_shared_scopes) { _ffree(var_shared_scopes); var_shared_scopes = NULL; }
+    var_cap = 0;
+}
+
 static int ensure_base_tables(void)
 {
-    if (!var_names) var_names = (char __far *)_fmalloc((unsigned)VALUE_MAX * (BASIC_NAME_MAX + 1U));
-    if (!var_shared_scopes) var_shared_scopes = (unsigned long __far *)_fmalloc((unsigned)VALUE_MAX * 2U * sizeof(unsigned long));
-    return var_names && var_shared_scopes;
+    if (var_names && var_shared_scopes && var_cap >= VALUE_MAX) return 1;
+    if (var_cap == 0) {
+        if (!var_names) var_names = (char __far *)_fmalloc((unsigned)VALUE_MAX * (BASIC_NAME_MAX + 1U));
+        if (!var_shared_scopes) var_shared_scopes = (unsigned long __far *)_fmalloc((unsigned)VALUE_MAX * 2U * sizeof(unsigned long));
+        if (!var_names || !var_shared_scopes) return 0;
+        var_cap = VALUE_MAX;
+        return 1;
+    }
+    {
+        char __far *nn = (char __far *)_fmalloc((unsigned)VALUE_MAX * (BASIC_NAME_MAX + 1U));
+        unsigned long __far *ns = (unsigned long __far *)_fmalloc((unsigned)VALUE_MAX * 2U * sizeof(unsigned long));
+        if (!nn || !ns) {
+            if (nn) _ffree(nn);
+            if (ns) _ffree(ns);
+            return 0;
+        }
+        if (variable_count) {
+            _fmemcpy(nn, var_names, variable_count * (BASIC_NAME_MAX + 1U));
+            _fmemcpy(ns, var_shared_scopes, variable_count * 2U * sizeof(unsigned long));
+        }
+        _ffree(var_names);
+        _ffree(var_shared_scopes);
+        var_names = nn;
+        var_shared_scopes = ns;
+        var_cap = VALUE_MAX;
+        return 1;
+    }
 }
 
 static void release_exec_tables(void)
@@ -536,6 +568,28 @@ static int ensure_program_tables(unsigned src_len)
 
 static void shrink_program_tables(void)
 {
+    if (var_names && var_shared_scopes) {
+        unsigned keep_vars = variable_count + def_fn_count * PARAM_MAX + 16U;
+        if (keep_vars > VALUE_MAX) keep_vars = VALUE_MAX;
+        if (keep_vars < var_cap) {
+            var_names = (char __far *)ckb_compact_block(var_names, keep_vars * (BASIC_NAME_MAX + 1U));
+            var_shared_scopes = (unsigned long __far *)ckb_compact_block(
+                var_shared_scopes, keep_vars * 2U * sizeof(unsigned long));
+            var_cap = keep_vars;
+        }
+    }
+    if (lines && line_scope) {
+        unsigned keep_lines = line_count + 2U;
+        if (keep_lines < lines_cap) {
+            lines = (Line __far *)ckb_compact_block(lines, keep_lines * sizeof(*lines));
+            line_scope = (int __far *)ckb_compact_block(line_scope, keep_lines * sizeof(*line_scope));
+            lines_cap = keep_lines;
+            imm_line_idx = lines_cap - 1U;
+        }
+    }
+    if (tok_cache) {
+        tok_cache = (TokenVarCache __far *)ckb_compact_block(tok_cache, TOK_CACHE_MAX * sizeof(*tok_cache));
+    }
     if (blocks) {
         unsigned keep_blocks = block_count + 32U;
         if (keep_blocks < blocks_cap) {
@@ -552,7 +606,7 @@ static void shrink_program_tables(void)
 
 static int ensure_immediate_tables(void)
 {
-    if (!ensure_base_tables()) return 0;
+    if ((!var_names || !var_shared_scopes) && !ensure_base_tables()) return 0;
     if (!source) {
         if (editor_source) {
             source = editor_source;
@@ -731,6 +785,10 @@ int named_variable(Parser *p, const char *name, char kind, int array,
     if (shared >= 0) return shared;
     if (variable_count == VALUE_MAX) {
         fail(p, "Too many variables");
+        return -1;
+    }
+    if (variable_count >= var_cap && !ensure_base_tables()) {
+        fail(p, "Out of memory");
         return -1;
     }
     i = variable_count++;
@@ -2236,8 +2294,8 @@ static int whole_array_argument(Parser *p, int run)
     return id;
 }
 
-#define LOCAL_VAR_POOL_MAX 12U
-#define COPY_VAL_POOL_MAX 4U
+#define LOCAL_VAR_POOL_MAX 8U
+#define COPY_VAL_POOL_MAX 2U
 
 static Variable local_var_pool[LOCAL_VAR_POOL_MAX];
 static unsigned local_pool_top;
@@ -3342,16 +3400,18 @@ static void immediate_line(int run)
 void ckb_immediate_clear(void)
 {
     unsigned i;
-    if (!immediate_idle) return;
-    for (i = 0; i < variable_count; ++i) {
-        release_array(&variables[i]);
-        ckb_sfree(variables[i].text);
-        variables[i].text = NULL;
+    if (immediate_idle) {
+        for (i = 0; i < variable_count; ++i) {
+            release_array(&variables[i]);
+            ckb_sfree(variables[i].text);
+            variables[i].text = NULL;
+        }
+        ckb_sreset();
+        variable_count = 0;
+        var_hash_reset();
+        immediate_idle = 0;
     }
-    ckb_sreset();
-    variable_count = 0;
-    var_hash_reset();
-    immediate_idle = 0;
+    release_base_tables();
 }
 
 void ckb_immediate(const char *command, unsigned output_column, CkbImmediateResult *result)
@@ -4239,12 +4299,10 @@ static int execute_program(const char *path, int mbf, const char __far *text,
     int result = 0;
     if (report) memset(report, 0, sizeof(*report));
     if (strlen(path) > TEXT_INPUT_MAX) return 1;
-    if (!ensure_base_tables()) {
-        report_run_error(report, path, "Out of memory", text != NULL, 0, 0);
-        return 1;
-    }
 #if defined(__WATCOMC__) || defined(_MSDOS)
     ckb_immediate_clear();
+#else
+    release_base_tables();
 #endif
     pause_context = context;
     aborted = 0;
@@ -4390,6 +4448,7 @@ static int execute_program(const char *path, int mbf, const char __far *text,
     free_common(saved, saved_count, saved_types);
     ckb_sreset();
     release_exec_tables();
+    if (!text) release_base_tables();
     ckb_speaker_off();
     if (!text) ckb_con_reset_text();
     pause_execution = NULL;

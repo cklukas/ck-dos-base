@@ -32,6 +32,9 @@ extern void __far ui_cursor(unsigned);
 extern unsigned long __far ui_event(void);
 extern void __far ui_begin_frame(void);
 extern void __far ui_end_frame(void);
+extern void __far ui_suspend_backbuffer(void);
+extern void __far ui_resume_backbuffer(unsigned);
+extern unsigned __far ui_saved_paragraphs(void);
 extern unsigned __far ui_setup_mode(unsigned);
 #ifdef __WATCOMC__
 #pragma aux ui_init "CKBIDE_INIT" parm [ax] modify exact []
@@ -43,12 +46,15 @@ extern unsigned __far ui_setup_mode(unsigned);
 #pragma aux ui_event "CKBIDE_EVENT" value [dx ax] modify exact [dx ax]
 #pragma aux ui_begin_frame "CKBIDE_BEGIN_FRAME" modify exact []
 #pragma aux ui_end_frame "CKBIDE_END_FRAME" modify exact []
+#pragma aux ui_suspend_backbuffer "CKBIDE_SUSPEND_BB" modify exact []
+#pragma aux ui_resume_backbuffer "CKBIDE_RESUME_BB" parm [ax] modify exact []
+#pragma aux ui_saved_paragraphs "CKBIDE_SAVED_PARAS" value [ax] modify exact [ax]
 #pragma aux ui_setup_mode "CKBIDE_SETUP_MODE" parm [ax] value [ax] modify exact [ax]
 #endif
 
 #define SOURCE_LIMIT 60000U
 #define WORKSPACE_IMM_TAIL (CKB_IMMEDIATE_LIMIT + 4U)
-#define WORKSPACE_INIT_LEN 2048U
+#define WORKSPACE_INIT_LEN 256U
 #define WORKSPACE_SOURCE_CAP (SOURCE_LIMIT + WORKSPACE_IMM_TAIL)
 #define PATH_SIZE 128
 #define SCREEN_SAVE_PARAGRAPHS 1100 /* DOSUI_SAVE_PARAGRAPHS */
@@ -148,7 +154,7 @@ struct workspace {
     unsigned find_flags;
     unsigned text_gen, cached_last_gen, cached_last, drawn_thumb_row;
     int cached_last_proc, syntax_checking, next_menu;
-    unsigned ui_rows, disp_flags;
+    unsigned ui_rows, disp_flags, save_segment;
     int mbf_mode;
 };
 
@@ -2609,6 +2615,8 @@ static void ide_ensure_text_mode(struct workspace *w)
     }
 }
 
+static int prepare_output(struct workspace *w);
+
 static void capture_output(struct workspace *w)
 {
     union REGS regs = {0};
@@ -2620,6 +2628,7 @@ static void capture_output(struct workspace *w)
         ide_ensure_text_mode(w);
         return;
     }
+    if (!prepare_output(w)) return;
     regs.x.ax = 0x0300;
     int86(0x10, &regs, &regs);
     w->output_cursor = regs.x.dx;
@@ -2884,6 +2893,10 @@ static int pause_workspace(void *context, unsigned line, unsigned column,
                           key == KEY_F10 ? RUN_PROCEDURE_STEP : RUN_NORMAL;
             w->step_depth = w->statement_depth;
             restore_output(w);
+            if (w->run_mode == RUN_NORMAL && !w->breakpoint_count && w->output) {
+                _ffree(w->output);
+                w->output = NULL;
+            }
             break;
         } else if (key == KEY_SHIFT_F5) {
             w->restart_requested = 1;
@@ -2911,7 +2924,6 @@ static int should_break(void *context, unsigned line_start, int first_statement,
 static void run_workspace_ex(struct workspace *w, enum run_mode mode, int from_slash_run)
 {
     CkbRunResult result;
-    if (!prepare_output(w)) return;
     do {
         w->restart_requested = 0;
         w->run_mode = mode;
@@ -2919,8 +2931,20 @@ static void run_workspace_ex(struct workspace *w, enum run_mode mode, int from_s
         w->debug_hooks_active = (w->run_mode != RUN_NORMAL || w->breakpoint_count != 0);
         ckb_set_debug_active(&w->debug_hooks_active);
         restore_output(w);
+        if (w->output) {
+            _ffree(w->output);
+            w->output = NULL;
+        }
+        if (w->save_segment) {
+            ui_suspend_backbuffer();
+            _dos_setblock(ui_saved_paragraphs(), w->save_segment, NULL);
+        }
         ckb_run_source_ex(w->path[0] ? w->path : "Untitled", w->mbf_mode, w->text, w->length,
                           &result, pause_workspace, should_break, w);
+        if (w->save_segment &&
+            _dos_setblock(SCREEN_SAVE_PARAGRAPHS, w->save_segment, NULL) == 0) {
+            ui_resume_backbuffer(w->save_segment);
+        }
         ckb_set_debug_active(NULL);
         mode = RUN_NORMAL;
     } while (w->restart_requested);
@@ -3990,13 +4014,7 @@ static int ckb_ide_session(struct workspace *wp, const char *path,
     w.ui_rows = 25U;
     w.disp_flags = disp_flags;
     w.mbf_mode = mbf;
-    if (_dos_allocmem(SCREEN_SAVE_PARAGRAPHS, &segment)) {
-        fputs("Not enough memory to save the DOS screen\n", stderr);
-        return 1;
-    }
-    if (!prepare_output(&w) || !ensure_text_cap(&w, WORKSPACE_INIT_LEN, 0)) {
-        if (w.output) _ffree(w.output);
-        _dos_freemem(segment);
+    if (!ensure_text_cap(&w, WORKSPACE_INIT_LEN, 0)) {
         fputs("Not enough memory for workspace\n", stderr);
         return 1;
     }
@@ -4004,6 +4022,12 @@ static int ckb_ide_session(struct workspace *wp, const char *path,
         if (slash_run) {
             FILE *probe = fopen(path, "rb");
             if (!probe) {
+                if (_dos_allocmem(SCREEN_SAVE_PARAGRAPHS, &segment)) {
+                    ckb_set_editor_source(NULL, 0);
+                    _ffree(w.text);
+                    fputs("Not enough memory to save the DOS screen\n", stderr);
+                    return 1;
+                }
                 ui_init(segment);
                 w.ui_rows = ui_setup_mode(disp_flags);
                 ui_end_frame();
@@ -4029,11 +4053,17 @@ static int ckb_ide_session(struct workspace *wp, const char *path,
                 ckb_set_editor_source(NULL, 0);
                 _ffree(w.text);
                 if (w.output) _ffree(w.output);
-                _dos_freemem(segment);
                 return 1;
             }
         }
     }
+    if (_dos_allocmem(SCREEN_SAVE_PARAGRAPHS, &segment)) {
+        ckb_set_editor_source(NULL, 0);
+        _ffree(w.text);
+        fputs("Not enough memory to save the DOS screen\n", stderr);
+        return 1;
+    }
+    w.save_segment = segment;
     ui_init(segment);
     w.ui_rows = ui_setup_mode(disp_flags);
     if (load_err[0]) {

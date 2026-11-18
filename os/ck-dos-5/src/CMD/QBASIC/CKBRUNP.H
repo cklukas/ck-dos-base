@@ -116,10 +116,11 @@ struct Variable {
     char kind;
     signed char scope;
     unsigned char first_upper;
+    unsigned char dimensions;
     unsigned char constant, indexed_constant, shared, array, typed, dynamic, persistent;
     unsigned common;
     unsigned fixed_width;
-    unsigned cells, dimensions;
+    unsigned cells;
     Bounds *bounds;
     void __far *elements;
     unsigned frame_slot;
