@@ -1816,7 +1816,6 @@ void restore_common(Parser *p, CommonValue *saved, const CommonType *types,
         return;
     }
     v->number = saved->number;
-    v->ival = (v->kind == '%' || v->kind == '&') ? (long)saved->number : 0L;
     v->text = saved->text;
     v->bounds = saved->bounds;
     v->elements = saved->elements;

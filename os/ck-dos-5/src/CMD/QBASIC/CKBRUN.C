@@ -1960,7 +1960,7 @@ unsigned target_label(Parser *p)
     return line_count;
 }
 
-#define target target_label
+#define target(p) target_label(p)
 
 static Position next_line(unsigned line)
 {
@@ -3519,7 +3519,6 @@ static void clear_statement(Parser *p, int run)
             else clear_array(v);
         } else {
             v->number = 0.0;
-            v->ival = 0L;
             if (v->text) {
                 if (v->fixed_width) _fmemset(v->text + 2, ' ', v->fixed_width);
                 else { ckb_sfree(v->text); v->text = NULL; }
