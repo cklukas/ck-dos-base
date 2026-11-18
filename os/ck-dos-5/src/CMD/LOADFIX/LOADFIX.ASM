@@ -1,10 +1,12 @@
-; Copyright (c) 2026 C. Klukas
+; Copyright (c) 2026 C. Klukas. All rights reserved.
 ; SPDX-License-Identifier: MIT
 ;
 ; LOADFIX.COM — Clean-room CK-DOS 5.0 conventional memory loader above 64 KB.
 ;
-; Ensures a program is loaded above the first 64 KB of conventional memory
-; (segment >= 1000h) to avoid the EXEPACK A20 wraparound bug when DOS=HIGH.
+; Ensures a child program is loaded at or above segment 1000h (64 KiB) using
+; standard DOS memory-strategy and MCB allocation calls (no private host API
+; required), restores parent allocation strategy, UMB link state, and all pad
+; blocks after child termination, and propagates the child's exit code.
 
 .8086
 
@@ -19,9 +21,10 @@ SAVED_SS        DW      0
 SAVED_SP        DW      0
 OLD_STRAT       DB      0
 OLD_UMB         DB      0
+HAVE_UMB_LINK   DB      0
 EXEC_FAILED     DB      0
 PAD_COUNT       DW      0
-PAD_SEGS        DW      32 DUP (0)
+PAD_SEGS        DW      64 DUP (0)
 
 EXEC_BLK        LABEL   BYTE
 EB_ENV          DW      0               ; 0 = inherit parent environment
@@ -44,8 +47,17 @@ MAIN:
         MOV     AH,4Ah
         INT     21h
 
-        ; Parse command line at PSP:81h
-        MOV     SI,0081h
+        ; Parse command line at PSP:81h (bounded by PSP:[80h])
+        MOV     SI,0080h
+        XOR     CH,CH
+        MOV     CL,[SI]
+        INC     SI
+        MOV     DI,OFFSET CMD_COPY
+        REP     MOVSB
+        XOR     AL,AL
+        STOSB
+
+        MOV     SI,OFFSET CMD_COPY
 SKIP_WS:
         MOV     AL,[SI]
         CMP     AL,' '
@@ -67,16 +79,14 @@ CHK_ARG:
         CMP     BYTE PTR [SI+1],'?'
         JNE     GOT_CMD_START
 
-        MOV     DX,OFFSET MSG_HELP
-        MOV     AH,09h
-        INT     21h
+        MOV     SI,OFFSET MSG_HELP
+        CALL    WRITE_STDOUT_Z
         MOV     AX,4C00h
         INT     21h
 
 ERR_NO_CMD:
-        MOV     DX,OFFSET MSG_SYNTAX
-        MOV     AH,09h
-        INT     21h
+        MOV     SI,OFFSET MSG_NO_PROG
+        CALL    WRITE_STDOUT_Z
         MOV     AX,4C01h
         INT     21h
 
@@ -136,10 +146,9 @@ TAIL_DONE:
         ; Resolve PROG_TOKEN -> EXEC_PATH (direct, +.COM/+.EXE, or via PATH=)
         CALL    RESOLVE_EXECUTABLE
         JNC     ALLOC_PADDING
-        MOV     DX,OFFSET MSG_NOT_FOUND
-        MOV     AH,09h
-        INT     21h
-        MOV     AX,4C02h
+        MOV     SI,OFFSET MSG_EXEC_ERR
+        CALL    WRITE_STDOUT_Z
+        MOV     AX,4C01h
         INT     21h
 
 ALLOC_PADDING:
@@ -147,31 +156,35 @@ ALLOC_PADDING:
         MOV     AX,5800h
         INT     21h
         MOV     [OLD_STRAT],AL
+
+        MOV     BYTE PTR [HAVE_UMB_LINK],0
         MOV     AX,5802h
         INT     21h
+        JC      NO_UMB_SAVE
         MOV     [OLD_UMB],AL
-
+        MOV     BYTE PTR [HAVE_UMB_LINK],1
         MOV     AX,5803h
         XOR     BX,BX
         INT     21h
+NO_UMB_SAVE:
         MOV     AX,5801h
         XOR     BX,BX
         INT     21h
 
 PAD_LOOP:
-        CMP     WORD PTR [PAD_COUNT],32
-        JAE     PAD_DONE
+        CMP     WORD PTR [PAD_COUNT],64
+        JAE     PAD_VERIFY_ABOVE_64K
         MOV     BX,1
         MOV     AH,48h
         INT     21h
-        JC      PAD_DONE
+        JC      PAD_INSUFFICIENT
         CMP     AX,1000h
         JB      PAD_KEEP
-        ; Already >= 1000h! Free immediately and stop padding.
+        ; Already >= 1000h! Free probe block immediately and run child.
         MOV     ES,AX
         MOV     AH,49h
         INT     21h
-        JMP     SHORT PAD_DONE
+        JMP     SHORT PAD_READY_OK
 
 PAD_KEEP:
         ; Grow block AX up toward 1000h
@@ -194,17 +207,27 @@ PAD_RECORD:
         INC     WORD PTR [PAD_COUNT]
         JMP     SHORT PAD_LOOP
 
-PAD_DONE:
-        PUSH    CS
-        POP     ES
-        XOR     BH,BH
-        MOV     BL,[OLD_STRAT]
-        MOV     AX,5801h
+PAD_VERIFY_ABOVE_64K:
+        ; Ensure the next allocation actually lands >= 1000h before EXEC
+        MOV     BX,1
+        MOV     AH,48h
         INT     21h
-        XOR     BH,BH
-        MOV     BL,[OLD_UMB]
-        MOV     AX,5803h
+        JC      PAD_INSUFFICIENT
+        PUSH    AX
+        MOV     ES,AX
+        MOV     AH,49h
         INT     21h
+        POP     AX
+        CMP     AX,1000h
+        JAE     PAD_READY_OK
+
+PAD_INSUFFICIENT:
+        CALL    RESTORE_STRAT
+        MOV     BYTE PTR [EXEC_FAILED],1
+        JMP     SHORT FREE_PADS
+
+PAD_READY_OK:
+        CALL    RESTORE_STRAT
 
         ; Execute child above 1000h
         MOV     AX,CS
@@ -246,9 +269,8 @@ FP_LP:
 AFTER_FREE:
         CMP     BYTE PTR [EXEC_FAILED],0
         JE      GET_CHILD_RC
-        MOV     DX,OFFSET MSG_EXEC_ERR
-        MOV     AH,09h
-        INT     21h
+        MOV     SI,OFFSET MSG_EXEC_ERR
+        CALL    WRITE_STDOUT_Z
         MOV     AX,4C01h
         INT     21h
 
@@ -258,11 +280,27 @@ GET_CHILD_RC:
         MOV     AH,4Ch
         INT     21h
 
+RESTORE_STRAT   PROC    NEAR
+        PUSH    CS
+        POP     ES
+        XOR     BH,BH
+        MOV     BL,[OLD_STRAT]
+        MOV     AX,5801h
+        INT     21h
+        CMP     BYTE PTR [HAVE_UMB_LINK],0
+        JE      RS_DONE
+        XOR     BH,BH
+        MOV     BL,[OLD_UMB]
+        MOV     AX,5803h
+        INT     21h
+RS_DONE:
+        RET
+RESTORE_STRAT   ENDP
+
 ; ---------------------------------------------------------------------------
 ; RESOLVE_EXECUTABLE: resolves PROG_TOKEN into EXEC_PATH
 ; ---------------------------------------------------------------------------
 RESOLVE_EXECUTABLE PROC NEAR
-        ; Check if PROG_TOKEN contains '.' (explicit extension) or '\' / ':'
         MOV     BYTE PTR [HAS_EXT],0
         MOV     BYTE PTR [HAS_DIR],0
         MOV     SI,OFFSET PROG_TOKEN
@@ -286,7 +324,6 @@ RE_SET_DIR:
         JMP     SHORT RE_SCAN
 
 RE_SCAN_DONE:
-        ; Try current directory / given path first
         MOV     SI,OFFSET EMPTY_STR
         CALL    TRY_CANDIDATE_DIR
         JC      RE_CHK_DIR
@@ -298,8 +335,6 @@ RE_CHK_DIR:
         STC
         RET
 RE_SEARCH_PATH:
-
-        ; Search PATH= in environment (PSP:[2Ch])
         MOV     AX,DS:[002Ch]
         OR      AX,AX
         JNZ     RE_HAS_ENV
@@ -311,7 +346,6 @@ RE_HAS_ENV:
 RE_ENV_LP:
         CMP     BYTE PTR ES:[DI],0
         JE      RE_ENV_END
-        ; Check "PATH="
         MOV     AL,ES:[DI]
         AND     AL,0DFh
         CMP     AL,'P'
@@ -340,7 +374,7 @@ RE_AFTER_NUL:
         JMP     SHORT RE_ENV_LP
 
 RE_GOT_PATH:
-        ADD     DI,5                    ; ES:DI -> PATH value
+        ADD     DI,5
 RE_PATH_ENTRY:
         CMP     BYTE PTR ES:[DI],0
         JE      RE_ENV_END
@@ -373,19 +407,16 @@ RE_END_DIR:
 RE_FOUND_FIX_ES:
         PUSH    CS
         POP     ES
-RE_FOUND:
         CLC
         RET
 
 RE_ENV_END:
         PUSH    CS
         POP     ES
-RE_NOT_FOUND:
         STC
         RET
 RESOLVE_EXECUTABLE ENDP
 
-; Input: DS:SI -> directory prefix ("" for current dir), ES = CS
 TRY_CANDIDATE_DIR PROC NEAR
         CMP     BYTE PTR [HAS_EXT],0
         JE      TCD_TRY_EXTS
@@ -404,7 +435,6 @@ TCD_OK:
         RET
 TRY_CANDIDATE_DIR ENDP
 
-; Input: DS:SI -> dir, DS:BX -> ext -> writes EXEC_PATH and checks file exists
 BUILD_AND_CHECK PROC    NEAR
         MOV     DI,OFFSET EXEC_PATH
 BC_DIR:
@@ -441,12 +471,11 @@ BC_EX_LP:
         OR      AL,AL
         JNZ     BC_EX_LP
 
-        ; Check file attributes (AH=43h AL=00h) and ensure not a directory
         MOV     DX,OFFSET EXEC_PATH
         MOV     AX,4300h
         INT     21h
         JC      BC_MISS
-        TEST    CX,10h                  ; directory attribute?
+        TEST    CX,10h
         JNZ     BC_MISS
         CLC
         RET
@@ -455,18 +484,46 @@ BC_MISS:
         RET
 BUILD_AND_CHECK ENDP
 
+WRITE_STDOUT_Z  PROC    NEAR
+        PUSH    AX
+        PUSH    BX
+        PUSH    CX
+        PUSH    DX
+        PUSH    SI
+        MOV     DX,SI
+        XOR     CX,CX
+WS_LP:
+        LODSB
+        OR      AL,AL
+        JZ      WS_DO
+        INC     CX
+        JMP     SHORT WS_LP
+WS_DO:
+        JCXZ    WS_RET
+        MOV     BX,1
+        MOV     AH,40h
+        INT     21h
+WS_RET:
+        POP     SI
+        POP     DX
+        POP     CX
+        POP     BX
+        POP     AX
+        RET
+WRITE_STDOUT_Z  ENDP
+
 EMPTY_STR       DB      0
 EXT_COM         DB      '.COM',0
 EXT_EXE         DB      '.EXE',0
 
 MSG_HELP        DB      'Loads a program above the first 64K of memory, and runs the program.',13,10,13,10
-                DB      'LOADFIX [drive:][path]filename [program-parameters]',13,10,'$'
-MSG_SYNTAX      DB      'Required parameter missing. Type LOADFIX /? for help.',13,10,'$'
-MSG_NOT_FOUND   DB      'Error: File not found.',13,10,'$'
-MSG_EXEC_ERR    DB      'Error loading program.',13,10,'$'
+                DB      'LOADFIX [drive:][path]filename [program-parameters]',13,10,0
+MSG_NO_PROG     DB      'Error: No program name given.',13,10,0
+MSG_EXEC_ERR    DB      'Error executing the given program.',13,10,0
 
 HAS_EXT         DB      0
 HAS_DIR         DB      0
+CMD_COPY        DB      132 DUP (0)
 PROG_TOKEN      DB      80 DUP (0)
 DIR_BUF         DB      80 DUP (0)
 EXEC_PATH       DB      128 DUP (0)
