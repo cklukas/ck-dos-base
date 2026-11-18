@@ -766,9 +766,11 @@ void build_dos5_dosui_tools(const fs::path& repo_root,
     const fs::path edit_dir = out_stage / "CMD" / "EDIT";
     const fs::path help_dir = out_stage / "CMD" / "HELP";
     const fs::path qbasic_dir = out_stage / "CMD" / "QBASIC";
+    const fs::path dosshell_dir = out_stage / "CMD" / "DOSSHELL";
     if (!fs::is_directory(dosui_dir) || !fs::is_directory(edit_dir) ||
-        !fs::is_directory(help_dir) || !fs::is_directory(qbasic_dir)) {
-        throw std::runtime_error("[CK-DOS 5.0] missing CMD/DOSUI, CMD/EDIT, CMD/HELP, or CMD/QBASIC source directories");
+        !fs::is_directory(help_dir) || !fs::is_directory(qbasic_dir) ||
+        !fs::is_directory(dosshell_dir)) {
+        throw std::runtime_error("[CK-DOS 5.0] missing CMD/DOSUI, CMD/EDIT, CMD/HELP, CMD/QBASIC, or CMD/DOSSHELL source directories");
     }
 
     const fs::path ckcl = exe_path(tool_dir, "ckcl");
@@ -913,10 +915,60 @@ void build_dos5_dosui_tools(const fs::path& repo_root,
         throw std::runtime_error("[CK-DOS 5.0] QBASIC.EXE missing or truncated after cklink");
     }
 
+    // Build CK-DOS Shell entry stub (DOSSHELL.COM) and medium-model UI shell (DOSSHELL.EXE)
+    if (run_process({ckmasm.string(), "-I.", "DOSSHELL.ASM,DSHSTUB.OBJ,NUL,NUL;"}, dosshell_dir) != 0) {
+        throw std::runtime_error("[CK-DOS 5.0] ckmasm failed on CMD/DOSSHELL/DOSSHELL.ASM");
+    }
+    if (run_process({cklink.string(), "DSHSTUB.OBJ,DSHSTUB.EXE,NUL,;"}, dosshell_dir) != 0) {
+        throw std::runtime_error("[CK-DOS 5.0] cklink failed on DSHSTUB.EXE");
+    }
+    if (run_process({ckexe2bin.string(), "DSHSTUB.EXE", "DOSSHELL.COM"}, dosshell_dir) != 0) {
+        throw std::runtime_error("[CK-DOS 5.0] ckexe2bin failed on DOSSHELL.COM");
+    }
+    fs::remove(find_ci(dosshell_dir, "DSHSTUB.EXE"), ec);
+    fs::remove(find_ci(dosshell_dir, "DSHSTUB.OBJ"), ec);
+    const fs::path dosshell_com = find_ci(dosshell_dir, "DOSSHELL.COM");
+    validate_flat_com_image(dosshell_com, "DOSSHELL.COM");
+
+    if (run_process({ckmasm.string(), "-Mx", "-I.", "-I" + dosui_dir.string(),
+                     "DSHUI.ASM,DSHUI.OBJ,NUL,NUL;"}, dosshell_dir) != 0) {
+        throw std::runtime_error("[CK-DOS 5.0] ckmasm failed on CMD/DOSSHELL/DSHUI.ASM");
+    }
+    const std::vector<const char*> dsh_c_stems = {
+        "DSHMAIN", "DSHFS", "DSHDRAW", "DSHDLG", "DSHPROG"};
+    std::string dsh_objs;
+    for (std::size_t i = 0; i < dsh_c_stems.size(); ++i) {
+        const std::string stem = dsh_c_stems[i];
+        const std::string c_file = stem + ".C";
+        const std::string obj_file = stem + ".OBJ";
+        if (run_process({ckcl.string(), "-c", "-AM", "-Os", "-I.",
+                         "-I" + rt_inc.string(), "-Fo" + obj_file, c_file}, dosshell_dir) != 0) {
+            throw std::runtime_error("[CK-DOS 5.0] ckcl -AM failed on CMD/DOSSHELL/" + c_file);
+        }
+        if (i > 0) dsh_objs += "+\n";
+        dsh_objs += obj_file;
+    }
+    dsh_objs += "+\nDSHUI.OBJ+\nDOSUI.OBJ\nDOSSHELL.EXE\nNUL\nMLIBCE.LIB;\n";
+    fs::copy_file(dosui_obj, dosshell_dir / "DOSUI.OBJ", fs::copy_options::overwrite_existing);
+    fs::copy_file(mlibce_lib, dosshell_dir / "MLIBCE.LIB", fs::copy_options::overwrite_existing);
+    write_text_file(dosshell_dir / "DOSSHELL.RSP", dsh_objs);
+    if (run_process({cklink.string(), "@DOSSHELL.RSP"}, dosshell_dir) != 0) {
+        throw std::runtime_error("[CK-DOS 5.0] cklink failed on DOSSHELL.EXE");
+    }
+    fs::remove(dosshell_dir / "DOSUI.OBJ", ec);
+    fs::remove(dosshell_dir / "MLIBCE.LIB", ec);
+    fs::remove(dosshell_dir / "DOSSHELL.RSP", ec);
+    const fs::path dosshell_exe = find_ci(dosshell_dir, "DOSSHELL.EXE");
+    if (!fs::is_regular_file(dosshell_exe) || fs::file_size(dosshell_exe) < 16384u) {
+        throw std::runtime_error("[CK-DOS 5.0] DOSSHELL.EXE missing or truncated after cklink");
+    }
+
     std::cout << "[CK-DOS 5.0] Built first-party tools: EDIT.COM ("
               << fs::file_size(edit_com) << " bytes), HELP.COM ("
               << fs::file_size(help_com) << " bytes), QBASIC.EXE ("
-              << fs::file_size(qbasic_exe) << " bytes), SETVER.EXE ("
+              << fs::file_size(qbasic_exe) << " bytes), DOSSHELL.COM ("
+              << fs::file_size(dosshell_com) << " bytes), DOSSHELL.EXE ("
+              << fs::file_size(dosshell_exe) << " bytes), SETVER.EXE ("
               << fs::file_size(setver_exe) << " bytes), DOSKEY.COM ("
               << fs::file_size(doskey_com) << " bytes), LOADFIX.COM ("
               << fs::file_size(loadfix_com) << " bytes), EXPAND.EXE ("
@@ -1492,7 +1544,8 @@ OsMediaSpec make_dos5_media_spec(const std::string& version) {
         "Independent MIT-licensed CK-DOS 5.00 distribution built 100% from source\r\n"
         "with clean-room native tools (ckcl, ckmasm, cklink, cklib, cknmake, ckmkimg).\r\n"
         "Includes CK Edit (EDIT.COM), CK Help (HELP.COM), CK Basic (QBASIC.EXE),\r\n"
-        "HIMEM.SYS, DOSKEY.COM, SETVER.EXE, LOADFIX.COM, and EXPAND.EXE.\r\n\r\n"
+        "CK-DOS Shell (DOSSHELL.COM / DOSSHELL.EXE), HIMEM.SYS, DOSKEY.COM,\r\n"
+        "SETVER.EXE, LOADFIX.COM, and EXPAND.EXE.\r\n\r\n"
         "Included Release Media:\r\n"
         "  - ckdos-5.00-floppy-1440k.img : 3.5\" 1.44M Boot + Install Floppy (CKDOS500)\r\n"
         "  - ckdos-5.00-floppy-720k-disk1..3.img : 3x720K XT/PS2 Set (+CK Basic Disk 3)\r\n"
@@ -1621,7 +1674,8 @@ void build_os_media_set(const fs::path& stage,
             {"README.TXT", {}, disk3_readme, true, 0x20u, 0100644u},
         };
         for (const auto& [name, p] : cmd_files) {
-            if (spec.is_dos5 && name == "QBASIC.EXE") {
+            if (spec.is_dos5 &&
+                (name == "QBASIC.EXE" || name == "DOSSHELL.EXE" || name == "DOSSHELL.COM")) {
                 d3.push_back({"DOS/" + name, p, {}, false, 0x20u, 0100644u});
             } else {
                 (d1_cmds.count(name) ? d1 : d2).push_back({"DOS/" + name, p, {}, false, 0x20u, 0100644u});
